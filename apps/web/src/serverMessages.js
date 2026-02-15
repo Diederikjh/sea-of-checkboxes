@@ -10,12 +10,14 @@ export function createServerMessageHandler({
   heatStore,
   transport,
   cursors,
+  selfIdentity,
 }) {
   return (rawMessage) => {
     const message = parseServerMessage(rawMessage);
 
     switch (message.t) {
       case "hello": {
+        selfIdentity.uid = message.uid;
         identityEl.textContent = `You are ${message.name} (${message.uid})`;
         break;
       }
@@ -47,13 +49,28 @@ export function createServerMessageHandler({
         break;
       }
       case "curUp": {
-        cursors.set(message.uid, {
-          uid: message.uid,
-          name: message.name,
-          x: message.x,
-          y: message.y,
-          seenAt: Date.now(),
-        });
+        if (selfIdentity.uid && message.uid === selfIdentity.uid) {
+          break;
+        }
+
+        const seenAt = Date.now();
+        const current = cursors.get(message.uid);
+        if (current) {
+          current.name = message.name;
+          current.x = message.x;
+          current.y = message.y;
+          current.seenAt = seenAt;
+        } else {
+          cursors.set(message.uid, {
+            uid: message.uid,
+            name: message.name,
+            x: message.x,
+            y: message.y,
+            drawX: message.x,
+            drawY: message.y,
+            seenAt,
+          });
+        }
         break;
       }
       case "err": {

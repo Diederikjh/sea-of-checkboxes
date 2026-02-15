@@ -33,7 +33,9 @@ export function createCursorLabels(stage) {
 
     for (const cursor of activeCursors) {
       const label = ensure(cursor.uid, cursor.name);
-      const screen = toScreenPoint(cursor.x, cursor.y, camera, viewportWidth, viewportHeight);
+      const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
+      const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
+      const screen = toScreenPoint(worldX, worldY, camera, viewportWidth, viewportHeight);
       label.x = screen.x + 6;
       label.y = screen.y - 6;
       label.visible = true;

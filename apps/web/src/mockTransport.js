@@ -159,15 +159,16 @@ export class MockTransport {
       const now = Date.now() / 1_000;
       for (const bot of bots) {
         const radius = 60;
+        const angularSpeed = 0.9;
         this.#emit({
           t: "curUp",
           uid: bot.uid,
           name: bot.name,
-          x: Math.cos(now + bot.phase) * radius,
-          y: Math.sin(now + bot.phase) * radius,
+          x: Math.cos(now * angularSpeed + bot.phase) * radius,
+          y: Math.sin(now * angularSpeed + bot.phase) * radius,
         });
       }
-    }, 120);
+    }, 40);
   }
 }
 

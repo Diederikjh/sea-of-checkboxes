@@ -10,6 +10,7 @@ import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { createMockTransport } from "./mockTransport";
 import { renderScene } from "./renderer";
+import { smoothCursors } from "./cursorSmoothing";
 import { createServerMessageHandler } from "./serverMessages";
 import { reconcileSubscriptions } from "./subscriptions";
 import { TileStore } from "./tileStore";
@@ -42,6 +43,7 @@ export async function startApp() {
   const heatStore = new HeatStore();
   const transport = createMockTransport();
   const cursors = new Map();
+  const selfIdentity = { uid: null };
 
   let subscribedTiles = new Set();
   let visibleTiles = [];
@@ -65,6 +67,7 @@ export async function startApp() {
       heatStore,
       transport,
       cursors,
+      selfIdentity,
     })
   );
 
@@ -106,6 +109,7 @@ export async function startApp() {
   app.ticker.add((ticker) => {
     const dtSeconds = ticker.deltaMS / 1_000;
     heatStore.decay(dtSeconds);
+    smoothCursors(cursors, dtSeconds);
 
     if (needsSubscriptionRefresh) {
       syncSubscriptions();

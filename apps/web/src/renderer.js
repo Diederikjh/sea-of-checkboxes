@@ -118,7 +118,9 @@ export function renderScene({
     .slice(0, MAX_REMOTE_CURSORS);
 
   for (const cursor of activeCursors) {
-    const screen = toScreen(cursor.x, cursor.y, camera, viewportWidth, viewportHeight);
+    const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
+    const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
+    const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
     const color = stableCursorColor(cursor.uid);
 
     graphics.beginFill(color, 0.9);
