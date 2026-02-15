@@ -1,0 +1,18 @@
+{
+  "name": "sea-of-checkboxes",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "dev:web": "pnpm --filter sea-of-checkboxes dev",
+    "dev:worker": "pnpm --filter @sea/worker dev",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.8",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.8"
+  }
+}

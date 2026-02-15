@@ -37,8 +37,6 @@ Build a highly scalable, multiplayer, zoomable checkbox canvas where:
 * Cursor updates may be lossy; checkbox updates must converge correctly
 * Low operational overhead and low running cost
 
-Absolutely — the cleanest place is a short **Engineering Principles** section early in the doc (right after the requirements), plus a small “layer boundaries” note in the infra section. Here’s the merged insert you can paste in.
-
 ---
 
 ## 2.1 Engineering Principles and Layer Separation
@@ -80,6 +78,28 @@ Modules MUST be written so that:
 * domain + state layers are unit-testable without WebGL or network
 * transport can be tested with mocked sockets
 * backend DO logic can be tested with local runners using deterministic inputs
+
+---
+
+## 2.2 Implementation Decisions (Agreed for v0.1)
+
+These decisions are locked for Phases 0-4 unless explicitly changed:
+
+* Frontend is vanilla JavaScript with minimal HTML/CSS UI.
+* Backend and shared packages use TypeScript.
+* Rendering uses PixiJS on top of WebGL.
+* Repository uses a pnpm workspace monorepo layout:
+  * `apps/web`
+  * `apps/worker`
+  * `packages/domain`
+  * `packages/protocol`
+* Runtime protocol validation uses Zod schemas.
+* Tile ownership is one `TileOwner` per tile key for initial simplicity.
+* `setCell` that does not change existing cell state is ignored and MUST NOT bump tile version.
+* Snapshot encoding is `rle64` from the start, with encode/decode tests required.
+* Remote cursor selection rule (when capped) is most recently seen in viewport.
+* Tests use Vitest for unit/integration; Playwright is planned for E2E.
+* Cloudflare account setup is deferred until Phase 5; Phases 0-4 are developed and validated locally first.
 
 ---
 
