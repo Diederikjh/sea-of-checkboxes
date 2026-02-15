@@ -37,6 +37,50 @@ Build a highly scalable, multiplayer, zoomable checkbox canvas where:
 * Cursor updates may be lossy; checkbox updates must converge correctly
 * Low operational overhead and low running cost
 
+Absolutely — the cleanest place is a short **Engineering Principles** section early in the doc (right after the requirements), plus a small “layer boundaries” note in the infra section. Here’s the merged insert you can paste in.
+
+---
+
+## 2.1 Engineering Principles and Layer Separation
+
+### Single Responsibility Principle
+
+Each component/module MUST have a clear, narrow responsibility:
+
+* **Renderer (WebGL):** draw only (no networking, no persistence logic)
+* **Client State / Simulation:** camera state, tile cache, heat/cooldown, cursor smoothing
+* **Network Layer:** WebSocket connect/reconnect, message encode/decode, backpressure handling
+* **Domain Layer:** tile math, cell indexing, versioning rules, validation helpers
+* **Backend Router (Worker):** identity/spawn + routing only (no tile authority)
+* **ConnectionShard DO:** WebSocket ownership + subscription management + fanout only
+* **TileOwner DO:** tile authority + ordering + persistence only
+* **Storage Layer (R2):** snapshots only (no realtime responsibilities)
+
+Implementations SHOULD avoid “god objects” and mixed concerns (e.g., avoid combining rendering + protocol parsing + cache eviction in one class).
+
+### Separation of Layers (strict boundaries)
+
+Code MUST be organized such that higher-level layers depend on lower-level layers, not vice versa:
+
+1. **Domain (pure):** math, indices, bounds, encodings
+2. **State:** tile cache, camera, heat/cooldown, cursor smoothing
+3. **Transport:** WebSocket, reconnection, message framing
+4. **Presentation:** WebGL draw loop, UI overlay/HUD
+
+Rules:
+
+* Presentation MUST NOT directly call persistence or DO-specific logic.
+* Transport MUST NOT contain WebGL rendering code.
+* Domain utilities MUST be deterministic and unit-testable (no side effects).
+
+### Testability as a design constraint
+
+Modules MUST be written so that:
+
+* domain + state layers are unit-testable without WebGL or network
+* transport can be tested with mocked sockets
+* backend DO logic can be tested with local runners using deterministic inputs
+
 ---
 
 ## 3. World Model
@@ -347,6 +391,9 @@ TileOwner DO (authoritative) ◄────┘
   ▼
 R2 (tile snapshots)
 ```
+
+* **Layer boundary enforcement:** only Worker handles public HTTP/WS upgrade routing; TileOwner DO MUST NOT be directly client-facing; all client-originating writes pass through ConnectionShard for validation and rate limiting.
+
 
 ---
 
