@@ -24,6 +24,20 @@ describe("rle64 codec", () => {
     expect(decoded).toEqual(bits);
   });
 
+  it("splits long runs (>255) and still roundtrips", () => {
+    const bits = new Uint8Array(TILE_CELL_COUNT);
+    bits.fill(1, 0, 1024);
+
+    const encoded = encodeRle64(bits);
+    const decoded = decodeRle64(encoded, TILE_CELL_COUNT);
+
+    expect(decoded).toEqual(bits);
+  });
+
+  it("accepts an empty payload when expected length is zero", () => {
+    expect(decodeRle64("", 0)).toEqual(new Uint8Array(0));
+  });
+
   it("rejects corrupt payload", () => {
     expect(() => decodeRle64("AQ==", TILE_CELL_COUNT)).toThrow();
   });
