@@ -1,4 +1,10 @@
-import { MAX_TILE_ABS, SETCELL_BURST_PER_SEC, TILE_CELL_COUNT } from "@sea/domain";
+import {
+  MAX_TILE_ABS,
+  SETCELL_BURST_PER_SEC,
+  SETCELL_SUSTAINED_PER_SEC,
+  SETCELL_SUSTAINED_WINDOW_MS,
+  TILE_CELL_COUNT,
+} from "@sea/domain";
 import { describe, expect, it } from "vitest";
 
 import { ConnectionShard } from "../src/local/connectionShard";
@@ -84,6 +90,89 @@ describe("local protocol edge handling", () => {
     }
 
     expect(events.some((event) => event.t === "err" && event.code === "setcell_limit")).toBe(true);
+  });
+
+  it("enforces sustained setCell rate limiting", () => {
+    let nowMs = 1_000;
+    const runtime = new LocalRealtimeRuntime();
+    const shard = new ConnectionShard(runtime, "shard-a", {
+      nowMs: () => nowMs,
+    });
+
+    const events: Array<{ t: string; code?: string }> = [];
+    shard.connectClient("u_a", "Alice", (message) => {
+      events.push(message as { t: string; code?: string });
+    });
+
+    shard.receiveFromClient("u_a", { t: "sub", tiles: ["0:0"] });
+
+    const sustainedLimit = Math.floor((SETCELL_SUSTAINED_PER_SEC * SETCELL_SUSTAINED_WINDOW_MS) / 1_000);
+    for (let index = 0; index < sustainedLimit + 2; index += 1) {
+      shard.receiveFromClient("u_a", {
+        t: "setCell",
+        tile: "0:0",
+        i: index % TILE_CELL_COUNT,
+        v: index % 2 === 0 ? 1 : 0,
+        op: `op_${index}`,
+      });
+      nowMs += 150;
+    }
+
+    expect(events.some((event) => event.t === "err" && event.code === "setcell_limit")).toBe(true);
+  });
+
+  it("treats duplicate sub/unsub as idempotent", () => {
+    const runtime = new LocalRealtimeRuntime();
+    const shard = new ConnectionShard(runtime, "shard-a");
+    const events: Array<{ t: string; code?: string }> = [];
+
+    shard.connectClient("u_a", "Alice", (message) => {
+      events.push(message as { t: string; code?: string });
+    });
+
+    shard.receiveFromClient("u_a", { t: "sub", tiles: ["0:0"] });
+    shard.receiveFromClient("u_a", { t: "sub", tiles: ["0:0"] });
+    shard.receiveFromClient("u_a", { t: "unsub", tiles: ["0:0"] });
+    shard.receiveFromClient("u_a", { t: "unsub", tiles: ["0:0"] });
+
+    const snapshots = events.filter((event) => event.t === "tileSnap");
+    const errors = events.filter((event) => event.t === "err");
+
+    expect(snapshots.length).toBe(1);
+    expect(errors.length).toBe(0);
+  });
+
+  it("disconnect cleanup removes client from fanout", () => {
+    const runtime = new LocalRealtimeRuntime();
+    const shard = new ConnectionShard(runtime, "shard-a");
+
+    const seenA: Array<{ t: string }> = [];
+    const seenB: Array<{ t: string }> = [];
+
+    const sinkA: ClientSink = (message) => {
+      seenA.push(message as { t: string });
+    };
+    const sinkB: ClientSink = (message) => {
+      seenB.push(message as { t: string });
+    };
+
+    shard.connectClient("u_a", "Alice", sinkA);
+    shard.connectClient("u_b", "Bob", sinkB);
+
+    shard.receiveFromClient("u_a", { t: "sub", tiles: ["0:0"] });
+    shard.receiveFromClient("u_b", { t: "sub", tiles: ["0:0"] });
+    shard.disconnectClient("u_a");
+
+    shard.receiveFromClient("u_b", {
+      t: "setCell",
+      tile: "0:0",
+      i: 5,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(seenA.some((event) => event.t === "cellUpBatch")).toBe(false);
+    expect(seenB.some((event) => event.t === "cellUpBatch")).toBe(true);
   });
 
   it("keeps version unchanged when setting same value", () => {

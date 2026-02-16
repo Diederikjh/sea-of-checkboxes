@@ -25,6 +25,23 @@ describe("client message schema matrix", () => {
     expect(() => parseClientMessage({ tiles: ["0:0"] })).toThrow();
   });
 
+  it("rejects extra fields due to strict schemas", () => {
+    expect(() => parseClientMessage({ t: "sub", tiles: ["0:0"], extra: true })).toThrow();
+    expect(() => parseClientMessage({ t: "unsub", tiles: ["0:0"], extra: true })).toThrow();
+    expect(() =>
+      parseClientMessage({
+        t: "setCell",
+        tile: "0:0",
+        i: 10,
+        v: 1,
+        op: "op_1",
+        extra: true,
+      })
+    ).toThrow();
+    expect(() => parseClientMessage({ t: "cur", x: 1, y: 2, extra: true })).toThrow();
+    expect(() => parseClientMessage({ t: "resyncTile", tile: "0:0", haveVer: 1, extra: true })).toThrow();
+  });
+
   it("rejects subscribe/unsubscribe overflow and invalid tile keys", () => {
     const tooManyTiles = Array.from({ length: MAX_TILES_SUBSCRIBED + 1 }, (_, index) => `${index}:0`);
 
@@ -38,6 +55,16 @@ describe("client message schema matrix", () => {
         t: "setCell",
         tile: "0:0",
         i: -1,
+        v: 1,
+        op: "op",
+      })
+    ).toThrow();
+
+    expect(() =>
+      parseClientMessage({
+        t: "setCell",
+        tile: "0:0",
+        i: 1.5,
         v: 1,
         op: "op",
       })
@@ -77,6 +104,8 @@ describe("client message schema matrix", () => {
   it("rejects invalid cursor/resync payloads", () => {
     expect(() => parseClientMessage({ t: "cur", x: WORLD_MAX + 1, y: 0 })).toThrow();
     expect(() => parseClientMessage({ t: "cur", x: Number.NaN, y: 0 })).toThrow();
+    expect(() => parseClientMessage({ t: "cur", x: Number.POSITIVE_INFINITY, y: 0 })).toThrow();
     expect(() => parseClientMessage({ t: "resyncTile", tile: "0:0", haveVer: -1 })).toThrow();
+    expect(() => parseClientMessage({ t: "resyncTile", tile: "0:0", haveVer: 1.5 })).toThrow();
   });
 });
