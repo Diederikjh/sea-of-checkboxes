@@ -1,3 +1,8 @@
+import {
+  encodeServerMessageBinary,
+  type ServerMessage,
+} from "@sea/protocol";
+
 import type { ClientSink } from "./types";
 
 export interface ClientRecord {
@@ -22,8 +27,12 @@ export function createClientRecord(uid: string, name: string, sink: ClientSink):
   };
 }
 
+export function sendServerMessage(client: ClientRecord, message: ServerMessage): void {
+  client.sink(encodeServerMessageBinary(message));
+}
+
 export function sendClientError(client: ClientRecord, code: string, msg: string): void {
-  client.sink({
+  sendServerMessage(client, {
     t: "err",
     code,
     msg,

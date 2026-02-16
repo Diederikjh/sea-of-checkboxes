@@ -2,6 +2,10 @@ import {
   Application,
   Graphics,
 } from "pixi.js";
+import {
+  decodeServerMessageBinary,
+  encodeClientMessageBinary,
+} from "@sea/protocol";
 
 import { createCamera } from "./camera";
 import { createCursorLabels } from "./cursorLabels";
@@ -41,7 +45,20 @@ export async function startApp() {
   const camera = createCamera();
   const tileStore = new TileStore(512);
   const heatStore = new HeatStore();
-  const transport = createMockTransport();
+  const wireTransport = createMockTransport();
+  const transport = {
+    connect(onServerMessage) {
+      wireTransport.connect((payload) => {
+        onServerMessage(decodeServerMessageBinary(payload));
+      });
+    },
+    send(message) {
+      wireTransport.send(encodeClientMessageBinary(message));
+    },
+    dispose() {
+      wireTransport.dispose();
+    },
+  };
   const cursors = new Map();
   const selfIdentity = { uid: null };
 

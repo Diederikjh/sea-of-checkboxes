@@ -1,6 +1,5 @@
 import {
   decodeRle64,
-  parseServerMessage,
 } from "@sea/protocol";
 
 function applyCellUpdateResult({
@@ -51,9 +50,7 @@ export function createServerMessageHandler({
   cursors,
   selfIdentity,
 }) {
-  return (rawMessage) => {
-    const message = parseServerMessage(rawMessage);
-
+  return (message) => {
     switch (message.t) {
       case "hello": {
         selfIdentity.uid = message.uid;

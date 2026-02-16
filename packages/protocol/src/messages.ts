@@ -40,14 +40,17 @@ const cellIndexSchema = nonNegativeIntSchema.refine((value) => isCellIndexValid(
   message: `Expected valid cell index [0, ${TILE_CELL_COUNT - 1}]`,
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const subMessageSchema = strictTaggedMessage("sub", {
   tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const unsubMessageSchema = strictTaggedMessage("unsub", {
   tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const setCellMessageSchema = strictTaggedMessage("setCell", {
   tile: tileKeySchema,
   i: cellIndexSchema,
@@ -55,16 +58,19 @@ export const setCellMessageSchema = strictTaggedMessage("setCell", {
   op: z.string().min(1),
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const cursorMessageSchema = strictTaggedMessage("cur", {
   x: boundedWorldNumberSchema,
   y: boundedWorldNumberSchema,
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const resyncTileMessageSchema = strictTaggedMessage("resyncTile", {
   tile: tileKeySchema,
   haveVer: nonNegativeIntSchema,
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const clientMessageSchema = z.discriminatedUnion("t", [
   subMessageSchema,
   unsubMessageSchema,
@@ -75,11 +81,13 @@ export const clientMessageSchema = z.discriminatedUnion("t", [
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const helloMessageSchema = strictTaggedMessage("hello", {
   uid: z.string().min(1),
   name: z.string().min(1),
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const tileSnapshotSchema = strictTaggedMessage("tileSnap", {
   tile: tileKeySchema,
   ver: nonNegativeIntSchema,
@@ -87,6 +95,7 @@ export const tileSnapshotSchema = strictTaggedMessage("tileSnap", {
   bits: z.string().min(1),
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const cellUpdateSchema = strictTaggedMessage("cellUp", {
   tile: tileKeySchema,
   i: cellIndexSchema,
@@ -94,6 +103,7 @@ export const cellUpdateSchema = strictTaggedMessage("cellUp", {
   ver: nonNegativeIntSchema,
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const cellUpdateBatchSchema = strictTaggedMessage("cellUpBatch", {
   tile: tileKeySchema,
   fromVer: nonNegativeIntSchema,
@@ -101,6 +111,7 @@ export const cellUpdateBatchSchema = strictTaggedMessage("cellUpBatch", {
   ops: z.array(z.tuple([cellIndexSchema, bitValueSchema])),
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const cursorUpdateSchema = strictTaggedMessage("curUp", {
   uid: z.string().min(1),
   name: z.string().min(1),
@@ -108,6 +119,7 @@ export const cursorUpdateSchema = strictTaggedMessage("curUp", {
   y: boundedWorldNumberSchema,
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const errorMessageSchema = strictTaggedMessage("err", {
   code: z.string().min(1),
   msg: z.string().min(1),
@@ -122,6 +134,7 @@ const serverMessageDiscriminatedSchema = z.discriminatedUnion("t", [
   errorMessageSchema,
 ]);
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const serverMessageSchema = serverMessageDiscriminatedSchema.superRefine((value, ctx) => {
   if (value.t === "cellUpBatch" && !hasValidVersionRange(value.fromVer, value.toVer)) {
     ctx.addIssue({
@@ -134,10 +147,12 @@ export const serverMessageSchema = serverMessageDiscriminatedSchema.superRefine(
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export function parseClientMessage(input: unknown): ClientMessage {
   return clientMessageSchema.parse(input);
 }
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export function parseServerMessage(input: unknown): ServerMessage {
   return serverMessageSchema.parse(input);
 }

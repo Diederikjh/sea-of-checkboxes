@@ -1,3 +1,4 @@
+export * from "./binary";
 export * from "./codec";
 export * from "./framing";
 export * from "./messages";

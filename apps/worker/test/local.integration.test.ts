@@ -1,5 +1,11 @@
 import { TILE_CELL_COUNT } from "@sea/domain";
-import { decodeRle64 } from "@sea/protocol";
+import {
+  decodeRle64,
+  decodeServerMessageBinary,
+  encodeClientMessageBinary,
+  type ClientMessage,
+  type ServerMessage,
+} from "@sea/protocol";
 import { describe, expect, it } from "vitest";
 
 import { ConnectionShard } from "../src/local/connectionShard";
@@ -7,11 +13,19 @@ import { LocalRealtimeRuntime } from "../src/local/runtime";
 import type { ClientSink } from "../src/local/types";
 
 function collectMessages() {
-  const messages: unknown[] = [];
-  const sink: ClientSink = (message) => {
-    messages.push(message);
+  const messages: ServerMessage[] = [];
+  const sink: ClientSink = (payload) => {
+    messages.push(decodeServerMessageBinary(payload));
   };
   return { messages, sink };
+}
+
+function sendClient(
+  shard: ConnectionShard,
+  uid: string,
+  message: ClientMessage
+) {
+  shard.receiveFromClient(uid, encodeClientMessageBinary(message));
 }
 
 describe("local ConnectionShard + TileOwner integration", () => {
@@ -26,10 +40,10 @@ describe("local ConnectionShard + TileOwner integration", () => {
     shardA.connectClient("u_a", "Alice", clientA.sink);
     shardB.connectClient("u_b", "Bob", clientB.sink);
 
-    shardA.receiveFromClient("u_a", { t: "sub", tiles: ["0:0"] });
-    shardB.receiveFromClient("u_b", { t: "sub", tiles: ["0:0"] });
+    sendClient(shardA, "u_a", { t: "sub", tiles: ["0:0"] });
+    sendClient(shardB, "u_b", { t: "sub", tiles: ["0:0"] });
 
-    shardA.receiveFromClient("u_a", {
+    sendClient(shardA, "u_a", {
       t: "setCell",
       tile: "0:0",
       i: 10,
@@ -37,21 +51,9 @@ describe("local ConnectionShard + TileOwner integration", () => {
       op: "op_1",
     });
 
-    const aHasBatch = clientA.messages.some(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        "t" in message &&
-        (message as { t: string }).t === "cellUpBatch"
-    );
+    const aHasBatch = clientA.messages.some((message) => message.t === "cellUpBatch");
 
-    const bHasBatch = clientB.messages.some(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        "t" in message &&
-        (message as { t: string }).t === "cellUpBatch"
-    );
+    const bHasBatch = clientB.messages.some((message) => message.t === "cellUpBatch");
 
     expect(aHasBatch).toBe(true);
     expect(bHasBatch).toBe(true);
@@ -66,7 +68,8 @@ describe("local ConnectionShard + TileOwner integration", () => {
     let localVersion = 0;
     let localBits: Uint8Array<ArrayBufferLike> = new Uint8Array(TILE_CELL_COUNT);
 
-    const sink: ClientSink = (message) => {
+    const sink: ClientSink = (payload) => {
+      const message = decodeServerMessageBinary(payload);
       if (message.t === "tileSnap") {
         localBits = decodeRle64(message.bits, TILE_CELL_COUNT);
         localVersion = message.ver;
@@ -83,7 +86,7 @@ describe("local ConnectionShard + TileOwner integration", () => {
       }
 
       if (message.fromVer !== localVersion + 1) {
-        shard.receiveFromClient(uid, {
+        sendClient(shard, uid, {
           t: "resyncTile",
           tile: message.tile,
           haveVer: localVersion,
@@ -98,16 +101,16 @@ describe("local ConnectionShard + TileOwner integration", () => {
     };
 
     shard.connectClient(uid, "Client", sink);
-    shard.receiveFromClient(uid, { t: "sub", tiles: ["0:0"] });
+    sendClient(shard, uid, { t: "sub", tiles: ["0:0"] });
 
-    shard.receiveFromClient(uid, {
+    sendClient(shard, uid, {
       t: "setCell",
       tile: "0:0",
       i: 1,
       v: 1,
       op: "op_1",
     });
-    shard.receiveFromClient(uid, {
+    sendClient(shard, uid, {
       t: "setCell",
       tile: "0:0",
       i: 2,
@@ -128,22 +131,22 @@ describe("local ConnectionShard + TileOwner integration", () => {
     });
 
     const messages: Array<{ t: string; code?: string }> = [];
-    shard.connectClient("u_a", "Alice", (message) => {
-      messages.push(message as { t: string; code?: string });
+    shard.connectClient("u_a", "Alice", (payload) => {
+      messages.push(decodeServerMessageBinary(payload) as { t: string; code?: string });
     });
 
     for (let index = 0; index < 300; index += 1) {
-      shard.receiveFromClient("u_a", { t: "sub", tiles: [`${index}:0`] });
+      sendClient(shard, "u_a", { t: "sub", tiles: [`${index}:0`] });
     }
 
-    shard.receiveFromClient("u_a", { t: "sub", tiles: ["300:0"] });
+    sendClient(shard, "u_a", { t: "sub", tiles: ["300:0"] });
 
     for (let index = 0; index < 300; index += 1) {
-      shard.receiveFromClient("u_a", { t: "unsub", tiles: [`${index}:0`] });
-      shard.receiveFromClient("u_a", { t: "sub", tiles: [`${index}:0`] });
+      sendClient(shard, "u_a", { t: "unsub", tiles: [`${index}:0`] });
+      sendClient(shard, "u_a", { t: "sub", tiles: [`${index}:0`] });
     }
 
-    shard.receiveFromClient("u_a", { t: "sub", tiles: ["999:0"] });
+    sendClient(shard, "u_a", { t: "sub", tiles: ["999:0"] });
 
     const subLimitErrors = messages.filter((msg) => msg.t === "err" && msg.code === "sub_limit");
     const churnErrors = messages.filter((msg) => msg.t === "err" && msg.code === "churn_limit");
@@ -152,7 +155,7 @@ describe("local ConnectionShard + TileOwner integration", () => {
     expect(churnErrors.length).toBeGreaterThan(0);
 
     nowMs += 61_000;
-    shard.receiveFromClient("u_a", { t: "sub", tiles: ["1001:0"] });
+    sendClient(shard, "u_a", { t: "sub", tiles: ["1001:0"] });
     const newChurnErrors = messages.filter((msg) => msg.t === "err" && msg.code === "churn_limit");
     expect(newChurnErrors.length).toBe(churnErrors.length);
   });

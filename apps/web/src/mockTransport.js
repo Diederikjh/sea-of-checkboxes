@@ -1,8 +1,9 @@
 import { TILE_CELL_COUNT, TILE_ENCODING } from "@sea/domain";
 import {
   createEmptyTileState,
+  decodeClientMessageBinary,
   encodeRle64,
-  parseClientMessage,
+  encodeServerMessageBinary,
 } from "@sea/protocol";
 
 const BOT_NAMES = ["BriskOtter481", "QuietFalcon233", "AmberBadger090"];
@@ -28,7 +29,7 @@ function createEmptyTileRecord() {
 export class MockTransport {
   #clientId;
   #name;
-  #onServerMessage;
+  #onServerPayload;
   #tileMap;
   #subscribedTiles;
   #botTimer;
@@ -36,14 +37,14 @@ export class MockTransport {
   constructor() {
     this.#clientId = generateId("u");
     this.#name = BOT_NAMES[randomInt(BOT_NAMES.length)];
-    this.#onServerMessage = () => {};
+    this.#onServerPayload = () => {};
     this.#tileMap = new Map();
     this.#subscribedTiles = new Set();
     this.#botTimer = null;
   }
 
-  connect(onServerMessage) {
-    this.#onServerMessage = onServerMessage;
+  connect(onServerPayload) {
+    this.#onServerPayload = onServerPayload;
     this.#emit({
       t: "hello",
       uid: this.#clientId,
@@ -60,8 +61,8 @@ export class MockTransport {
     }
   }
 
-  send(rawMessage) {
-    const message = parseClientMessage(rawMessage);
+  send(payload) {
+    const message = decodeClientMessageBinary(payload);
 
     switch (message.t) {
       case "sub": {
@@ -146,7 +147,7 @@ export class MockTransport {
   }
 
   #emit(message) {
-    this.#onServerMessage(message);
+    this.#onServerPayload(encodeServerMessageBinary(message));
   }
 
   #startBotCursorFeed() {

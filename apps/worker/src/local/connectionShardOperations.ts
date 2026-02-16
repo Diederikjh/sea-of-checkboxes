@@ -12,7 +12,11 @@ import type { ClientMessage } from "@sea/protocol";
 import { recordWithinLimit } from "./rateLimiter";
 import type { LocalRealtimeRuntime } from "./runtime";
 import type { TileWatcher } from "./types";
-import { sendClientError, type ClientRecord } from "./connectionShardClient";
+import {
+  sendClientError,
+  sendServerMessage,
+  type ClientRecord,
+} from "./connectionShardClient";
 
 interface ConnectionShardOpsContext {
   shardId: string;
@@ -105,7 +109,7 @@ export function handleSubMessage(
     subscribers.add(client.uid);
     const owner = context.runtime.getTileOwner(tileKey);
     owner.registerWatcher(context.watcher);
-    client.sink(owner.getSnapshotMessage());
+    sendServerMessage(client, owner.getSnapshotMessage());
   }
 }
 
@@ -193,7 +197,7 @@ export function handleResyncMessage(
   }
 
   const owner = context.runtime.getTileOwner(tileKey);
-  client.sink(owner.getSnapshotMessage());
+  sendServerMessage(client, owner.getSnapshotMessage());
 }
 
 export function handleCursorMessage(
@@ -207,7 +211,7 @@ export function handleCursorMessage(
       continue;
     }
 
-    target.sink({
+    sendServerMessage(target, {
       t: "curUp",
       uid: client.uid,
       name: client.name,

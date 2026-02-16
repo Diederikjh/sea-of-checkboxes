@@ -1,4 +1,6 @@
 import {
+  decodeClientMessageBinary,
+  decodeServerMessageBinary,
   parseClientMessage,
   type ClientMessage,
 } from "@sea/protocol";
@@ -6,6 +8,7 @@ import {
 import {
   createClientRecord,
   sendClientError,
+  sendServerMessage,
   type ClientRecord,
 } from "./connectionShardClient";
 import {
@@ -17,7 +20,12 @@ import {
   handleUnsubMessage,
 } from "./connectionShardOperations";
 import type { LocalRealtimeRuntime } from "./runtime";
-import type { ClientSink, TileBatchMessage, TileWatcher } from "./types";
+import type {
+  ClientSink,
+  JsonClientSink,
+  TileBatchMessage,
+  TileWatcher,
+} from "./types";
 
 interface ConnectionShardOptions {
   nowMs?: () => number;
@@ -42,14 +50,39 @@ export class ConnectionShard implements TileWatcher {
   connectClient(uid: string, name: string, sink: ClientSink): void {
     const record = createClientRecord(uid, name, sink);
     this.#clients.set(uid, record);
-    sink({ t: "hello", uid, name });
+    sendServerMessage(record, { t: "hello", uid, name });
+  }
+
+  /** @deprecated Prefer `connectClient` with binary `ClientSink` payloads. */
+  connectClientJson(uid: string, name: string, sink: JsonClientSink): void {
+    this.connectClient(uid, name, (payload) => {
+      sink(decodeServerMessageBinary(payload));
+    });
   }
 
   disconnectClient(uid: string): void {
     disconnectClientFromShard(this.#context(), uid);
   }
 
-  receiveFromClient(uid: string, rawMessage: unknown): void {
+  receiveFromClient(uid: string, payload: Uint8Array): void {
+    const client = this.#clients.get(uid);
+    if (!client) {
+      return;
+    }
+
+    let message: ClientMessage;
+    try {
+      message = decodeClientMessageBinary(payload);
+    } catch {
+      sendClientError(client, "bad_message", "Invalid message payload");
+      return;
+    }
+
+    this.#handleClientMessage(client, message);
+  }
+
+  /** @deprecated Prefer `receiveFromClient` with binary payloads. */
+  receiveFromClientJson(uid: string, rawMessage: unknown): void {
     const client = this.#clients.get(uid);
     if (!client) {
       return;
@@ -63,6 +96,25 @@ export class ConnectionShard implements TileWatcher {
       return;
     }
 
+    this.#handleClientMessage(client, message);
+  }
+
+  receiveTileBatch(message: TileBatchMessage): void {
+    const localSubscribers = this.#tileToClients.get(message.tile);
+    if (!localSubscribers || localSubscribers.size === 0) {
+      return;
+    }
+
+    for (const uid of localSubscribers) {
+      const client = this.#clients.get(uid);
+      if (!client) {
+        continue;
+      }
+      sendServerMessage(client, message);
+    }
+  }
+
+  #handleClientMessage(client: ClientRecord, message: ClientMessage): void {
     const context = this.#context();
     switch (message.t) {
       case "sub":
@@ -82,18 +134,6 @@ export class ConnectionShard implements TileWatcher {
         return;
       default:
         return;
-    }
-  }
-
-  receiveTileBatch(message: TileBatchMessage): void {
-    const localSubscribers = this.#tileToClients.get(message.tile);
-    if (!localSubscribers || localSubscribers.size === 0) {
-      return;
-    }
-
-    for (const uid of localSubscribers) {
-      const client = this.#clients.get(uid);
-      client?.sink(message);
     }
   }
 
