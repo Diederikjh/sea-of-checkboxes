@@ -13,12 +13,12 @@ import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { logger } from "./logger";
-import { createMockTransport } from "./mockTransport";
 import { renderScene } from "./renderer";
 import { smoothCursors } from "./cursorSmoothing";
 import { createServerMessageHandler } from "./serverMessages";
 import { reconcileSubscriptions } from "./subscriptions";
 import { TileStore } from "./tileStore";
+import { createWireTransport } from "./wireTransport";
 
 function formatByteCount(bytes) {
   if (bytes < 1024) {
@@ -107,7 +107,7 @@ export async function startApp() {
   const camera = createCamera();
   const tileStore = new TileStore(512);
   const heatStore = new HeatStore();
-  const wireTransport = createMockTransport();
+  const wireTransport = createWireTransport();
   const transport = {
     connect(onServerMessage) {
       wireTransport.connect((payload) => {
