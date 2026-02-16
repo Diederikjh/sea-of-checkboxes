@@ -3,6 +3,45 @@ import {
   parseServerMessage,
 } from "@sea/protocol";
 
+function applyCellUpdateResult({
+  result,
+  tile,
+  changedIndices,
+  transport,
+  heatStore,
+}) {
+  if (result.gap) {
+    transport.send({ t: "resyncTile", tile, haveVer: Math.max(0, result.haveVer) });
+    return;
+  }
+
+  const now = Date.now();
+  for (const index of changedIndices) {
+    heatStore.bump(tile, index, now);
+  }
+}
+
+function upsertRemoteCursor(cursors, message, seenAt) {
+  const current = cursors.get(message.uid);
+  if (current) {
+    current.name = message.name;
+    current.x = message.x;
+    current.y = message.y;
+    current.seenAt = seenAt;
+    return;
+  }
+
+  cursors.set(message.uid, {
+    uid: message.uid,
+    name: message.name,
+    x: message.x,
+    y: message.y,
+    drawX: message.x,
+    drawY: message.y,
+    seenAt,
+  });
+}
+
 export function createServerMessageHandler({
   identityEl,
   setStatus,
@@ -29,23 +68,24 @@ export function createServerMessageHandler({
       }
       case "cellUp": {
         const result = tileStore.applySingle(message.tile, message.i, message.v, message.ver);
-        if (result.gap) {
-          transport.send({ t: "resyncTile", tile: message.tile, haveVer: Math.max(0, result.haveVer) });
-        } else {
-          heatStore.bump(message.tile, message.i, Date.now());
-        }
+        applyCellUpdateResult({
+          result,
+          tile: message.tile,
+          changedIndices: [message.i],
+          transport,
+          heatStore,
+        });
         break;
       }
       case "cellUpBatch": {
         const result = tileStore.applyBatch(message.tile, message.fromVer, message.toVer, message.ops);
-        if (result.gap) {
-          transport.send({ t: "resyncTile", tile: message.tile, haveVer: Math.max(0, result.haveVer) });
-        } else {
-          const now = Date.now();
-          for (const [index] of message.ops) {
-            heatStore.bump(message.tile, index, now);
-          }
-        }
+        applyCellUpdateResult({
+          result,
+          tile: message.tile,
+          changedIndices: message.ops.map(([index]) => index),
+          transport,
+          heatStore,
+        });
         break;
       }
       case "curUp": {
@@ -53,24 +93,7 @@ export function createServerMessageHandler({
           break;
         }
 
-        const seenAt = Date.now();
-        const current = cursors.get(message.uid);
-        if (current) {
-          current.name = message.name;
-          current.x = message.x;
-          current.y = message.y;
-          current.seenAt = seenAt;
-        } else {
-          cursors.set(message.uid, {
-            uid: message.uid,
-            name: message.name,
-            x: message.x,
-            y: message.y,
-            drawX: message.x,
-            drawY: message.y,
-            seenAt,
-          });
-        }
+        upsertRemoteCursor(cursors, message, Date.now());
         break;
       }
       case "err": {

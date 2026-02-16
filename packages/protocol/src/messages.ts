@@ -7,6 +7,22 @@ import {
 } from "@sea/domain";
 import { z } from "zod";
 
+function strictTaggedMessage<TTag extends string, TShape extends z.ZodRawShape>(
+  tag: TTag,
+  shape: TShape
+) {
+  return z
+    .object({
+      t: z.literal(tag),
+      ...shape,
+    })
+    .strict();
+}
+
+export function hasValidVersionRange(fromVer: number, toVer: number): boolean {
+  return toVer >= fromVer;
+}
+
 const tileKeySchema = z.string().regex(/^-?\d+:-?\d+$/);
 const bitValueSchema = z.union([z.literal(0), z.literal(1)]);
 
@@ -24,45 +40,30 @@ const cellIndexSchema = nonNegativeIntSchema.refine((value) => isCellIndexValid(
   message: `Expected valid cell index [0, ${TILE_CELL_COUNT - 1}]`,
 });
 
-export const subMessageSchema = z
-  .object({
-    t: z.literal("sub"),
-    tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
-  })
-  .strict();
+export const subMessageSchema = strictTaggedMessage("sub", {
+  tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
+});
 
-export const unsubMessageSchema = z
-  .object({
-    t: z.literal("unsub"),
-    tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
-  })
-  .strict();
+export const unsubMessageSchema = strictTaggedMessage("unsub", {
+  tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
+});
 
-export const setCellMessageSchema = z
-  .object({
-    t: z.literal("setCell"),
-    tile: tileKeySchema,
-    i: cellIndexSchema,
-    v: bitValueSchema,
-    op: z.string().min(1),
-  })
-  .strict();
+export const setCellMessageSchema = strictTaggedMessage("setCell", {
+  tile: tileKeySchema,
+  i: cellIndexSchema,
+  v: bitValueSchema,
+  op: z.string().min(1),
+});
 
-export const cursorMessageSchema = z
-  .object({
-    t: z.literal("cur"),
-    x: boundedWorldNumberSchema,
-    y: boundedWorldNumberSchema,
-  })
-  .strict();
+export const cursorMessageSchema = strictTaggedMessage("cur", {
+  x: boundedWorldNumberSchema,
+  y: boundedWorldNumberSchema,
+});
 
-export const resyncTileMessageSchema = z
-  .object({
-    t: z.literal("resyncTile"),
-    tile: tileKeySchema,
-    haveVer: nonNegativeIntSchema,
-  })
-  .strict();
+export const resyncTileMessageSchema = strictTaggedMessage("resyncTile", {
+  tile: tileKeySchema,
+  haveVer: nonNegativeIntSchema,
+});
 
 export const clientMessageSchema = z.discriminatedUnion("t", [
   subMessageSchema,
@@ -74,61 +75,43 @@ export const clientMessageSchema = z.discriminatedUnion("t", [
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
-export const helloMessageSchema = z
-  .object({
-    t: z.literal("hello"),
-    uid: z.string().min(1),
-    name: z.string().min(1),
-  })
-  .strict();
+export const helloMessageSchema = strictTaggedMessage("hello", {
+  uid: z.string().min(1),
+  name: z.string().min(1),
+});
 
-export const tileSnapshotSchema = z
-  .object({
-    t: z.literal("tileSnap"),
-    tile: tileKeySchema,
-    ver: nonNegativeIntSchema,
-    enc: z.literal(TILE_ENCODING),
-    bits: z.string().min(1),
-  })
-  .strict();
+export const tileSnapshotSchema = strictTaggedMessage("tileSnap", {
+  tile: tileKeySchema,
+  ver: nonNegativeIntSchema,
+  enc: z.literal(TILE_ENCODING),
+  bits: z.string().min(1),
+});
 
-export const cellUpdateSchema = z
-  .object({
-    t: z.literal("cellUp"),
-    tile: tileKeySchema,
-    i: cellIndexSchema,
-    v: bitValueSchema,
-    ver: nonNegativeIntSchema,
-  })
-  .strict();
+export const cellUpdateSchema = strictTaggedMessage("cellUp", {
+  tile: tileKeySchema,
+  i: cellIndexSchema,
+  v: bitValueSchema,
+  ver: nonNegativeIntSchema,
+});
 
-export const cellUpdateBatchSchema = z
-  .object({
-    t: z.literal("cellUpBatch"),
-    tile: tileKeySchema,
-    fromVer: nonNegativeIntSchema,
-    toVer: nonNegativeIntSchema,
-    ops: z.array(z.tuple([cellIndexSchema, bitValueSchema])),
-  })
-  .strict();
+export const cellUpdateBatchSchema = strictTaggedMessage("cellUpBatch", {
+  tile: tileKeySchema,
+  fromVer: nonNegativeIntSchema,
+  toVer: nonNegativeIntSchema,
+  ops: z.array(z.tuple([cellIndexSchema, bitValueSchema])),
+});
 
-export const cursorUpdateSchema = z
-  .object({
-    t: z.literal("curUp"),
-    uid: z.string().min(1),
-    name: z.string().min(1),
-    x: boundedWorldNumberSchema,
-    y: boundedWorldNumberSchema,
-  })
-  .strict();
+export const cursorUpdateSchema = strictTaggedMessage("curUp", {
+  uid: z.string().min(1),
+  name: z.string().min(1),
+  x: boundedWorldNumberSchema,
+  y: boundedWorldNumberSchema,
+});
 
-export const errorMessageSchema = z
-  .object({
-    t: z.literal("err"),
-    code: z.string().min(1),
-    msg: z.string().min(1),
-  })
-  .strict();
+export const errorMessageSchema = strictTaggedMessage("err", {
+  code: z.string().min(1),
+  msg: z.string().min(1),
+});
 
 const serverMessageDiscriminatedSchema = z.discriminatedUnion("t", [
   helloMessageSchema,
@@ -140,7 +123,7 @@ const serverMessageDiscriminatedSchema = z.discriminatedUnion("t", [
 ]);
 
 export const serverMessageSchema = serverMessageDiscriminatedSchema.superRefine((value, ctx) => {
-  if (value.t === "cellUpBatch" && value.toVer < value.fromVer) {
+  if (value.t === "cellUpBatch" && !hasValidVersionRange(value.fromVer, value.toVer)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "toVer must be >= fromVer",

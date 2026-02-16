@@ -28,6 +28,26 @@ function isValidTileKey(tileKey: string): boolean {
   return parsed !== null && isTileCoordInBounds(parsed.tx, parsed.ty);
 }
 
+function consumeChurnOrError(
+  context: ConnectionShardOpsContext,
+  client: ClientRecord
+): boolean {
+  const nowMs = context.nowMs();
+  const allowed = recordWithinLimit(
+    client.churnTimestamps,
+    nowMs,
+    60_000,
+    MAX_TILE_CHURN_PER_MIN
+  );
+
+  if (!allowed) {
+    sendClientError(client, "churn_limit", "Tile churn limit exceeded");
+    return false;
+  }
+
+  return true;
+}
+
 export function disconnectClientFromShard(context: ConnectionShardOpsContext, uid: string): void {
   const client = context.clients.get(uid);
   if (!client) {
@@ -65,9 +85,7 @@ export function handleSubMessage(
       return;
     }
 
-    const nowMs = context.nowMs();
-    if (!recordWithinLimit(client.churnTimestamps, nowMs, 60_000, MAX_TILE_CHURN_PER_MIN)) {
-      sendClientError(client, "churn_limit", "Tile churn limit exceeded");
+    if (!consumeChurnOrError(context, client)) {
       return;
     }
 
@@ -101,9 +119,7 @@ export function handleUnsubMessage(
       continue;
     }
 
-    const nowMs = context.nowMs();
-    if (!recordWithinLimit(client.churnTimestamps, nowMs, 60_000, MAX_TILE_CHURN_PER_MIN)) {
-      sendClientError(client, "churn_limit", "Tile churn limit exceeded");
+    if (!consumeChurnOrError(context, client)) {
       return;
     }
 
