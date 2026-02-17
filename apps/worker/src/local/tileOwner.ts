@@ -54,6 +54,19 @@ export class TileOwner {
     return this.#ver;
   }
 
+  loadSnapshot(bits: Uint8Array, ver: number): void {
+    if (!Number.isInteger(ver) || ver < 0) {
+      throw new Error(`Invalid tile version: ${ver}`);
+    }
+
+    if (bits.length !== this.#bits.length) {
+      throw new Error(`Invalid bit length: expected ${this.#bits.length}, got ${bits.length}`);
+    }
+
+    this.#bits = bits.slice();
+    this.#ver = ver;
+  }
+
   applySetCell(intent: SetCellIntent): SetCellResult {
     if (!isCellIndexValid(intent.i)) {
       return {

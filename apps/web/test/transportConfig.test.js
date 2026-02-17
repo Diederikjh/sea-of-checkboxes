@@ -25,7 +25,14 @@ describe("transport config", () => {
         { protocol: "http:", host: "localhost:5173" },
         {}
       )
-    ).toBe("ws://localhost:5173/ws");
+    ).toBe("ws://127.0.0.1:8787/ws");
+
+    expect(
+      resolveWebSocketUrl(
+        { protocol: "http:", host: "127.0.0.1:5173" },
+        {}
+      )
+    ).toBe("ws://127.0.0.1:8787/ws");
 
     expect(
       resolveWebSocketUrl(
@@ -39,4 +46,3 @@ describe("transport config", () => {
     expect(resolveWebSocketUrl(undefined, {})).toBe("ws://127.0.0.1:8787/ws");
   });
 });
-

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createWebSocketTransport } from "../src/webSocketTransport";
 
@@ -71,5 +71,51 @@ describe("websocket transport", () => {
 
     expect(socket.closed).toBe(true);
   });
-});
 
+  it("reconnects after close and flushes queued sends", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [];
+      const transport = createWebSocketTransport("ws://example/ws", {
+        wsFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.connect(() => {});
+      expect(sockets).toHaveLength(1);
+
+      const first = sockets[0];
+      expect(first).toBeDefined();
+      if (!first) {
+        return;
+      }
+
+      first.readyState = 1;
+      first.onopen?.();
+
+      first.readyState = 3;
+      first.onclose?.();
+
+      const queuedPayload = Uint8Array.from([4, 5, 6]);
+      transport.send(queuedPayload);
+
+      vi.advanceTimersByTime(250);
+      expect(sockets).toHaveLength(2);
+
+      const second = sockets[1];
+      expect(second).toBeDefined();
+      if (!second) {
+        return;
+      }
+
+      second.readyState = 1;
+      second.onopen?.();
+      expect(second.sent).toEqual([queuedPayload]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

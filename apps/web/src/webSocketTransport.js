@@ -1,4 +1,9 @@
+import { logger } from "./logger";
+
 const SOCKET_OPEN = 1;
+const MIN_RECONNECT_MS = 250;
+const MAX_RECONNECT_MS = 4_000;
+const MAX_PENDING_SENDS = 512;
 
 function toUint8Array(messageData) {
   if (messageData instanceof Uint8Array) {
@@ -18,6 +23,9 @@ export class WebSocketTransport {
   #socket;
   #onServerPayload;
   #pendingSends;
+  #disposed;
+  #reconnectDelayMs;
+  #reconnectTimer;
 
   constructor(url, options = {}) {
     this.#url = url;
@@ -25,30 +33,15 @@ export class WebSocketTransport {
     this.#socket = null;
     this.#onServerPayload = () => {};
     this.#pendingSends = [];
+    this.#disposed = false;
+    this.#reconnectDelayMs = MIN_RECONNECT_MS;
+    this.#reconnectTimer = null;
   }
 
   connect(onServerPayload) {
+    this.#disposed = false;
     this.#onServerPayload = onServerPayload;
-
-    const socket = this.#wsFactory(this.#url);
-    socket.binaryType = "arraybuffer";
-    socket.onmessage = (event) => {
-      const payload = toUint8Array(event.data);
-      if (!payload) {
-        return;
-      }
-      this.#onServerPayload(payload);
-    };
-    socket.onopen = () => {
-      this.#flushPending();
-    };
-    socket.onclose = () => {
-      if (this.#socket === socket) {
-        this.#socket = null;
-      }
-    };
-
-    this.#socket = socket;
+    this.#openSocket();
   }
 
   send(payload) {
@@ -57,11 +50,17 @@ export class WebSocketTransport {
       return;
     }
 
+    if (this.#pendingSends.length >= MAX_PENDING_SENDS) {
+      this.#pendingSends.shift();
+      logger.other("ws queue_drop_oldest", { max: MAX_PENDING_SENDS });
+    }
     this.#pendingSends.push(payload);
   }
 
   dispose() {
+    this.#disposed = true;
     this.#pendingSends.length = 0;
+    this.#clearReconnectTimer();
 
     if (!this.#socket) {
       return;
@@ -84,6 +83,77 @@ export class WebSocketTransport {
       }
       this.#socket.send(payload);
     }
+  }
+
+  #openSocket() {
+    this.#clearReconnectTimer();
+    if (this.#disposed) {
+      return;
+    }
+
+    const socket = this.#wsFactory(this.#url);
+    socket.binaryType = "arraybuffer";
+    socket.onmessage = (event) => {
+      const payload = toUint8Array(event.data);
+      if (!payload) {
+        return;
+      }
+      this.#onServerPayload(payload);
+    };
+    socket.onopen = () => {
+      if (this.#socket !== socket) {
+        return;
+      }
+
+      this.#reconnectDelayMs = MIN_RECONNECT_MS;
+      logger.other("ws open", { url: this.#url });
+      this.#flushPending();
+    };
+    socket.onclose = () => {
+      if (this.#socket === socket) {
+        this.#socket = null;
+      }
+
+      logger.other("ws close", {
+        url: this.#url,
+        pending: this.#pendingSends.length,
+        disposed: this.#disposed,
+      });
+
+      if (!this.#disposed) {
+        this.#scheduleReconnect();
+      }
+    };
+    socket.onerror = () => {
+      // onclose drives reconnect scheduling
+    };
+
+    this.#socket = socket;
+  }
+
+  #scheduleReconnect() {
+    if (this.#reconnectTimer !== null || this.#disposed) {
+      return;
+    }
+
+    const delayMs = this.#reconnectDelayMs;
+    this.#reconnectDelayMs = Math.min(MAX_RECONNECT_MS, this.#reconnectDelayMs * 2);
+    logger.other("ws reconnect_scheduled", {
+      delayMs,
+      pending: this.#pendingSends.length,
+    });
+    this.#reconnectTimer = setTimeout(() => {
+      this.#reconnectTimer = null;
+      this.#openSocket();
+    }, delayMs);
+  }
+
+  #clearReconnectTimer() {
+    if (this.#reconnectTimer === null) {
+      return;
+    }
+    clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = null;
   }
 }
 

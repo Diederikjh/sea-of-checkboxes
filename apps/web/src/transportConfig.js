@@ -26,7 +26,11 @@ export function resolveWebSocketUrl(
     return "ws://127.0.0.1:8787/ws";
   }
 
+  const host = locationLike.host.toLowerCase();
+  if (host === "localhost:5173" || host === "127.0.0.1:5173") {
+    return "ws://127.0.0.1:8787/ws";
+  }
+
   const protocol = locationLike.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${locationLike.host}/ws`;
 }
-

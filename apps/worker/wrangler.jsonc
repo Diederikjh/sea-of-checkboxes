@@ -1,0 +1,25 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sea-of-checkboxes-worker",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-02-16",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONNECTION_SHARD",
+        "class_name": "ConnectionShardDO"
+      },
+      {
+        "name": "TILE_OWNER",
+        "class_name": "TileOwnerDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ConnectionShardDO", "TileOwnerDO"]
+    }
+  ]
+}
+

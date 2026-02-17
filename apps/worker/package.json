@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "echo 'wrangler dev not configured yet; local integration uses Vitest'",
+    "dev": "pnpm dlx wrangler dev --local --config wrangler.jsonc --port 8787",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo 'lint not configured for @sea/worker'"

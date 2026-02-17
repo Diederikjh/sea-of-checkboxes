@@ -41,7 +41,7 @@ describe("wire transport selection", () => {
     expect(transport).toEqual({ mode: "ws" });
     expect(mocks.createWebSocketTransport).toHaveBeenCalledTimes(1);
     expect(mocks.createWebSocketTransport).toHaveBeenCalledWith(
-      "ws://localhost:5173/ws",
+      "ws://127.0.0.1:8787/ws",
       expect.any(Object)
     );
     expect(mocks.createMockTransport).not.toHaveBeenCalled();
@@ -76,4 +76,3 @@ describe("wire transport selection", () => {
     );
   });
 });
-
