@@ -6,6 +6,7 @@ import {
 import { canEditAtZoom, zoomCamera } from "./camera";
 import { toWorldCell } from "./coords";
 import { updateZoomReadout } from "./dom";
+import { logger } from "./logger";
 
 function createOpId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -70,7 +71,16 @@ export function setupInputHandlers({
     lastCursorSent = now;
     const { width, height } = getViewportSize();
     const world = toWorldCell(event.clientX, event.clientY, camera, width, height);
-    transport.send({ t: "cur", x: world.x + 0.5, y: world.y + 0.5 });
+    const payload = { t: "cur", x: world.x + 0.5, y: world.y + 0.5 };
+    logger.ui("cursor_emit", {
+      screenX: event.clientX,
+      screenY: event.clientY,
+      worldX: world.x,
+      worldY: world.y,
+      boardX: payload.x,
+      boardY: payload.y,
+    });
+    transport.send(payload);
   };
 
   const onPointerUp = (event) => {
@@ -83,6 +93,11 @@ export function setupInputHandlers({
     }
 
     if (!canEditAtZoom(camera)) {
+      logger.ui("click_blocked", {
+        reason: "zoom",
+        screenX: event.clientX,
+        screenY: event.clientY,
+      });
       setStatus("Zoom in to edit");
       dragStart = null;
       return;
@@ -95,6 +110,17 @@ export function setupInputHandlers({
     const nowMs = Date.now();
 
     if (heatStore.isLocallyDisabled(tileKey, cellIndex, nowMs)) {
+      logger.ui("click_blocked", {
+        reason: "cooldown",
+        tile: tileKey,
+        i: cellIndex,
+        screenX: event.clientX,
+        screenY: event.clientY,
+        worldX: world.x,
+        worldY: world.y,
+        boardX: world.x + 0.5,
+        boardY: world.y + 0.5,
+      });
       setStatus("Cell is cooling down locally; try again in a moment");
       dragStart = null;
       return;
@@ -104,13 +130,26 @@ export function setupInputHandlers({
     const currentValue = tileData ? tileData.bits[cellIndex] : 0;
     const nextValue = currentValue === 1 ? 0 : 1;
 
-    transport.send({
+    const payload = {
       t: "setCell",
       tile: tileKey,
       i: cellIndex,
       v: nextValue,
       op: createOpId(),
+    };
+    logger.ui("click_setCell", {
+      screenX: event.clientX,
+      screenY: event.clientY,
+      worldX: world.x,
+      worldY: world.y,
+      boardX: world.x + 0.5,
+      boardY: world.y + 0.5,
+      tile: tileKey,
+      i: cellIndex,
+      currentValue,
+      nextValue,
     });
+    transport.send(payload);
 
     dragStart = null;
   };

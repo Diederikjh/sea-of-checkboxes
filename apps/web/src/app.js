@@ -3,6 +3,10 @@ import {
   Graphics,
 } from "pixi.js";
 import {
+  parseTileKeyStrict,
+  worldFromTileCell,
+} from "@sea/domain";
+import {
   decodeServerMessageBinary,
   encodeClientMessageBinary,
 } from "@sea/protocol";
@@ -47,11 +51,23 @@ function summarizeMessage(message) {
     case "unsub":
       return { t: message.t, tiles: message.tiles.length };
     case "setCell":
-      return { t: message.t, tile: message.tile, i: message.i, v: message.v };
+      return {
+        t: message.t,
+        tile: message.tile,
+        i: message.i,
+        v: message.v,
+        ...deriveBoardCoordFromSetCell(message.tile, message.i),
+      };
     case "resyncTile":
       return { t: message.t, tile: message.tile, haveVer: message.haveVer };
     case "cur":
-      return { t: message.t, x: Number(message.x.toFixed(2)), y: Number(message.y.toFixed(2)) };
+      return {
+        t: message.t,
+        x: Number(message.x.toFixed(2)),
+        y: Number(message.y.toFixed(2)),
+        boardX: Number(message.x.toFixed(2)),
+        boardY: Number(message.y.toFixed(2)),
+      };
     case "hello":
       return { t: message.t, uid: message.uid, name: message.name };
     case "tileSnap":
@@ -73,11 +89,32 @@ function summarizeMessage(message) {
         name: message.name,
         x: Number(message.x.toFixed(2)),
         y: Number(message.y.toFixed(2)),
+        boardX: Number(message.x.toFixed(2)),
+        boardY: Number(message.y.toFixed(2)),
       };
     case "err":
       return { t: message.t, code: message.code };
     default:
       return { t: message.t };
+  }
+}
+
+function deriveBoardCoordFromSetCell(tileKey, index) {
+  const tile = parseTileKeyStrict(tileKey);
+  if (!tile) {
+    return {};
+  }
+
+  try {
+    const world = worldFromTileCell(tile.tx, tile.ty, index);
+    return {
+      worldX: world.x,
+      worldY: world.y,
+      boardX: Number((world.x + 0.5).toFixed(2)),
+      boardY: Number((world.y + 0.5).toFixed(2)),
+    };
+  } catch {
+    return {};
   }
 }
 

@@ -1,5 +1,6 @@
 const LOG_CATEGORIES = Object.freeze({
   PROTOCOL: "protocol",
+  UI: "ui",
   OTHER: "other",
 });
 
@@ -35,8 +36,14 @@ function readEnabledCategories() {
     toBool(params.get("log_other")) ||
     fromLogsParam.has(LOG_CATEGORIES.OTHER);
 
+  const uiEnabled =
+    toBool(env.VITE_LOG_UI) ||
+    toBool(params.get("log_ui")) ||
+    fromLogsParam.has(LOG_CATEGORIES.UI);
+
   return {
     [LOG_CATEGORIES.PROTOCOL]: protocolEnabled,
+    [LOG_CATEGORIES.UI]: uiEnabled,
     [LOG_CATEGORIES.OTHER]: otherEnabled,
   };
 }
@@ -64,5 +71,7 @@ export const logger = Object.freeze({
   other(...args) {
     log(LOG_CATEGORIES.OTHER, ...args);
   },
+  ui(...args) {
+    log(LOG_CATEGORIES.UI, ...args);
+  },
 });
-
