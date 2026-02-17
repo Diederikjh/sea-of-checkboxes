@@ -618,6 +618,7 @@ export class TileOwnerDO {
       } else {
         this.#subscriberShards.delete(payload.shard);
       }
+      await this.#persistSubscribers();
 
       return new Response(null, { status: 204 });
     }
@@ -701,6 +702,7 @@ export class TileOwnerDO {
 
     this.#tileKey = tileKey;
     this.#tileOwner = new TileOwner(tileKey);
+    this.#subscriberShards.clear();
     this.#loaded = false;
   }
 
@@ -716,6 +718,15 @@ export class TileOwnerDO {
       this.#tileOwner.loadSnapshot(bits, persisted.ver);
     }
 
+    const subscribers = await this.#state.storage.get<string[]>("subscribers");
+    if (Array.isArray(subscribers)) {
+      for (const shard of subscribers) {
+        if (typeof shard === "string" && shard.length > 0) {
+          this.#subscriberShards.add(shard);
+        }
+      }
+    }
+
     this.#loaded = true;
   }
 
@@ -725,5 +736,9 @@ export class TileOwnerDO {
       bits: snapshot.bits,
       ver: snapshot.ver,
     });
+  }
+
+  async #persistSubscribers(): Promise<void> {
+    await this.#state.storage.put("subscribers", Array.from(this.#subscriberShards));
   }
 }
