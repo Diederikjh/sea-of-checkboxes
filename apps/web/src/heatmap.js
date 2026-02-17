@@ -38,15 +38,21 @@ export class HeatStore {
 
   decay(dtSeconds) {
     if (dtSeconds <= 0) {
-      return;
+      return false;
     }
 
+    let hasVisibleHeat = false;
     const decayFactor = Math.exp(-dtSeconds / HEAT_TAU_SECONDS);
     for (const tile of this.#tiles.values()) {
       for (let index = 0; index < tile.heat.length; index += 1) {
         tile.heat[index] *= decayFactor;
+        if (tile.heat[index] > 0.01) {
+          hasVisibleHeat = true;
+        }
       }
     }
+
+    return hasVisibleHeat;
   }
 
   getHeat(tileKey, index) {

@@ -49,18 +49,21 @@ export function createServerMessageHandler({
   transport,
   cursors,
   selfIdentity,
+  onVisualStateChanged = () => {},
 }) {
   return (message) => {
     switch (message.t) {
       case "hello": {
         selfIdentity.uid = message.uid;
         identityEl.textContent = `You are ${message.name} (${message.uid})`;
+        onVisualStateChanged();
         break;
       }
       case "tileSnap": {
         const bits = decodeRle64(message.bits);
         tileStore.setSnapshot(message.tile, bits, message.ver);
         heatStore.ensureTile(message.tile);
+        onVisualStateChanged();
         break;
       }
       case "cellUp": {
@@ -72,6 +75,7 @@ export function createServerMessageHandler({
           transport,
           heatStore,
         });
+        onVisualStateChanged();
         break;
       }
       case "cellUpBatch": {
@@ -83,6 +87,7 @@ export function createServerMessageHandler({
           transport,
           heatStore,
         });
+        onVisualStateChanged();
         break;
       }
       case "curUp": {
@@ -91,6 +96,7 @@ export function createServerMessageHandler({
         }
 
         upsertRemoteCursor(cursors, message, Date.now());
+        onVisualStateChanged();
         break;
       }
       case "err": {

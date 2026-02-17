@@ -181,6 +181,7 @@ export async function startApp() {
   let subscribedTiles = new Set();
   let visibleTiles = [];
   let needsSubscriptionRefresh = true;
+  let needsRender = true;
 
   const setStatus = (value) => {
     statusEl.textContent = value;
@@ -188,6 +189,11 @@ export async function startApp() {
 
   const markViewportDirty = () => {
     needsSubscriptionRefresh = true;
+    needsRender = true;
+  };
+
+  const markVisualDirty = () => {
+    needsRender = true;
   };
 
   updateZoomReadout(camera, zoomEl);
@@ -201,6 +207,7 @@ export async function startApp() {
       transport,
       cursors,
       selfIdentity,
+      onVisualStateChanged: markVisualDirty,
     })
   );
 
@@ -221,6 +228,7 @@ export async function startApp() {
 
   const onResize = () => {
     needsSubscriptionRefresh = true;
+    needsRender = true;
   };
   window.addEventListener("resize", onResize);
 
@@ -241,11 +249,20 @@ export async function startApp() {
 
   app.ticker.add((ticker) => {
     const dtSeconds = ticker.deltaMS / 1_000;
-    heatStore.decay(dtSeconds);
-    smoothCursors(cursors, dtSeconds);
+    const hasAnimatedHeat = heatStore.decay(dtSeconds);
+    const hasCursorMotion = smoothCursors(cursors, dtSeconds);
+    const now = Date.now();
+    const hasRecentCursor = cursors.size > 0
+      ? [...cursors.values()].some((cursor) => now - cursor.seenAt < 5_000)
+      : false;
 
     if (needsSubscriptionRefresh) {
       syncSubscriptions();
+      needsRender = true;
+    }
+
+    if (!needsRender && !hasAnimatedHeat && !hasCursorMotion && !hasRecentCursor) {
+      return;
     }
 
     const activeCursors = renderScene({
@@ -267,6 +284,7 @@ export async function startApp() {
     );
 
     setStatus(`Tiles loaded: ${subscribedTiles.size}`);
+    needsRender = false;
   });
 
   syncSubscriptions();
