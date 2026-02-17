@@ -251,20 +251,12 @@ export class ConnectionShardDO {
     serverSocket.addEventListener("message", (event: MessageEvent) => {
       const payload = toBinaryPayload(event.data);
       if (!payload) {
-        this.#sendServerMessage(client, {
-          t: "err",
-          code: "bad_message",
-          msg: "Expected binary message payload",
-        });
+        this.#sendError(client, "bad_message", "Expected binary message payload");
         return;
       }
 
       void this.#receiveClientPayload(uid, payload).catch(() => {
-        this.#sendServerMessage(client, {
-          t: "err",
-          code: "internal",
-          msg: "Failed to process client payload",
-        });
+        this.#sendError(client, "internal", "Failed to process client payload");
       });
     });
 
@@ -291,11 +283,7 @@ export class ConnectionShardDO {
     try {
       message = decodeClientMessageBinary(payload);
     } catch {
-      this.#sendServerMessage(client, {
-        t: "err",
-        code: "bad_message",
-        msg: "Invalid message payload",
-      });
+      this.#sendError(client, "bad_message", "Invalid message payload");
       return;
     }
 
@@ -320,11 +308,7 @@ export class ConnectionShardDO {
           return;
       }
     } catch {
-      this.#sendServerMessage(client, {
-        t: "err",
-        code: "internal",
-        msg: "Failed to process message",
-      });
+      this.#sendError(client, "internal", "Failed to process message");
     }
   }
 
@@ -335,20 +319,12 @@ export class ConnectionShardDO {
       }
 
       if (client.subscribed.size >= MAX_TILES_SUBSCRIBED) {
-        this.#sendServerMessage(client, {
-          t: "err",
-          code: "sub_limit",
-          msg: `Max ${MAX_TILES_SUBSCRIBED} tiles subscribed`,
-        });
+        this.#sendError(client, "sub_limit", `Max ${MAX_TILES_SUBSCRIBED} tiles subscribed`);
         return;
       }
 
       if (!isValidTileKey(tileKey)) {
-        this.#sendServerMessage(client, {
-          t: "err",
-          code: "bad_tile",
-          msg: `Invalid tile key ${tileKey}`,
-        });
+        this.#sendBadTile(client, tileKey);
         continue;
       }
 
@@ -367,10 +343,7 @@ export class ConnectionShardDO {
         await this.#watchTile(tileKey, "sub");
       }
 
-      const snapshot = await this.#fetchTileSnapshot(tileKey);
-      if (snapshot) {
-        this.#sendServerMessage(client, snapshot);
-      }
+      await this.#sendSnapshotToClient(client, tileKey);
     }
   }
 
@@ -404,26 +377,14 @@ export class ConnectionShardDO {
     op: string
   ): Promise<void> {
     if (!isValidTileKey(tileKey)) {
-      this.#sendServerMessage(client, {
-        t: "err",
-        code: "bad_tile",
-        msg: `Invalid tile key ${tileKey}`,
-      });
+      this.#sendBadTile(client, tileKey);
       return;
     }
 
     const isSubscribed = client.subscribed.has(tileKey);
     if (!isSubscribed) {
-      this.#sendServerMessage(client, {
-        t: "err",
-        code: "not_subscribed",
-        msg: `Tile ${tileKey} is not currently subscribed`,
-      });
-
-      const snapshot = await this.#fetchTileSnapshot(tileKey);
-      if (snapshot) {
-        this.#sendServerMessage(client, snapshot);
-      }
+      this.#sendError(client, "not_subscribed", `Tile ${tileKey} is not currently subscribed`);
+      await this.#sendSnapshotToClient(client, tileKey);
       return;
     }
 
@@ -439,38 +400,24 @@ export class ConnectionShardDO {
     });
 
     if (!result?.accepted) {
-      this.#sendServerMessage(client, {
-        t: "err",
-        code: "setcell_rejected",
-        msg: result?.reason ?? "Rejected",
-      });
+      this.#sendError(client, "setcell_rejected", result?.reason ?? "Rejected");
       return;
     }
 
     if (!result.changed) {
       // Client may be stale and repeatedly submit no-op writes.
       // Send a fresh snapshot so local cache can converge.
-      const snapshot = await this.#fetchTileSnapshot(tileKey);
-      if (snapshot) {
-        this.#sendServerMessage(client, snapshot);
-      }
+      await this.#sendSnapshotToClient(client, tileKey);
     }
   }
 
   async #handleResync(client: ConnectedClient, tileKey: string): Promise<void> {
     if (!isValidTileKey(tileKey)) {
-      this.#sendServerMessage(client, {
-        t: "err",
-        code: "bad_tile",
-        msg: `Invalid tile key ${tileKey}`,
-      });
+      this.#sendBadTile(client, tileKey);
       return;
     }
 
-    const snapshot = await this.#fetchTileSnapshot(tileKey);
-    if (snapshot) {
-      this.#sendServerMessage(client, snapshot);
-    }
+    await this.#sendSnapshotToClient(client, tileKey);
   }
 
   #handleCursor(client: ConnectedClient, x: number, y: number): void {
@@ -541,7 +488,7 @@ export class ConnectionShardDO {
   }
 
   async #watchTile(tileKey: string, action: "sub" | "unsub"): Promise<void> {
-    const shard = this.#shardName ?? this.#state.id.toString();
+    const shard = this.#currentShardName();
     const payload: TileWatchRequest = {
       tile: tileKey,
       shard,
@@ -583,6 +530,30 @@ export class ConnectionShardDO {
     }
 
     return readJson<TileSetCellResponse>(response);
+  }
+
+  async #sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void> {
+    const snapshot = await this.#fetchTileSnapshot(tileKey);
+    if (!snapshot) {
+      return;
+    }
+    this.#sendServerMessage(client, snapshot);
+  }
+
+  #sendBadTile(client: ConnectedClient, tileKey: string): void {
+    this.#sendError(client, "bad_tile", `Invalid tile key ${tileKey}`);
+  }
+
+  #sendError(client: ConnectedClient, code: string, msg: string): void {
+    this.#sendServerMessage(client, {
+      t: "err",
+      code,
+      msg,
+    });
+  }
+
+  #currentShardName(): string {
+    return this.#shardName ?? this.#state.id.toString();
   }
 }
 

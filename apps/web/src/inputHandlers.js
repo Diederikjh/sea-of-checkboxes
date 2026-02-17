@@ -15,6 +15,17 @@ function createOpId() {
   return `${Date.now()}_${Math.floor(Math.random() * 10_000)}`;
 }
 
+function buildWorldPointerContext(event, world) {
+  return {
+    screenX: event.clientX,
+    screenY: event.clientY,
+    worldX: world.x,
+    worldY: world.y,
+    boardX: world.x + 0.5,
+    boardY: world.y + 0.5,
+  };
+}
+
 export function setupInputHandlers({
   canvas,
   camera,
@@ -72,14 +83,7 @@ export function setupInputHandlers({
     const { width, height } = getViewportSize();
     const world = toWorldCell(event.clientX, event.clientY, camera, width, height);
     const payload = { t: "cur", x: world.x + 0.5, y: world.y + 0.5 };
-    logger.ui("cursor_emit", {
-      screenX: event.clientX,
-      screenY: event.clientY,
-      worldX: world.x,
-      worldY: world.y,
-      boardX: payload.x,
-      boardY: payload.y,
-    });
+    logger.ui("cursor_emit", buildWorldPointerContext(event, world));
     transport.send(payload);
   };
 
@@ -114,12 +118,7 @@ export function setupInputHandlers({
         reason: "cooldown",
         tile: tileKey,
         i: cellIndex,
-        screenX: event.clientX,
-        screenY: event.clientY,
-        worldX: world.x,
-        worldY: world.y,
-        boardX: world.x + 0.5,
-        boardY: world.y + 0.5,
+        ...buildWorldPointerContext(event, world),
       });
       setStatus("Cell is cooling down locally; try again in a moment");
       dragStart = null;
@@ -138,12 +137,7 @@ export function setupInputHandlers({
       op: createOpId(),
     };
     logger.ui("click_setCell", {
-      screenX: event.clientX,
-      screenY: event.clientY,
-      worldX: world.x,
-      worldY: world.y,
-      boardX: world.x + 0.5,
-      boardY: world.y + 0.5,
+      ...buildWorldPointerContext(event, world),
       tile: tileKey,
       i: cellIndex,
       currentValue,

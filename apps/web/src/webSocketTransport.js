@@ -45,7 +45,7 @@ export class WebSocketTransport {
   }
 
   send(payload) {
-    if (this.#socket && this.#socket.readyState === SOCKET_OPEN) {
+    if (this.#isSocketOpen()) {
       this.#socket.send(payload);
       return;
     }
@@ -72,7 +72,7 @@ export class WebSocketTransport {
   }
 
   #flushPending() {
-    if (!this.#socket || this.#socket.readyState !== SOCKET_OPEN) {
+    if (!this.#isSocketOpen()) {
       return;
     }
 
@@ -154,6 +154,10 @@ export class WebSocketTransport {
     }
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
+  }
+
+  #isSocketOpen() {
+    return this.#socket !== null && this.#socket.readyState === SOCKET_OPEN;
   }
 }
 

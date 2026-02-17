@@ -45,6 +45,22 @@ function describePayload(payload) {
   };
 }
 
+function round2(value) {
+  return Number(value.toFixed(2));
+}
+
+function summarizeCursor(message) {
+  const x = round2(message.x);
+  const y = round2(message.y);
+  return {
+    t: message.t,
+    x,
+    y,
+    boardX: x,
+    boardY: y,
+  };
+}
+
 function summarizeMessage(message) {
   switch (message.t) {
     case "sub":
@@ -61,13 +77,7 @@ function summarizeMessage(message) {
     case "resyncTile":
       return { t: message.t, tile: message.tile, haveVer: message.haveVer };
     case "cur":
-      return {
-        t: message.t,
-        x: Number(message.x.toFixed(2)),
-        y: Number(message.y.toFixed(2)),
-        boardX: Number(message.x.toFixed(2)),
-        boardY: Number(message.y.toFixed(2)),
-      };
+      return summarizeCursor(message);
     case "hello":
       return { t: message.t, uid: message.uid, name: message.name };
     case "tileSnap":
@@ -84,13 +94,9 @@ function summarizeMessage(message) {
       };
     case "curUp":
       return {
-        t: message.t,
         uid: message.uid,
         name: message.name,
-        x: Number(message.x.toFixed(2)),
-        y: Number(message.y.toFixed(2)),
-        boardX: Number(message.x.toFixed(2)),
-        boardY: Number(message.y.toFixed(2)),
+        ...summarizeCursor(message),
       };
     case "err":
       return { t: message.t, code: message.code };

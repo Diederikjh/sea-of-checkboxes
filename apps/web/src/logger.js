@@ -26,26 +26,37 @@ function readEnabledCategories() {
       .filter(Boolean)
   );
 
-  const protocolEnabled =
-    toBool(env.VITE_LOG_PROTOCOL) ||
-    toBool(params.get("log_protocol")) ||
-    fromLogsParam.has(LOG_CATEGORIES.PROTOCOL);
-
-  const otherEnabled =
-    toBool(env.VITE_LOG_OTHER) ||
-    toBool(params.get("log_other")) ||
-    fromLogsParam.has(LOG_CATEGORIES.OTHER);
-
-  const uiEnabled =
-    toBool(env.VITE_LOG_UI) ||
-    toBool(params.get("log_ui")) ||
-    fromLogsParam.has(LOG_CATEGORIES.UI);
+  const protocolEnabled = isCategoryEnabledByConfig(
+    env,
+    params,
+    fromLogsParam,
+    LOG_CATEGORIES.PROTOCOL
+  );
+  const uiEnabled = isCategoryEnabledByConfig(
+    env,
+    params,
+    fromLogsParam,
+    LOG_CATEGORIES.UI
+  );
+  const otherEnabled = isCategoryEnabledByConfig(
+    env,
+    params,
+    fromLogsParam,
+    LOG_CATEGORIES.OTHER
+  );
 
   return {
     [LOG_CATEGORIES.PROTOCOL]: protocolEnabled,
     [LOG_CATEGORIES.UI]: uiEnabled,
     [LOG_CATEGORIES.OTHER]: otherEnabled,
   };
+}
+
+function isCategoryEnabledByConfig(env, params, fromLogsParam, category) {
+  const envKey = `VITE_LOG_${category.toUpperCase()}`;
+  const paramKey = `log_${category}`;
+  const envValue = env[envKey];
+  return toBool(envValue) || toBool(params.get(paramKey)) || fromLogsParam.has(category);
 }
 
 const enabledCategories = readEnabledCategories();
