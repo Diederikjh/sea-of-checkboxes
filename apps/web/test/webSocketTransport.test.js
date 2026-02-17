@@ -118,4 +118,24 @@ describe("websocket transport", () => {
       vi.useRealTimers();
     }
   });
+
+  it("bounds queued payloads during long disconnects", () => {
+    const socket = new FakeSocket();
+    const transport = createWebSocketTransport("ws://example/ws", {
+      wsFactory: () => socket,
+    });
+
+    transport.connect(() => {});
+
+    for (let index = 0; index < 520; index += 1) {
+      transport.send(Uint8Array.from([index % 256]));
+    }
+
+    socket.readyState = 1;
+    socket.onopen?.();
+
+    expect(socket.sent.length).toBe(512);
+    expect(Array.from(socket.sent[0] ?? Uint8Array.from([]))).toEqual([8]);
+    expect(Array.from(socket.sent[socket.sent.length - 1] ?? Uint8Array.from([]))).toEqual([7]);
+  });
 });
