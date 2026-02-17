@@ -14,6 +14,8 @@ import {
   MockSocketPairFactory,
   MockUpgradeResponseFactory,
 } from "./helpers/socketMocks";
+import { NullStorage } from "./helpers/storageMocks";
+import { waitFor } from "./helpers/waitFor";
 
 interface TileSnapshotMessage {
   t: "tileSnap";
@@ -34,14 +36,6 @@ interface TileSetCellRequest {
   i: number;
   v: 0 | 1;
   op: string;
-}
-
-class FakeStorage {
-  async get<T>(_key: string): Promise<T | undefined> {
-    return undefined;
-  }
-
-  async put<T>(_key: string, _value: T): Promise<void> {}
 }
 
 class FakeTileOwnerStub {
@@ -154,27 +148,6 @@ function toUint8Array(payload: ArrayBuffer | ArrayBufferView): Uint8Array {
   return new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
 }
 
-async function waitFor(
-  assertion: () => void,
-  options: { attempts?: number; delayMs?: number } = {}
-): Promise<void> {
-  const attempts = options.attempts ?? 30;
-  const delayMs = options.delayMs ?? 5;
-
-  let lastError: unknown;
-  for (let index = 0; index < attempts; index += 1) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-
-  throw lastError;
-}
-
 function createHarness() {
   const socketPairFactory = new MockSocketPairFactory();
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
@@ -187,7 +160,7 @@ function createHarness() {
 
   const state = {
     id: { toString: () => "shard:test" },
-    storage: new FakeStorage(),
+    storage: new NullStorage(),
   };
 
   const shard = new ConnectionShardDO(state, env, {

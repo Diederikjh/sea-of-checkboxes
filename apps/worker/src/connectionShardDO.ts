@@ -127,6 +127,7 @@ export class ConnectionShardDO {
 
     this.#clients.set(uid, client);
     this.#sendServerMessage(client, { t: "hello", uid, name });
+    const context = this.#operationsContext();
 
     serverSocket.addEventListener("message", (event: unknown) => {
       const payload = toBinaryPayload(readMessageEventData(event));
@@ -141,7 +142,7 @@ export class ConnectionShardDO {
     });
 
     const onClose = () => {
-      void disconnectClientFromShard(this.#operationsContext(), uid);
+      void disconnectClientFromShard(context, uid);
     };
 
     serverSocket.addEventListener("close", onClose);
@@ -155,6 +156,7 @@ export class ConnectionShardDO {
     if (!client) {
       return;
     }
+    const context = this.#operationsContext();
 
     let message: ClientMessage;
     try {
@@ -167,19 +169,19 @@ export class ConnectionShardDO {
     try {
       switch (message.t) {
         case "sub":
-          await handleSubMessage(this.#operationsContext(), client, message.tiles);
+          await handleSubMessage(context, client, message.tiles);
           return;
         case "unsub":
-          await handleUnsubMessage(this.#operationsContext(), client, message.tiles);
+          await handleUnsubMessage(context, client, message.tiles);
           return;
         case "setCell":
-          await handleSetCellMessage(this.#operationsContext(), client, message);
+          await handleSetCellMessage(context, client, message);
           return;
         case "resyncTile":
-          await handleResyncMessage(this.#operationsContext(), client, message.tile);
+          await handleResyncMessage(context, client, message.tile);
           return;
         case "cur":
-          handleCursorMessage(this.#operationsContext(), client, message.x, message.y);
+          handleCursorMessage(context, client, message.x, message.y);
           return;
         default:
           return;

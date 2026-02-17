@@ -2,22 +2,8 @@ import { decodeRle64 } from "@sea/protocol";
 import { describe, expect, it } from "vitest";
 
 import { TileOwnerDO } from "../src/worker";
-
-class FakeStorage {
-  #data: Map<string, unknown>;
-
-  constructor() {
-    this.#data = new Map();
-  }
-
-  async get<T>(key: string): Promise<T | undefined> {
-    return this.#data.get(key) as T | undefined;
-  }
-
-  async put<T>(key: string, value: T): Promise<void> {
-    this.#data.set(key, value);
-  }
-}
+import { MemoryStorage } from "./helpers/storageMocks";
+import { waitFor } from "./helpers/waitFor";
 
 class FakeShardStub {
   readonly name: string;
@@ -73,7 +59,7 @@ class FakeNamespace {
 }
 
 function createTileOwnerHarness() {
-  const storage = new FakeStorage();
+  const storage = new MemoryStorage();
   const shardNamespace = new FakeNamespace();
   const env = {
     CONNECTION_SHARD: shardNamespace,
@@ -105,27 +91,6 @@ async function getJson(path: string): Promise<Request> {
   return new Request(`https://tile-owner.internal${path}`, {
     method: "GET",
   });
-}
-
-async function waitFor(
-  assertion: () => void,
-  options: { attempts?: number; delayMs?: number } = {}
-): Promise<void> {
-  const attempts = options.attempts ?? 30;
-  const delayMs = options.delayMs ?? 5;
-
-  let lastError: unknown;
-  for (let index = 0; index < attempts; index += 1) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-
-  throw lastError;
 }
 
 describe("TileOwnerDO propagation across restart", () => {
