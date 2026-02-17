@@ -1,46 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { handleWorkerFetch } from "../src/workerFetch";
-
-class RecordingStub {
-  readonly requests: Request[];
-  readonly status: number;
-
-  constructor(status = 204) {
-    this.requests = [];
-    this.status = status;
-  }
-
-  async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
-    const request = typeof input === "string" ? new Request(input, init) : input;
-    this.requests.push(request);
-    return new Response(null, { status: this.status });
-  }
-}
-
-class RecordingNamespace {
-  readonly stubs: Map<string, RecordingStub>;
-  readonly requestedNames: string[];
-
-  constructor() {
-    this.stubs = new Map();
-    this.requestedNames = [];
-  }
-
-  getByName(name: string): RecordingStub {
-    this.requestedNames.push(name);
-    let stub = this.stubs.get(name);
-    if (!stub) {
-      stub = new RecordingStub(204);
-      this.stubs.set(name, stub);
-    }
-    return stub;
-  }
-}
+import {
+  RecordingDurableObjectStub,
+  StubNamespace,
+} from "./helpers/doStubs";
 
 function createEnv() {
-  const connectionShard = new RecordingNamespace();
-  const tileOwner = new RecordingNamespace();
+  const connectionShard = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+  const tileOwner = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   return {
     env: {
       CONNECTION_SHARD: connectionShard,
@@ -100,7 +68,7 @@ describe("top-level worker fetch routing", () => {
     expect(stub).toBeDefined();
     expect(stub?.requests.length).toBe(1);
 
-    const forwarded = stub?.requests[0];
+    const forwarded = stub?.requests[0]?.request;
     if (!forwarded) {
       throw new Error("Missing forwarded request");
     }

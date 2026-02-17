@@ -2,65 +2,16 @@ import { decodeRle64 } from "@sea/protocol";
 import { describe, expect, it } from "vitest";
 
 import { TileOwnerDO } from "../src/worker";
+import {
+  RecordingDurableObjectStub,
+  StubNamespace,
+} from "./helpers/doStubs";
 import { MemoryStorage } from "./helpers/storageMocks";
 import { waitFor } from "./helpers/waitFor";
 
-class FakeShardStub {
-  readonly name: string;
-  readonly requests: Array<{ url: string; method: string; body: string }>;
-  #neverResolveTileBatch: boolean;
-
-  constructor(name: string) {
-    this.name = name;
-    this.requests = [];
-    this.#neverResolveTileBatch = false;
-  }
-
-  setNeverResolveTileBatch(value: boolean): void {
-    this.#neverResolveTileBatch = value;
-  }
-
-  async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
-    const request =
-      typeof input === "string"
-        ? new Request(input, init)
-        : input;
-
-    this.requests.push({
-      url: request.url,
-      method: request.method,
-      body: await request.text(),
-    });
-
-    const url = new URL(request.url);
-    if (this.#neverResolveTileBatch && url.pathname === "/tile-batch") {
-      return new Promise<Response>(() => {});
-    }
-
-    return new Response(null, { status: 204 });
-  }
-}
-
-class FakeNamespace {
-  readonly #stubs: Map<string, FakeShardStub>;
-
-  constructor() {
-    this.#stubs = new Map();
-  }
-
-  getByName(name: string): FakeShardStub {
-    let stub = this.#stubs.get(name);
-    if (!stub) {
-      stub = new FakeShardStub(name);
-      this.#stubs.set(name, stub);
-    }
-    return stub;
-  }
-}
-
 function createTileOwnerHarness() {
   const storage = new MemoryStorage();
-  const shardNamespace = new FakeNamespace();
+  const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const env = {
     CONNECTION_SHARD: shardNamespace,
     TILE_OWNER: shardNamespace,
@@ -232,7 +183,7 @@ describe("TileOwnerDO propagation across restart", () => {
         action: "sub",
       })
     );
-    harness.shardNamespace.getByName("shard-a").setNeverResolveTileBatch(true);
+    harness.shardNamespace.getByName("shard-a").setNeverResolvePath("/tile-batch", true);
 
     const setCellPromise = owner.fetch(
       await postJson("/setCell", {
