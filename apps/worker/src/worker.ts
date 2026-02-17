@@ -13,6 +13,13 @@ import {
 } from "@sea/protocol";
 
 import { TileOwner } from "./local/tileOwner";
+import {
+  createCloudflareUpgradeResponseFactory,
+  createRuntimeSocketPairFactory,
+  type SocketLike,
+  type SocketPairFactory,
+  type WebSocketUpgradeResponseFactory,
+} from "./socketPair";
 
 interface DurableObjectStubLike {
   fetch(input: Request | string, init?: RequestInit): Promise<Response>;
@@ -32,11 +39,6 @@ interface DurableObjectStateLike {
 
 interface ExecutionContextLike {
   waitUntil(promise: Promise<unknown>): void;
-}
-
-interface WebSocketPairLike {
-  0: WebSocket & { accept: () => void };
-  1: WebSocket & { accept: () => void };
 }
 
 interface Env {
@@ -67,7 +69,7 @@ interface TileSetCellResponse {
 interface ConnectedClient {
   uid: string;
   name: string;
-  socket: WebSocket;
+  socket: SocketLike;
   subscribed: Set<string>;
 }
 
@@ -131,6 +133,16 @@ function toBinaryPayload(data: unknown): Uint8Array | null {
   return null;
 }
 
+function readMessageEventData(event: unknown): unknown {
+  if (typeof event !== "object" || event === null) {
+    return null;
+  }
+  if (!("data" in event)) {
+    return null;
+  }
+  return (event as { data: unknown }).data;
+}
+
 function isValidTileKey(tileKey: string): boolean {
   const parsed = parseTileKeyStrict(tileKey);
   return parsed !== null && isTileCoordInBounds(parsed.tx, parsed.ty);
@@ -189,13 +201,25 @@ export class ConnectionShardDO {
   #shardName: string | null;
   #clients: Map<string, ConnectedClient>;
   #tileToClients: Map<string, Set<string>>;
+  #socketPairFactory: SocketPairFactory;
+  #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
 
-  constructor(state: DurableObjectStateLike, env: Env) {
+  constructor(
+    state: DurableObjectStateLike,
+    env: Env,
+    options: {
+      socketPairFactory?: SocketPairFactory;
+      upgradeResponseFactory?: WebSocketUpgradeResponseFactory;
+    } = {}
+  ) {
     this.#state = state;
     this.#env = env;
     this.#shardName = null;
     this.#clients = new Map();
     this.#tileToClients = new Map();
+    this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
+    this.#upgradeResponseFactory =
+      options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -231,10 +255,9 @@ export class ConnectionShardDO {
 
     this.#shardName = shardName;
 
-    const pair = new ((globalThis as unknown as { WebSocketPair: new () => WebSocketPairLike })
-      .WebSocketPair)();
-    const clientSocket = pair[0];
-    const serverSocket = pair[1];
+    const pair = this.#socketPairFactory.createPair();
+    const clientSocket = pair.client;
+    const serverSocket = pair.server;
 
     serverSocket.accept();
 
@@ -248,8 +271,8 @@ export class ConnectionShardDO {
     this.#clients.set(uid, client);
     this.#sendServerMessage(client, { t: "hello", uid, name });
 
-    serverSocket.addEventListener("message", (event: MessageEvent) => {
-      const payload = toBinaryPayload(event.data);
+    serverSocket.addEventListener("message", (event: unknown) => {
+      const payload = toBinaryPayload(readMessageEventData(event));
       if (!payload) {
         this.#sendError(client, "bad_message", "Expected binary message payload");
         return;
@@ -267,10 +290,7 @@ export class ConnectionShardDO {
     serverSocket.addEventListener("close", onClose);
     serverSocket.addEventListener("error", onClose);
 
-    return new Response(null, {
-      status: 101,
-      webSocket: clientSocket,
-    } as ResponseInit);
+    return this.#upgradeResponseFactory.createResponse(clientSocket);
   }
 
   async #receiveClientPayload(uid: string, payload: Uint8Array): Promise<void> {
