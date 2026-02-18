@@ -1,5 +1,7 @@
 import { MAX_REMOTE_CURSORS, TILE_SIZE } from "@sea/domain";
 
+const DIRTY_REDRAW_PAD_PX = 2;
+
 function heatToColor(heat) {
   if (heat < 0.05) {
     return 0x14191f;
@@ -55,9 +57,15 @@ function drawCell({
   cellPx,
   value,
   heat,
+  clearPadPx = 0,
 }) {
   graphics.beginFill(0x0a0f14, 1);
-  graphics.drawRect(screenX, screenY, cellPx, cellPx);
+  graphics.drawRect(
+    screenX - clearPadPx,
+    screenY - clearPadPx,
+    cellPx + clearPadPx * 2,
+    cellPx + clearPadPx * 2
+  );
   graphics.endFill();
 
   if (value === 0 && heat < 0.03 && cellPx < 10) {
@@ -86,6 +94,7 @@ function drawTileCells({
   tileData,
   heatStore,
   dirtyIndices,
+  clearPadPx = 0,
 }) {
   const cellPx = camera.cellPixelSize;
   const tileWorldX = tile.tx * TILE_SIZE;
@@ -117,6 +126,7 @@ function drawTileCells({
       cellPx,
       value,
       heat,
+      clearPadPx,
     });
   }
 }
@@ -157,6 +167,7 @@ export function renderDirtyAreas({
       tileData,
       heatStore,
       dirtyIndices,
+      clearPadPx: DIRTY_REDRAW_PAD_PX,
     });
   }
 }
