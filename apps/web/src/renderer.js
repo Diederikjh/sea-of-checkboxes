@@ -48,6 +48,21 @@ function toScreen(worldX, worldY, camera, viewportWidth, viewportHeight) {
   };
 }
 
+function isCellOnScreen(screen, cellPx, viewportWidth, viewportHeight) {
+  return !(
+    screen.x + cellPx < 0
+    || screen.x > viewportWidth
+    || screen.y + cellPx < 0
+    || screen.y > viewportHeight
+  );
+}
+
+function drawBackground(graphics, viewportWidth, viewportHeight) {
+  graphics.beginFill(0x0a0f14, 1);
+  graphics.drawRect(0, 0, viewportWidth, viewportHeight);
+  graphics.endFill();
+}
+
 function drawCell({
   graphics,
   screenX,
@@ -133,12 +148,7 @@ function drawTileCells({
     const worldY = tileWorldY + localY;
 
     const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
-    if (
-      screen.x + cellPx < 0 ||
-      screen.x > viewportWidth ||
-      screen.y + cellPx < 0 ||
-      screen.y > viewportHeight
-    ) {
+    if (!isCellOnScreen(screen, cellPx, viewportWidth, viewportHeight)) {
       continue;
     }
 
@@ -152,6 +162,56 @@ function drawTileCells({
       value,
       heat,
     });
+  }
+}
+
+function* iterateVisibleTiles(visibleTiles, tileStore, dirtyTileCells = null) {
+  const visibleByKey = dirtyTileCells
+    ? new Map(visibleTiles.map((tile) => [tile.tileKey, tile]))
+    : null;
+
+  if (dirtyTileCells) {
+    for (const [tileKey, dirtyIndices] of dirtyTileCells.entries()) {
+      const tile = visibleByKey.get(tileKey);
+      if (!tile) {
+        continue;
+      }
+      const tileData = tileStore.get(tileKey);
+      if (!tileData) {
+        continue;
+      }
+      yield { tile, tileData, dirtyIndices };
+    }
+    return;
+  }
+
+  for (const tile of visibleTiles) {
+    const tileData = tileStore.get(tile.tileKey);
+    if (!tileData) {
+      continue;
+    }
+    yield { tile, tileData, dirtyIndices: null };
+  }
+}
+
+function getActiveCursors(cursors, nowMs) {
+  return [...cursors.values()]
+    .filter((cursor) => nowMs - cursor.seenAt < 5_000)
+    .sort((a, b) => b.seenAt - a.seenAt)
+    .slice(0, MAX_REMOTE_CURSORS);
+}
+
+function drawCursors({ graphics, cursors, camera, viewportWidth, viewportHeight }) {
+  const cellPx = camera.cellPixelSize;
+  for (const cursor of cursors) {
+    const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
+    const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
+    const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
+    const color = stableCursorColor(cursor.uid);
+
+    graphics.beginFill(color, 0.9);
+    graphics.drawCircle(screen.x, screen.y, Math.max(2, cellPx * 0.28));
+    graphics.endFill();
   }
 }
 
@@ -169,25 +229,13 @@ export function renderDirtyAreas({
     return;
   }
 
-  const visibleByKey = new Map(visibleTiles.map((tile) => [tile.tileKey, tile]));
-
-  for (const [tileKey, dirtyIndices] of dirtyTileCells.entries()) {
-    const visibleTile = visibleByKey.get(tileKey);
-    if (!visibleTile) {
-      continue;
-    }
-
-    const tileData = tileStore.get(tileKey);
-    if (!tileData) {
-      continue;
-    }
-
+  for (const { tile, tileData, dirtyIndices } of iterateVisibleTiles(visibleTiles, tileStore, dirtyTileCells)) {
     drawTileCells({
       graphics,
       camera,
       viewportWidth,
       viewportHeight,
-      tile: visibleTile,
+      tile,
       tileData,
       heatStore,
       dirtyIndices,
@@ -206,17 +254,9 @@ export function renderScene({
   cursors,
 }) {
   graphics.clear();
+  drawBackground(graphics, viewportWidth, viewportHeight);
 
-  graphics.beginFill(0x0a0f14, 1);
-  graphics.drawRect(0, 0, viewportWidth, viewportHeight);
-  graphics.endFill();
-
-  for (const tile of visibleTiles) {
-    const tileData = tileStore.get(tile.tileKey);
-    if (!tileData) {
-      continue;
-    }
-
+  for (const { tile, tileData } of iterateVisibleTiles(visibleTiles, tileStore)) {
     drawTileCells({
       graphics,
       camera,
@@ -229,23 +269,14 @@ export function renderScene({
     });
   }
 
-  const now = Date.now();
-  const activeCursors = [...cursors.values()]
-    .filter((cursor) => now - cursor.seenAt < 5_000)
-    .sort((a, b) => b.seenAt - a.seenAt)
-    .slice(0, MAX_REMOTE_CURSORS);
-
-  const cellPx = camera.cellPixelSize;
-  for (const cursor of activeCursors) {
-    const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
-    const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
-    const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
-    const color = stableCursorColor(cursor.uid);
-
-    graphics.beginFill(color, 0.9);
-    graphics.drawCircle(screen.x, screen.y, Math.max(2, cellPx * 0.28));
-    graphics.endFill();
-  }
+  const activeCursors = getActiveCursors(cursors, Date.now());
+  drawCursors({
+    graphics,
+    cursors: activeCursors,
+    camera,
+    viewportWidth,
+    viewportHeight,
+  });
 
   return activeCursors;
 }

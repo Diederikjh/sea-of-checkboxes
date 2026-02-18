@@ -228,7 +228,6 @@ export async function startApp() {
   };
   window.addEventListener("resize", onResize);
 
-
   return () => {
     window.removeEventListener("resize", onResize);
     teardownInputHandlers();

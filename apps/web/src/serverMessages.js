@@ -80,15 +80,16 @@ export function createServerMessageHandler({
         break;
       }
       case "cellUpBatch": {
+        const changedIndices = message.ops.map(([index]) => index);
         const result = tileStore.applyBatch(message.tile, message.fromVer, message.toVer, message.ops);
         applyCellUpdateResult({
           result,
           tile: message.tile,
-          changedIndices: message.ops.map(([index]) => index),
+          changedIndices,
           transport,
           heatStore,
         });
-        onTileCellsChanged(message.tile, message.ops.map(([index]) => index));
+        onTileCellsChanged(message.tile, changedIndices);
         break;
       }
       case "curUp": {

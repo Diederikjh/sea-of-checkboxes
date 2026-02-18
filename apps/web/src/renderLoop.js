@@ -2,6 +2,36 @@ import { smoothCursors } from "./cursorSmoothing";
 import { renderDirtyAreas, renderScene } from "./renderer";
 import { reconcileSubscriptions } from "./subscriptions";
 
+function hasRecentCursorActivity(cursors, nowMs) {
+  if (cursors.size === 0) {
+    return false;
+  }
+  return [...cursors.values()].some((cursor) => nowMs - cursor.seenAt < 5_000);
+}
+
+function shouldPatchDirtyAreas({
+  needsRender,
+  hasAnimatedHeat,
+  hasCursorMotion,
+  hasRecentCursor,
+  dirtyTileCells,
+}) {
+  return !needsRender
+    && !hasAnimatedHeat
+    && !hasCursorMotion
+    && !hasRecentCursor
+    && dirtyTileCells.size > 0;
+}
+
+function shouldSkipFrame({
+  needsRender,
+  hasAnimatedHeat,
+  hasCursorMotion,
+  hasRecentCursor,
+}) {
+  return !needsRender && !hasAnimatedHeat && !hasCursorMotion && !hasRecentCursor;
+}
+
 export function createRenderLoop({
   app,
   graphics,
@@ -19,7 +49,7 @@ export function createRenderLoop({
   let needsRender = true;
   const dirtyTileCells = new Map();
 
-  const markViewportDirty = () => {
+  const markNeedsFullRefresh = () => {
     needsSubscriptionRefresh = true;
     needsRender = true;
   };
@@ -29,27 +59,22 @@ export function createRenderLoop({
   };
 
   const markTileCellsDirty = (tileKey, changedIndices) => {
-    const previous = dirtyTileCells.get(tileKey);
+    const existing = dirtyTileCells.get(tileKey);
 
     if (!changedIndices) {
       dirtyTileCells.set(tileKey, null);
       return;
     }
 
-    if (previous === null) {
+    if (existing === null) {
       return;
     }
 
-    const next = previous ?? new Set();
+    const updated = existing ?? new Set();
     for (const index of changedIndices) {
-      next.add(index);
+      updated.add(index);
     }
-    dirtyTileCells.set(tileKey, next);
-  };
-
-  const handleResize = () => {
-    needsSubscriptionRefresh = true;
-    needsRender = true;
+    dirtyTileCells.set(tileKey, updated);
   };
 
   const syncSubscriptions = () => {
@@ -71,23 +96,21 @@ export function createRenderLoop({
     const dtSeconds = ticker.deltaMS / 1_000;
     const hasAnimatedHeat = heatStore.decay(dtSeconds);
     const hasCursorMotion = smoothCursors(cursors, dtSeconds);
-    const now = Date.now();
-    const hasRecentCursor = cursors.size > 0
-      ? [...cursors.values()].some((cursor) => now - cursor.seenAt < 5_000)
-      : false;
+    const hasRecentCursor = hasRecentCursorActivity(cursors, Date.now());
 
     if (needsSubscriptionRefresh) {
       syncSubscriptions();
       needsRender = true;
     }
 
-    const canPatchDirtyAreas = !needsRender
-      && !hasAnimatedHeat
-      && !hasCursorMotion
-      && !hasRecentCursor
-      && dirtyTileCells.size > 0;
+    const frameState = {
+      needsRender,
+      hasAnimatedHeat,
+      hasCursorMotion,
+      hasRecentCursor,
+    };
 
-    if (canPatchDirtyAreas) {
+    if (shouldPatchDirtyAreas({ ...frameState, dirtyTileCells })) {
       renderDirtyAreas({
         graphics,
         camera,
@@ -102,7 +125,7 @@ export function createRenderLoop({
       return;
     }
 
-    if (!needsRender && !hasAnimatedHeat && !hasCursorMotion && !hasRecentCursor) {
+    if (shouldSkipFrame(frameState)) {
       return;
     }
 
@@ -117,12 +140,7 @@ export function createRenderLoop({
       cursors,
     });
 
-    cursorLabels.update(
-      activeCursors,
-      camera,
-      app.renderer.width,
-      app.renderer.height
-    );
+    cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height);
 
     setStatus(`Tiles loaded: ${subscribedTiles.size}`);
     dirtyTileCells.clear();
@@ -133,10 +151,10 @@ export function createRenderLoop({
   syncSubscriptions();
 
   return {
-    markViewportDirty,
+    markViewportDirty: markNeedsFullRefresh,
     markVisualDirty,
     markTileCellsDirty,
-    handleResize,
+    handleResize: markNeedsFullRefresh,
     dispose() {
       app.ticker.remove(onTick);
     },
