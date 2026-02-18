@@ -50,6 +50,7 @@ export function createServerMessageHandler({
   cursors,
   selfIdentity,
   onVisualStateChanged = () => {},
+  onTileCellsChanged = () => {},
 }) {
   return (message) => {
     switch (message.t) {
@@ -63,7 +64,7 @@ export function createServerMessageHandler({
         const bits = decodeRle64(message.bits);
         tileStore.setSnapshot(message.tile, bits, message.ver);
         heatStore.ensureTile(message.tile);
-        onVisualStateChanged();
+        onTileCellsChanged(message.tile, null);
         break;
       }
       case "cellUp": {
@@ -75,7 +76,7 @@ export function createServerMessageHandler({
           transport,
           heatStore,
         });
-        onVisualStateChanged();
+        onTileCellsChanged(message.tile, [message.i]);
         break;
       }
       case "cellUpBatch": {
@@ -87,7 +88,7 @@ export function createServerMessageHandler({
           transport,
           heatStore,
         });
-        onVisualStateChanged();
+        onTileCellsChanged(message.tile, message.ops.map(([index]) => index));
         break;
       }
       case "curUp": {

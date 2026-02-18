@@ -17,7 +17,7 @@ import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { logger } from "./logger";
-import { renderScene } from "./renderer";
+import { renderDirtyAreas, renderScene } from "./renderer";
 import { smoothCursors } from "./cursorSmoothing";
 import { createServerMessageHandler } from "./serverMessages";
 import { reconcileSubscriptions } from "./subscriptions";
@@ -182,6 +182,7 @@ export async function startApp() {
   let visibleTiles = [];
   let needsSubscriptionRefresh = true;
   let needsRender = true;
+  const dirtyTileCells = new Map();
 
   const setStatus = (value) => {
     statusEl.textContent = value;
@@ -196,6 +197,25 @@ export async function startApp() {
     needsRender = true;
   };
 
+  const markTileCellsDirty = (tileKey, changedIndices) => {
+    const previous = dirtyTileCells.get(tileKey);
+
+    if (!changedIndices) {
+      dirtyTileCells.set(tileKey, null);
+      return;
+    }
+
+    if (previous === null) {
+      return;
+    }
+
+    const next = previous ?? new Set();
+    for (const index of changedIndices) {
+      next.add(index);
+    }
+    dirtyTileCells.set(tileKey, next);
+  };
+
   updateZoomReadout(camera, zoomEl);
 
   transport.connect(
@@ -208,6 +228,7 @@ export async function startApp() {
       cursors,
       selfIdentity,
       onVisualStateChanged: markVisualDirty,
+      onTileCellsChanged: markTileCellsDirty,
     })
   );
 
@@ -261,6 +282,27 @@ export async function startApp() {
       needsRender = true;
     }
 
+    const canPatchDirtyAreas = !needsRender
+      && !hasAnimatedHeat
+      && !hasCursorMotion
+      && !hasRecentCursor
+      && dirtyTileCells.size > 0;
+
+    if (canPatchDirtyAreas) {
+      renderDirtyAreas({
+        graphics,
+        camera,
+        viewportWidth: app.renderer.width,
+        viewportHeight: app.renderer.height,
+        visibleTiles,
+        dirtyTileCells,
+        tileStore,
+        heatStore,
+      });
+      dirtyTileCells.clear();
+      return;
+    }
+
     if (!needsRender && !hasAnimatedHeat && !hasCursorMotion && !hasRecentCursor) {
       return;
     }
@@ -284,6 +326,7 @@ export async function startApp() {
     );
 
     setStatus(`Tiles loaded: ${subscribedTiles.size}`);
+    dirtyTileCells.clear();
     needsRender = false;
   });
 

@@ -48,6 +48,119 @@ function toScreen(worldX, worldY, camera, viewportWidth, viewportHeight) {
   };
 }
 
+function drawCell({
+  graphics,
+  screenX,
+  screenY,
+  cellPx,
+  value,
+  heat,
+}) {
+  graphics.beginFill(0x0a0f14, 1);
+  graphics.drawRect(screenX, screenY, cellPx, cellPx);
+  graphics.endFill();
+
+  if (value === 0 && heat < 0.03 && cellPx < 10) {
+    return;
+  }
+
+  const fillColor = value === 1 ? 0x27c67b : heatToColor(heat);
+  const alpha = value === 1 ? 0.95 : Math.min(0.85, 0.3 + heat * 0.6);
+  graphics.beginFill(fillColor, alpha);
+  graphics.drawRect(screenX, screenY, cellPx, cellPx);
+  graphics.endFill();
+
+  if (cellPx >= 12) {
+    graphics.lineStyle(1, 0x253441, 0.28);
+    graphics.drawRect(screenX, screenY, cellPx, cellPx);
+    graphics.lineStyle(0);
+  }
+}
+
+function drawTileCells({
+  graphics,
+  camera,
+  viewportWidth,
+  viewportHeight,
+  tile,
+  tileData,
+  heatStore,
+  dirtyIndices,
+}) {
+  const cellPx = camera.cellPixelSize;
+  const tileWorldX = tile.tx * TILE_SIZE;
+  const tileWorldY = tile.ty * TILE_SIZE;
+  const indices = dirtyIndices ?? tileData.bits.keys();
+
+  for (const index of indices) {
+    const localX = index % TILE_SIZE;
+    const localY = Math.floor(index / TILE_SIZE);
+    const worldX = tileWorldX + localX;
+    const worldY = tileWorldY + localY;
+
+    const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
+    if (
+      screen.x + cellPx < 0 ||
+      screen.x > viewportWidth ||
+      screen.y + cellPx < 0 ||
+      screen.y > viewportHeight
+    ) {
+      continue;
+    }
+
+    const value = tileData.bits[index];
+    const heat = heatStore.getHeat(tile.tileKey, index);
+    drawCell({
+      graphics,
+      screenX: screen.x,
+      screenY: screen.y,
+      cellPx,
+      value,
+      heat,
+    });
+  }
+}
+
+export function renderDirtyAreas({
+  graphics,
+  camera,
+  viewportWidth,
+  viewportHeight,
+  visibleTiles,
+  dirtyTileCells,
+  tileStore,
+  heatStore,
+}) {
+  if (dirtyTileCells.size === 0) {
+    return;
+  }
+
+  const visibleByKey = new Map(visibleTiles.map((tile) => [tile.tileKey, tile]));
+
+  for (const [tileKey, dirtyIndices] of dirtyTileCells.entries()) {
+    const visibleTile = visibleByKey.get(tileKey);
+    if (!visibleTile) {
+      continue;
+    }
+
+    const tileData = tileStore.get(tileKey);
+    if (!tileData) {
+      continue;
+    }
+
+    drawTileCells({
+      graphics,
+      camera,
+      viewportWidth,
+      viewportHeight,
+      tile: visibleTile,
+      tileData,
+      heatStore,
+      dirtyIndices,
+    });
+  }
+}
+
 export function renderScene({
   graphics,
   camera,
@@ -64,51 +177,22 @@ export function renderScene({
   graphics.drawRect(0, 0, viewportWidth, viewportHeight);
   graphics.endFill();
 
-  const cellPx = camera.cellPixelSize;
-
   for (const tile of visibleTiles) {
     const tileData = tileStore.get(tile.tileKey);
     if (!tileData) {
       continue;
     }
 
-    const tileWorldX = tile.tx * TILE_SIZE;
-    const tileWorldY = tile.ty * TILE_SIZE;
-
-    for (let index = 0; index < tileData.bits.length; index += 1) {
-      const localX = index % TILE_SIZE;
-      const localY = Math.floor(index / TILE_SIZE);
-      const worldX = tileWorldX + localX;
-      const worldY = tileWorldY + localY;
-
-      const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
-      if (
-        screen.x + cellPx < 0 ||
-        screen.x > viewportWidth ||
-        screen.y + cellPx < 0 ||
-        screen.y > viewportHeight
-      ) {
-        continue;
-      }
-
-      const value = tileData.bits[index];
-      const heat = heatStore.getHeat(tile.tileKey, index);
-      if (value === 0 && heat < 0.03 && cellPx < 10) {
-        continue;
-      }
-
-      const fillColor = value === 1 ? 0x27c67b : heatToColor(heat);
-      const alpha = value === 1 ? 0.95 : Math.min(0.85, 0.3 + heat * 0.6);
-      graphics.beginFill(fillColor, alpha);
-      graphics.drawRect(screen.x, screen.y, cellPx, cellPx);
-      graphics.endFill();
-
-      if (cellPx >= 12) {
-        graphics.lineStyle(1, 0x253441, 0.28);
-        graphics.drawRect(screen.x, screen.y, cellPx, cellPx);
-        graphics.lineStyle(0);
-      }
-    }
+    drawTileCells({
+      graphics,
+      camera,
+      viewportWidth,
+      viewportHeight,
+      tile,
+      tileData,
+      heatStore,
+      dirtyIndices: null,
+    });
   }
 
   const now = Date.now();
@@ -117,6 +201,7 @@ export function renderScene({
     .sort((a, b) => b.seenAt - a.seenAt)
     .slice(0, MAX_REMOTE_CURSORS);
 
+  const cellPx = camera.cellPixelSize;
   for (const cursor of activeCursors) {
     const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
     const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
