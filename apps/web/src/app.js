@@ -17,10 +17,8 @@ import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { logger } from "./logger";
-import { renderDirtyAreas, renderScene } from "./renderer";
-import { smoothCursors } from "./cursorSmoothing";
 import { createServerMessageHandler } from "./serverMessages";
-import { reconcileSubscriptions } from "./subscriptions";
+import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
 import { createWireTransport } from "./wireTransport";
 
@@ -178,43 +176,21 @@ export async function startApp() {
   const cursors = new Map();
   const selfIdentity = { uid: null };
 
-  let subscribedTiles = new Set();
-  let visibleTiles = [];
-  let needsSubscriptionRefresh = true;
-  let needsRender = true;
-  const dirtyTileCells = new Map();
-
   const setStatus = (value) => {
     statusEl.textContent = value;
   };
 
-  const markViewportDirty = () => {
-    needsSubscriptionRefresh = true;
-    needsRender = true;
-  };
-
-  const markVisualDirty = () => {
-    needsRender = true;
-  };
-
-  const markTileCellsDirty = (tileKey, changedIndices) => {
-    const previous = dirtyTileCells.get(tileKey);
-
-    if (!changedIndices) {
-      dirtyTileCells.set(tileKey, null);
-      return;
-    }
-
-    if (previous === null) {
-      return;
-    }
-
-    const next = previous ?? new Set();
-    for (const index of changedIndices) {
-      next.add(index);
-    }
-    dirtyTileCells.set(tileKey, next);
-  };
+  const renderLoop = createRenderLoop({
+    app,
+    graphics,
+    camera,
+    tileStore,
+    heatStore,
+    cursors,
+    cursorLabels,
+    transport,
+    setStatus,
+  });
 
   updateZoomReadout(camera, zoomEl);
 
@@ -227,8 +203,8 @@ export async function startApp() {
       transport,
       cursors,
       selfIdentity,
-      onVisualStateChanged: markVisualDirty,
-      onTileCellsChanged: markTileCellsDirty,
+      onVisualStateChanged: renderLoop.markVisualDirty,
+      onTileCellsChanged: renderLoop.markTileCellsDirty,
     })
   );
 
@@ -244,98 +220,20 @@ export async function startApp() {
     tileStore,
     heatStore,
     setStatus,
-    onViewportChanged: markViewportDirty,
+    onViewportChanged: renderLoop.markViewportDirty,
   });
 
   const onResize = () => {
-    needsSubscriptionRefresh = true;
-    needsRender = true;
+    renderLoop.handleResize();
   };
   window.addEventListener("resize", onResize);
 
-  function syncSubscriptions() {
-    const updated = reconcileSubscriptions({
-      camera,
-      viewportWidth: app.renderer.width,
-      viewportHeight: app.renderer.height,
-      subscribedTiles,
-      transport,
-      marginTiles: 1,
-    });
-
-    visibleTiles = updated.visibleTiles;
-    subscribedTiles = updated.subscribedTiles;
-    needsSubscriptionRefresh = false;
-  }
-
-  app.ticker.add((ticker) => {
-    const dtSeconds = ticker.deltaMS / 1_000;
-    const hasAnimatedHeat = heatStore.decay(dtSeconds);
-    const hasCursorMotion = smoothCursors(cursors, dtSeconds);
-    const now = Date.now();
-    const hasRecentCursor = cursors.size > 0
-      ? [...cursors.values()].some((cursor) => now - cursor.seenAt < 5_000)
-      : false;
-
-    if (needsSubscriptionRefresh) {
-      syncSubscriptions();
-      needsRender = true;
-    }
-
-    const canPatchDirtyAreas = !needsRender
-      && !hasAnimatedHeat
-      && !hasCursorMotion
-      && !hasRecentCursor
-      && dirtyTileCells.size > 0;
-
-    if (canPatchDirtyAreas) {
-      renderDirtyAreas({
-        graphics,
-        camera,
-        viewportWidth: app.renderer.width,
-        viewportHeight: app.renderer.height,
-        visibleTiles,
-        dirtyTileCells,
-        tileStore,
-        heatStore,
-      });
-      dirtyTileCells.clear();
-      return;
-    }
-
-    if (!needsRender && !hasAnimatedHeat && !hasCursorMotion && !hasRecentCursor) {
-      return;
-    }
-
-    const activeCursors = renderScene({
-      graphics,
-      camera,
-      viewportWidth: app.renderer.width,
-      viewportHeight: app.renderer.height,
-      visibleTiles,
-      tileStore,
-      heatStore,
-      cursors,
-    });
-
-    cursorLabels.update(
-      activeCursors,
-      camera,
-      app.renderer.width,
-      app.renderer.height
-    );
-
-    setStatus(`Tiles loaded: ${subscribedTiles.size}`);
-    dirtyTileCells.clear();
-    needsRender = false;
-  });
-
-  syncSubscriptions();
 
   return () => {
     window.removeEventListener("resize", onResize);
     teardownInputHandlers();
     cursorLabels.destroy();
+    renderLoop.dispose();
     transport.dispose();
     app.destroy(true);
   };
