@@ -1,6 +1,6 @@
 import { MAX_REMOTE_CURSORS, TILE_SIZE } from "@sea/domain";
 
-const DIRTY_REDRAW_PAD_PX = 2;
+const DIRTY_REDRAW_PAD_PX = 1;
 
 function heatToColor(heat) {
   if (heat < 0.05) {
