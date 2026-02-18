@@ -17,10 +17,8 @@ import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { logger } from "./logger";
-import { renderScene } from "./renderer";
-import { smoothCursors } from "./cursorSmoothing";
 import { createServerMessageHandler } from "./serverMessages";
-import { reconcileSubscriptions } from "./subscriptions";
+import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
 import { createWireTransport } from "./wireTransport";
 
@@ -178,17 +176,21 @@ export async function startApp() {
   const cursors = new Map();
   const selfIdentity = { uid: null };
 
-  let subscribedTiles = new Set();
-  let visibleTiles = [];
-  let needsSubscriptionRefresh = true;
-
   const setStatus = (value) => {
     statusEl.textContent = value;
   };
 
-  const markViewportDirty = () => {
-    needsSubscriptionRefresh = true;
-  };
+  const renderLoop = createRenderLoop({
+    app,
+    graphics,
+    camera,
+    tileStore,
+    heatStore,
+    cursors,
+    cursorLabels,
+    transport,
+    setStatus,
+  });
 
   updateZoomReadout(camera, zoomEl);
 
@@ -201,6 +203,8 @@ export async function startApp() {
       transport,
       cursors,
       selfIdentity,
+      onVisualStateChanged: renderLoop.markVisualDirty,
+      onTileCellsChanged: renderLoop.markTileCellsDirty,
     })
   );
 
@@ -216,65 +220,19 @@ export async function startApp() {
     tileStore,
     heatStore,
     setStatus,
-    onViewportChanged: markViewportDirty,
+    onViewportChanged: renderLoop.markViewportDirty,
   });
 
   const onResize = () => {
-    needsSubscriptionRefresh = true;
+    renderLoop.handleResize();
   };
   window.addEventListener("resize", onResize);
-
-  function syncSubscriptions() {
-    const updated = reconcileSubscriptions({
-      camera,
-      viewportWidth: app.renderer.width,
-      viewportHeight: app.renderer.height,
-      subscribedTiles,
-      transport,
-      marginTiles: 1,
-    });
-
-    visibleTiles = updated.visibleTiles;
-    subscribedTiles = updated.subscribedTiles;
-    needsSubscriptionRefresh = false;
-  }
-
-  app.ticker.add((ticker) => {
-    const dtSeconds = ticker.deltaMS / 1_000;
-    heatStore.decay(dtSeconds);
-    smoothCursors(cursors, dtSeconds);
-
-    if (needsSubscriptionRefresh) {
-      syncSubscriptions();
-    }
-
-    const activeCursors = renderScene({
-      graphics,
-      camera,
-      viewportWidth: app.renderer.width,
-      viewportHeight: app.renderer.height,
-      visibleTiles,
-      tileStore,
-      heatStore,
-      cursors,
-    });
-
-    cursorLabels.update(
-      activeCursors,
-      camera,
-      app.renderer.width,
-      app.renderer.height
-    );
-
-    setStatus(`Tiles loaded: ${subscribedTiles.size}`);
-  });
-
-  syncSubscriptions();
 
   return () => {
     window.removeEventListener("resize", onResize);
     teardownInputHandlers();
     cursorLabels.destroy();
+    renderLoop.dispose();
     transport.dispose();
     app.destroy(true);
   };
