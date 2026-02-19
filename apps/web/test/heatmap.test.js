@@ -25,4 +25,18 @@ describe("HeatStore", () => {
 
     expect(store.getHeat("0:0", 0)).toBeLessThan(before);
   });
+
+  it("drops cooled cells to zero and idles once cold", () => {
+    const store = new HeatStore();
+    const now = Date.now();
+    store.bump("0:0", 0, now);
+
+    let hasVisibleHeat = true;
+    for (let index = 0; index < 20; index += 1) {
+      hasVisibleHeat = store.decay(5);
+    }
+
+    expect(hasVisibleHeat).toBe(false);
+    expect(store.getHeat("0:0", 0)).toBe(0);
+  });
 });

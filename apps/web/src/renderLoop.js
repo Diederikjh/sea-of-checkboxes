@@ -8,6 +8,7 @@ import {
   CURSOR_TTL_MS,
   cursorRadiusPx,
 } from "./cursorRenderConfig";
+import { createPerfProbe } from "./perfProbe";
 import { smoothCursors } from "./cursorSmoothing";
 import { renderDirtyAreas, renderScene } from "./renderer";
 import { reconcileSubscriptions } from "./subscriptions";
@@ -51,6 +52,7 @@ export function createRenderLoop({
   cursorLabels,
   transport,
   setStatus,
+  perfProbe = createPerfProbe(),
 }) {
   let subscribedTiles = new Set();
   let visibleTiles = [];
@@ -170,14 +172,16 @@ export function createRenderLoop({
   };
 
   const onTick = (ticker) => {
+    perfProbe.increment("frame.total");
     const dtSeconds = ticker.deltaMS / 1_000;
-    const hasAnimatedHeat = heatStore.decay(dtSeconds);
+    const hasAnimatedHeat = perfProbe.measure("heat.decay_ms", () => heatStore.decay(dtSeconds));
     const nowMs = Date.now();
-    smoothCursors(cursors, dtSeconds);
-    updateCursorDirtyRegions(nowMs);
+    perfProbe.measure("cursor.smooth_ms", () => smoothCursors(cursors, dtSeconds));
+    perfProbe.measure("cursor.dirty_index_ms", () => updateCursorDirtyRegions(nowMs));
+    perfProbe.gauge("cursor.count", cursors.size);
 
     if (needsSubscriptionRefresh) {
-      syncSubscriptions();
+      perfProbe.measure("subscriptions.sync_ms", () => syncSubscriptions());
       needsRender = true;
     }
 
@@ -188,7 +192,9 @@ export function createRenderLoop({
     };
 
     if (shouldPatchDirtyAreas(frameState)) {
-      const activeCursors = renderDirtyAreas({
+      perfProbe.increment("frame.patch");
+      perfProbe.gauge("dirty.tile_count", dirtyTileCells.size);
+      const activeCursors = perfProbe.measure("render.patch_ms", () => renderDirtyAreas({
         graphics,
         camera,
         viewportWidth: app.renderer.width,
@@ -198,17 +204,23 @@ export function createRenderLoop({
         tileStore,
         heatStore,
         cursors,
-      });
-      cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height);
+      }));
+      perfProbe.measure("cursor.labels_ms", () =>
+        cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height)
+      );
       dirtyTileCells.clear();
+      perfProbe.flushMaybe();
       return;
     }
 
     if (shouldSkipFrame(frameState)) {
+      perfProbe.increment("frame.skip");
+      perfProbe.flushMaybe();
       return;
     }
 
-    const activeCursors = renderScene({
+    perfProbe.increment("frame.full");
+    const activeCursors = perfProbe.measure("render.full_ms", () => renderScene({
       graphics,
       camera,
       viewportWidth: app.renderer.width,
@@ -217,13 +229,16 @@ export function createRenderLoop({
       tileStore,
       heatStore,
       cursors,
-    });
+    }));
 
-    cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height);
+    perfProbe.measure("cursor.labels_ms", () =>
+      cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height)
+    );
 
     setStatus(`Tiles loaded: ${subscribedTiles.size}`);
     dirtyTileCells.clear();
     needsRender = false;
+    perfProbe.flushMaybe();
   };
 
   app.ticker.add(onTick);

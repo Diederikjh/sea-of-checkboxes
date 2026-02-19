@@ -17,6 +17,7 @@ import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { logger } from "./logger";
+import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
 import { createServerMessageHandler } from "./serverMessages";
 import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
@@ -148,25 +149,48 @@ export async function startApp() {
   const camera = createCamera();
   const tileStore = new TileStore(512);
   const heatStore = new HeatStore();
+  const perfProbe = createPerfProbe({
+    enabled: isPerfProbeEnabled(),
+  });
+  const onWebGlContextLost = (event) => {
+    perfProbe.increment("webgl.context_lost");
+    console.error("WebGL context lost", event);
+    event.preventDefault();
+  };
+  const onWebGlContextRestored = () => {
+    perfProbe.increment("webgl.context_restored");
+    console.info("WebGL context restored");
+  };
+  canvas.addEventListener("webglcontextlost", onWebGlContextLost, { passive: false });
+  canvas.addEventListener("webglcontextrestored", onWebGlContextRestored);
+
   const wireTransport = createWireTransport();
   const transport = {
     connect(onServerMessage) {
       wireTransport.connect((payload) => {
-        const payloadInfo = describePayload(payload);
-        const message = decodeServerMessageBinary(payload);
-        logger.protocol("rx", {
-          ...payloadInfo,
-          ...summarizeMessage(message),
-        });
+        perfProbe.increment("ws.rx_count");
+        perfProbe.increment("ws.rx_bytes", payload.length);
+        const message = perfProbe.measure("protocol.decode_ms", () => decodeServerMessageBinary(payload));
+        if (logger.isEnabled(logger.categories.PROTOCOL)) {
+          const payloadInfo = describePayload(payload);
+          logger.protocol("rx", {
+            ...payloadInfo,
+            ...summarizeMessage(message),
+          });
+        }
         onServerMessage(message);
       });
     },
     send(message) {
-      const payload = encodeClientMessageBinary(message);
-      logger.protocol("tx", {
-        ...describePayload(payload),
-        ...summarizeMessage(message),
-      });
+      const payload = perfProbe.measure("protocol.encode_ms", () => encodeClientMessageBinary(message));
+      perfProbe.increment("ws.tx_count");
+      perfProbe.increment("ws.tx_bytes", payload.length);
+      if (logger.isEnabled(logger.categories.PROTOCOL)) {
+        logger.protocol("tx", {
+          ...describePayload(payload),
+          ...summarizeMessage(message),
+        });
+      }
       wireTransport.send(payload);
     },
     dispose() {
@@ -190,6 +214,7 @@ export async function startApp() {
     cursorLabels,
     transport,
     setStatus,
+    perfProbe,
   });
 
   updateZoomReadout(camera, zoomEl);
@@ -230,6 +255,8 @@ export async function startApp() {
 
   return () => {
     window.removeEventListener("resize", onResize);
+    canvas.removeEventListener("webglcontextlost", onWebGlContextLost);
+    canvas.removeEventListener("webglcontextrestored", onWebGlContextRestored);
     teardownInputHandlers();
     cursorLabels.destroy();
     renderLoop.dispose();
