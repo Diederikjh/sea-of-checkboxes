@@ -6,6 +6,10 @@ import {
   StubNamespace,
 } from "./helpers/doStubs";
 
+function workerRequest(path: string, init?: RequestInit): Request {
+  return new Request(`https://worker.local${path}`, init);
+}
+
 function createEnv() {
   const connectionShard = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const tileOwner = new StubNamespace((name) => new RecordingDurableObjectStub(name));
@@ -22,7 +26,7 @@ function createEnv() {
 describe("top-level worker fetch routing", () => {
   it("returns health payload on /health", async () => {
     const { env } = createEnv();
-    const response = await handleWorkerFetch(new Request("https://worker.local/health"), env);
+    const response = await handleWorkerFetch(workerRequest("/health"), env);
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
@@ -34,16 +38,13 @@ describe("top-level worker fetch routing", () => {
 
   it("returns 404 for unknown paths", async () => {
     const { env } = createEnv();
-    const response = await handleWorkerFetch(new Request("https://worker.local/unknown"), env);
+    const response = await handleWorkerFetch(workerRequest("/unknown"), env);
     expect(response.status).toBe(404);
   });
 
   it("forwards cell-last-edit requests to tile owner by tile key", async () => {
     const { env, tileOwner } = createEnv();
-    const response = await handleWorkerFetch(
-      new Request("https://worker.local/cell-last-edit?tile=2:3&i=17"),
-      env
-    );
+    const response = await handleWorkerFetch(workerRequest("/cell-last-edit?tile=2:3&i=17"), env);
 
     expect(response.status).toBe(204);
     expect(tileOwner.requestedNames).toEqual(["2:3"]);
@@ -60,16 +61,16 @@ describe("top-level worker fetch routing", () => {
 
   it("rejects invalid cell-last-edit requests", async () => {
     const { env, tileOwner } = createEnv();
-    const badRequests = [
-      "https://worker.local/cell-last-edit",
-      "https://worker.local/cell-last-edit?tile=2:3",
-      "https://worker.local/cell-last-edit?tile=bad&i=1",
-      "https://worker.local/cell-last-edit?tile=2:3&i=-1",
-      "https://worker.local/cell-last-edit?tile=2:3&i=abc",
+    const badPaths = [
+      "/cell-last-edit",
+      "/cell-last-edit?tile=2:3",
+      "/cell-last-edit?tile=bad&i=1",
+      "/cell-last-edit?tile=2:3&i=-1",
+      "/cell-last-edit?tile=2:3&i=abc",
     ];
 
-    for (const url of badRequests) {
-      const response = await handleWorkerFetch(new Request(url), env);
+    for (const path of badPaths) {
+      const response = await handleWorkerFetch(workerRequest(path), env);
       expect(response.status).toBe(400);
     }
 
@@ -78,14 +79,14 @@ describe("top-level worker fetch routing", () => {
 
   it("rejects /ws when upgrade header is missing", async () => {
     const { env } = createEnv();
-    const response = await handleWorkerFetch(new Request("https://worker.local/ws"), env);
+    const response = await handleWorkerFetch(workerRequest("/ws"), env);
     expect(response.status).toBe(426);
   });
 
   it("forwards websocket requests to selected shard with uid/name/shard params", async () => {
     const { env, connectionShard } = createEnv();
     const response = await handleWorkerFetch(
-      new Request("https://worker.local/ws", {
+      workerRequest("/ws", {
         headers: {
           upgrade: "websocket",
           "x-trace-id": "trace_123",

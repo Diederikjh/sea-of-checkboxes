@@ -30,7 +30,7 @@ function createTileOwnerHarness() {
   };
 }
 
-async function postJson(path: string, body: unknown): Promise<Request> {
+function postJson(path: string, body: unknown): Request {
   return new Request(`https://tile-owner.internal${path}`, {
     method: "POST",
     headers: {
@@ -40,7 +40,7 @@ async function postJson(path: string, body: unknown): Promise<Request> {
   });
 }
 
-async function getJson(path: string): Promise<Request> {
+function getJson(path: string): Request {
   return new Request(`https://tile-owner.internal${path}`, {
     method: "GET",
   });
@@ -81,14 +81,14 @@ describe("TileOwnerDO propagation across restart", () => {
     const first = harness.createInstance();
 
     await first.fetch(
-      await postJson("/watch", {
+      postJson("/watch", {
         tile: "0:0",
         shard: "shard-a",
         action: "sub",
       })
     );
     await first.fetch(
-      await postJson("/watch", {
+      postJson("/watch", {
         tile: "0:0",
         shard: "shard-b",
         action: "sub",
@@ -96,7 +96,7 @@ describe("TileOwnerDO propagation across restart", () => {
     );
 
     await first.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 1,
         v: 1,
@@ -114,7 +114,7 @@ describe("TileOwnerDO propagation across restart", () => {
     // Recreate the DO instance with the same storage to simulate lifecycle recycle.
     const second = harness.createInstance();
     await second.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 2,
         v: 1,
@@ -133,7 +133,7 @@ describe("TileOwnerDO propagation across restart", () => {
     const first = harness.createInstance();
 
     await first.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 15,
         v: 1,
@@ -142,7 +142,7 @@ describe("TileOwnerDO propagation across restart", () => {
     );
 
     const second = harness.createInstance();
-    const snapshotResponse = await second.fetch(await getJson("/snapshot?tile=0:0"));
+    const snapshotResponse = await second.fetch(getJson("/snapshot?tile=0:0"));
     expect(snapshotResponse.ok).toBe(true);
 
     const snapshot = (await snapshotResponse.json()) as {
@@ -164,7 +164,7 @@ describe("TileOwnerDO propagation across restart", () => {
     const owner = harness.createInstance();
 
     await owner.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 15,
         v: 1,
@@ -175,7 +175,7 @@ describe("TileOwnerDO propagation across restart", () => {
       })
     );
 
-    const editedResponse = await owner.fetch(await getJson("/cell-last-edit?tile=0:0&i=15"));
+    const editedResponse = await owner.fetch(getJson("/cell-last-edit?tile=0:0&i=15"));
     expect(editedResponse.ok).toBe(true);
     await expect(editedResponse.json()).resolves.toEqual({
       tile: "0:0",
@@ -187,7 +187,7 @@ describe("TileOwnerDO propagation across restart", () => {
       },
     });
 
-    const untouchedResponse = await owner.fetch(await getJson("/cell-last-edit?tile=0:0&i=16"));
+    const untouchedResponse = await owner.fetch(getJson("/cell-last-edit?tile=0:0&i=16"));
     expect(untouchedResponse.ok).toBe(true);
     await expect(untouchedResponse.json()).resolves.toEqual({
       tile: "0:0",
@@ -201,7 +201,7 @@ describe("TileOwnerDO propagation across restart", () => {
     const first = harness.createInstance();
 
     await first.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 42,
         v: 1,
@@ -213,7 +213,7 @@ describe("TileOwnerDO propagation across restart", () => {
     );
 
     const second = harness.createInstance();
-    const response = await second.fetch(await getJson("/cell-last-edit?tile=0:0&i=42"));
+    const response = await second.fetch(getJson("/cell-last-edit?tile=0:0&i=42"));
     expect(response.ok).toBe(true);
     await expect(response.json()).resolves.toEqual({
       tile: "0:0",
@@ -231,21 +231,21 @@ describe("TileOwnerDO propagation across restart", () => {
     const first = harness.createInstance();
 
     await first.fetch(
-      await postJson("/watch", {
+      postJson("/watch", {
         tile: "0:0",
         shard: "shard-a",
         action: "sub",
       })
     );
     await first.fetch(
-      await postJson("/watch", {
+      postJson("/watch", {
         tile: "0:0",
         shard: "shard-b",
         action: "sub",
       })
     );
     await first.fetch(
-      await postJson("/watch", {
+      postJson("/watch", {
         tile: "0:0",
         shard: "shard-b",
         action: "unsub",
@@ -254,7 +254,7 @@ describe("TileOwnerDO propagation across restart", () => {
 
     const second = harness.createInstance();
     await second.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 3,
         v: 1,
@@ -275,7 +275,7 @@ describe("TileOwnerDO propagation across restart", () => {
     const owner = harness.createInstance();
 
     await owner.fetch(
-      await postJson("/watch", {
+      postJson("/watch", {
         tile: "0:0",
         shard: "shard-a",
         action: "sub",
@@ -284,7 +284,7 @@ describe("TileOwnerDO propagation across restart", () => {
     harness.shardNamespace.getByName("shard-a").setNeverResolvePath("/tile-batch", true);
 
     const setCellPromise = owner.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 22,
         v: 1,
@@ -341,7 +341,7 @@ describe("TileOwnerDO propagation across restart", () => {
     };
 
     const owner = new TileOwnerDO(state, env, { persistence });
-    const snapshotResponse = await owner.fetch(await getJson("/snapshot?tile=0:0"));
+    const snapshotResponse = await owner.fetch(getJson("/snapshot?tile=0:0"));
     expect(snapshotResponse.ok).toBe(true);
     const snapshot = (await snapshotResponse.json()) as {
       t: string;
@@ -357,7 +357,7 @@ describe("TileOwnerDO propagation across restart", () => {
     expect(bits[10]).toBe(1);
 
     await owner.fetch(
-      await postJson("/setCell", {
+      postJson("/setCell", {
         tile: "0:0",
         i: 11,
         v: 1,
@@ -392,7 +392,7 @@ describe("TileOwnerDO propagation across restart", () => {
     await storage.put("subscribers", ["shard-a"]);
 
     const first = new TileOwnerDO(state, env);
-    const firstSnapshotResponse = await first.fetch(await getJson("/snapshot?tile=0:0"));
+    const firstSnapshotResponse = await first.fetch(getJson("/snapshot?tile=0:0"));
     expect(firstSnapshotResponse.ok).toBe(true);
     const firstSnapshot = (await firstSnapshotResponse.json()) as {
       ver: number;
@@ -406,7 +406,7 @@ describe("TileOwnerDO propagation across restart", () => {
 
     await storage.put("snapshot", undefined);
     const second = new TileOwnerDO(state, env);
-    const secondSnapshotResponse = await second.fetch(await getJson("/snapshot?tile=0:0"));
+    const secondSnapshotResponse = await second.fetch(getJson("/snapshot?tile=0:0"));
     expect(secondSnapshotResponse.ok).toBe(true);
     const secondSnapshot = (await secondSnapshotResponse.json()) as {
       ver: number;

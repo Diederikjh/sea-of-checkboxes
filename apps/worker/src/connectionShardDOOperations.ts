@@ -32,6 +32,25 @@ export interface ConnectionShardDOOperationsContext {
   sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void>;
 }
 
+async function removeClientFromTile(
+  context: ConnectionShardDOOperationsContext,
+  uid: string,
+  tileKey: string
+): Promise<void> {
+  const subscribers = context.tileToClients.get(tileKey);
+  if (!subscribers) {
+    return;
+  }
+
+  subscribers.delete(uid);
+  if (subscribers.size !== 0) {
+    return;
+  }
+
+  context.tileToClients.delete(tileKey);
+  await context.watchTile(tileKey, "unsub");
+}
+
 export async function handleSubMessage(
   context: ConnectionShardDOOperationsContext,
   client: ConnectedClient,
@@ -82,18 +101,7 @@ export async function handleUnsubMessage(
     }
 
     client.subscribed.delete(tileKey);
-    const subscribers = context.tileToClients.get(tileKey);
-    if (!subscribers) {
-      continue;
-    }
-
-    subscribers.delete(client.uid);
-    if (subscribers.size !== 0) {
-      continue;
-    }
-
-    context.tileToClients.delete(tileKey);
-    await context.watchTile(tileKey, "unsub");
+    await removeClientFromTile(context, client.uid, tileKey);
   }
 }
 
@@ -107,8 +115,7 @@ export async function handleSetCellMessage(
     return;
   }
 
-  const isSubscribed = client.subscribed.has(message.tile);
-  if (!isSubscribed) {
+  if (!client.subscribed.has(message.tile)) {
     context.sendError(client, "not_subscribed", `Tile ${message.tile} is not currently subscribed`);
     await context.sendSnapshotToClient(client, message.tile);
     return;
@@ -165,17 +172,6 @@ export async function disconnectClientFromShard(
   context.clients.delete(uid);
 
   for (const tileKey of client.subscribed) {
-    const subscribers = context.tileToClients.get(tileKey);
-    if (!subscribers) {
-      continue;
-    }
-
-    subscribers.delete(uid);
-    if (subscribers.size !== 0) {
-      continue;
-    }
-
-    context.tileToClients.delete(tileKey);
-    await context.watchTile(tileKey, "unsub");
+    await removeClientFromTile(context, uid, tileKey);
   }
 }
