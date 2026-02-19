@@ -116,6 +116,14 @@ function indicesFromDirtyBlock(dirtyIndices) {
     return [];
   }
 
+  const dirtyCount = dirtyIndices.size;
+  const blockArea = (maxX - minX + 1) * (maxY - minY + 1);
+  // Keep sparse dirty sets sparse; expanding distant cursor footprints into a
+  // block can trigger large unnecessary redraws.
+  if (blockArea > dirtyCount * 4) {
+    return dirtyIndices;
+  }
+
   const indices = [];
   for (let y = minY; y <= maxY; y += 1) {
     for (let x = minX; x <= maxX; x += 1) {
@@ -208,6 +216,14 @@ function drawCursors({ graphics, cursors, camera, viewportWidth, viewportHeight 
     const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
     const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
     const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
+    if (
+      screen.x + radiusPx < 0
+      || screen.x - radiusPx > viewportWidth
+      || screen.y + radiusPx < 0
+      || screen.y - radiusPx > viewportHeight
+    ) {
+      continue;
+    }
     const color = stableCursorColor(cursor.uid);
 
     graphics.beginFill(color, 0.9);
