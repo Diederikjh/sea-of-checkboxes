@@ -12,7 +12,6 @@ import {
   type Env,
   type TileSetCellRequest,
   type TileSetCellResponse,
-  type TileWatchRequest,
 } from "./doCommon";
 import {
   disconnectClientFromShard,
@@ -25,6 +24,10 @@ import {
 } from "./connectionShardDOOperations";
 import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
 import { CursorCoordinator } from "./cursorCoordinator";
+import {
+  createConnectionShardTileGateway,
+  type ConnectionShardTileGateway,
+} from "./connectionShardTileGateway";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
@@ -62,6 +65,7 @@ export class ConnectionShardDO {
   #socketPairFactory: SocketPairFactory;
   #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
   #cursorCoordinator: CursorCoordinator;
+  #tileGateway: ConnectionShardTileGateway;
 
   constructor(
     state: DurableObjectStateLike,
@@ -79,6 +83,7 @@ export class ConnectionShardDO {
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
+    this.#tileGateway = createConnectionShardTileGateway(this.#env.TILE_OWNER);
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
       connectionShardNamespace: this.#env.CONNECTION_SHARD,
@@ -237,53 +242,20 @@ export class ConnectionShardDO {
     }
   }
 
-  #tileOwnerStub(tileKey: string) {
-    return this.#env.TILE_OWNER.getByName(tileKey);
-  }
-
-  async #watchTile(tileKey: string, action: "sub" | "unsub"): Promise<void> {
+  async #watchTile(
+    tileKey: string,
+    action: "sub" | "unsub"
+  ): Promise<{ ok: boolean; code?: string; msg?: string }> {
     const shard = this.#currentShardName();
-    const payload: TileWatchRequest = {
-      tile: tileKey,
-      shard,
-      action,
-    };
-
-    await this.#tileOwnerStub(tileKey).fetch("https://tile-owner.internal/watch", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    return this.#tileGateway.watchTile(tileKey, action, shard);
   }
 
   async #fetchTileSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null> {
-    const response = await this.#tileOwnerStub(tileKey).fetch(
-      `https://tile-owner.internal/snapshot?tile=${encodeURIComponent(tileKey)}`
-    );
-
-    if (!response.ok) {
-      return null;
-    }
-
-    return readJson<Extract<ServerMessage, { t: "tileSnap" }>>(response);
+    return this.#tileGateway.fetchSnapshot(tileKey);
   }
 
   async #setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null> {
-    const response = await this.#tileOwnerStub(payload.tile).fetch("https://tile-owner.internal/setCell", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      return null;
-    }
-
-    return readJson<TileSetCellResponse>(response);
+    return this.#tileGateway.setTileCell(payload);
   }
 
   async #sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void> {

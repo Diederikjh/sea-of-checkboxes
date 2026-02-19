@@ -172,6 +172,74 @@ describe("TileOwnerDO propagation across restart", () => {
     });
   });
 
+  it("switches tile to read-only mode when watcher threshold is exceeded", async () => {
+    const harness = createTileOwnerHarness();
+    const owner = harness.createInstance();
+
+    for (let index = 0; index < 8; index += 1) {
+      const response = await owner.fetch(
+        await postJson("/watch", {
+          tile: "0:0",
+          shard: `shard-${index}`,
+          action: "sub",
+        })
+      );
+      expect(response.status).toBe(204);
+    }
+
+    const response = await owner.fetch(
+      await postJson("/setCell", {
+        tile: "0:0",
+        i: 10,
+        v: 1,
+        op: "op_1",
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const result = (await response.json()) as { accepted: boolean; changed: boolean; reason?: string };
+    expect(result.accepted).toBe(false);
+    expect(result.changed).toBe(false);
+    expect(result.reason).toBe("tile_readonly_hot");
+  });
+
+  it("denies new shard watchers when oversubscribed", async () => {
+    const harness = createTileOwnerHarness();
+    const owner = harness.createInstance();
+
+    for (let index = 0; index < 12; index += 1) {
+      const response = await owner.fetch(
+        await postJson("/watch", {
+          tile: "0:0",
+          shard: `shard-${index}`,
+          action: "sub",
+        })
+      );
+      expect(response.status).toBe(204);
+    }
+
+    const denyResponse = await owner.fetch(
+      await postJson("/watch", {
+        tile: "0:0",
+        shard: "shard-over",
+        action: "sub",
+      })
+    );
+
+    expect(denyResponse.status).toBe(429);
+    const body = (await denyResponse.json()) as { code?: string };
+    expect(body.code).toBe("tile_sub_denied");
+
+    const existingResponse = await owner.fetch(
+      await postJson("/watch", {
+        tile: "0:0",
+        shard: "shard-0",
+        action: "sub",
+      })
+    );
+    expect(existingResponse.status).toBe(204);
+  });
+
   it("does not block setCell response on slow shard fanout", async () => {
     const harness = createTileOwnerHarness();
     const owner = harness.createInstance();

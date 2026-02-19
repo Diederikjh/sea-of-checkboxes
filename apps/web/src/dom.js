@@ -8,8 +8,10 @@ export function getRequiredElements() {
   const statusEl = document.querySelector("#status");
   const zoomEl = document.querySelector("#zoom-readout");
   const titleEl = document.querySelector("#hud h1");
+  const interactionOverlayEl = document.querySelector("#interaction-overlay");
+  const interactionOverlayTextEl = document.querySelector("#interaction-overlay-text");
 
-  if (!canvas || !identityEl || !statusEl || !zoomEl) {
+  if (!canvas || !identityEl || !statusEl || !zoomEl || !interactionOverlayEl || !interactionOverlayTextEl) {
     throw new Error("Missing required DOM elements");
   }
 
@@ -19,6 +21,8 @@ export function getRequiredElements() {
     statusEl,
     zoomEl,
     titleEl,
+    interactionOverlayEl,
+    interactionOverlayTextEl,
   };
 }
 
