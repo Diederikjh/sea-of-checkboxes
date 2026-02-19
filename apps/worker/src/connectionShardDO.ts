@@ -106,7 +106,7 @@ function isValidCursorRelayUpdate(value: unknown): value is CursorRelayUpdate {
   if (!isFiniteNumber(update.x) || !isFiniteNumber(update.y)) {
     return false;
   }
-  if (!Number.isInteger(update.seq) || update.seq < 1) {
+  if (typeof update.seq !== "number" || !Number.isInteger(update.seq) || update.seq < 1) {
     return false;
   }
   if (!isFiniteNumber(update.seenAt) || update.seenAt < 0) {

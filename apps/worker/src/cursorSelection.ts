@@ -31,15 +31,12 @@ function squaredDistance(ax: number, ay: number, bx: number, by: number): number
 }
 
 function getReferencePoint(client: CursorSelectionClient): { x: number; y: number } | null {
-  if (
-    Number.isFinite(client.lastCursorX)
-    && Number.isFinite(client.lastCursorY)
-    && client.lastCursorX !== null
-    && client.lastCursorY !== null
-  ) {
+  const x = client.lastCursorX;
+  const y = client.lastCursorY;
+  if (typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)) {
     return {
-      x: client.lastCursorX,
-      y: client.lastCursorY,
+      x,
+      y,
     };
   }
   return null;
