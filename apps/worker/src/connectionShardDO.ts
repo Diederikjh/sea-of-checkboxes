@@ -12,7 +12,6 @@ import {
   type Env,
   type TileSetCellRequest,
   type TileSetCellResponse,
-  type TileWatchRequest,
 } from "./doCommon";
 import {
   disconnectClientFromShard,
@@ -25,33 +24,15 @@ import {
 } from "./connectionShardDOOperations";
 import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
 import { CursorCoordinator } from "./cursorCoordinator";
+import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
   type SocketPairFactory,
   type WebSocketUpgradeResponseFactory,
 } from "./socketPair";
+import { readBinaryMessageEventPayload } from "./socketMessagePayload";
 import { fanoutTileBatchToSubscribers } from "./tileBatchFanout";
-
-function toBinaryPayload(data: unknown): Uint8Array | null {
-  if (data instanceof Uint8Array) {
-    return data;
-  }
-  if (data instanceof ArrayBuffer) {
-    return new Uint8Array(data);
-  }
-  return null;
-}
-
-function readMessageEventData(event: unknown): unknown {
-  if (typeof event !== "object" || event === null) {
-    return null;
-  }
-  if (!("data" in event)) {
-    return null;
-  }
-  return (event as { data: unknown }).data;
-}
 
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
@@ -62,6 +43,7 @@ export class ConnectionShardDO {
   #socketPairFactory: SocketPairFactory;
   #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
   #cursorCoordinator: CursorCoordinator;
+  #tileGateway: ConnectionShardTileGateway;
 
   constructor(
     state: DurableObjectStateLike,
@@ -86,6 +68,10 @@ export class ConnectionShardDO {
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
       },
+    });
+    this.#tileGateway = new ConnectionShardTileGateway({
+      tileOwnerNamespace: this.#env.TILE_OWNER,
+      getCurrentShardName: () => this.#currentShardName(),
     });
   }
 
@@ -153,7 +139,7 @@ export class ConnectionShardDO {
     const context = this.#operationsContext();
 
     serverSocket.addEventListener("message", (event: unknown) => {
-      const payload = toBinaryPayload(readMessageEventData(event));
+      const payload = readBinaryMessageEventPayload(event);
       if (!payload) {
         this.#sendError(client, "bad_message", "Expected binary message payload");
         return;
@@ -237,53 +223,16 @@ export class ConnectionShardDO {
     }
   }
 
-  #tileOwnerStub(tileKey: string) {
-    return this.#env.TILE_OWNER.getByName(tileKey);
-  }
-
   async #watchTile(tileKey: string, action: "sub" | "unsub"): Promise<void> {
-    const shard = this.#currentShardName();
-    const payload: TileWatchRequest = {
-      tile: tileKey,
-      shard,
-      action,
-    };
-
-    await this.#tileOwnerStub(tileKey).fetch("https://tile-owner.internal/watch", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    await this.#tileGateway.watchTile(tileKey, action);
   }
 
   async #fetchTileSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null> {
-    const response = await this.#tileOwnerStub(tileKey).fetch(
-      `https://tile-owner.internal/snapshot?tile=${encodeURIComponent(tileKey)}`
-    );
-
-    if (!response.ok) {
-      return null;
-    }
-
-    return readJson<Extract<ServerMessage, { t: "tileSnap" }>>(response);
+    return this.#tileGateway.fetchSnapshot(tileKey);
   }
 
   async #setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null> {
-    const response = await this.#tileOwnerStub(payload.tile).fetch("https://tile-owner.internal/setCell", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      return null;
-    }
-
-    return readJson<TileSetCellResponse>(response);
+    return this.#tileGateway.setTileCell(payload);
   }
 
   async #sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void> {
