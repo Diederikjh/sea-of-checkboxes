@@ -53,6 +53,16 @@ function readMessageEventData(event: unknown): unknown {
   return (event as { data: unknown }).data;
 }
 
+interface ConnectionShardTileGateway {
+  watchTile(
+    tileKey: string,
+    action: "sub" | "unsub",
+    shard: string
+  ): Promise<{ ok: boolean; code?: string; msg?: string }>;
+  fetchSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null>;
+  setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null>;
+}
+
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -62,11 +72,7 @@ export class ConnectionShardDO {
   #socketPairFactory: SocketPairFactory;
   #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
   #cursorCoordinator: CursorCoordinator;
-  #tileGateway: {
-    watchTile(tileKey: string, payload: TileWatchRequest): Promise<Response>;
-    fetchSnapshot(tileKey: string): Promise<Response>;
-    setCell(payload: TileSetCellRequest): Promise<Response>;
-  };
+  #tileGateway: ConnectionShardTileGateway;
 
   constructor(
     state: DurableObjectStateLike,
@@ -85,26 +91,58 @@ export class ConnectionShardDO {
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
     this.#tileGateway = {
-      watchTile: async (tileKey, payload) =>
-        this.#env.TILE_OWNER.getByName(tileKey).fetch("https://tile-owner.internal/watch", {
+      watchTile: async (tileKey, action, shard) => {
+        const payload: TileWatchRequest = {
+          tile: tileKey,
+          shard,
+          action,
+        };
+
+        const response = await this.#env.TILE_OWNER.getByName(tileKey).fetch("https://tile-owner.internal/watch", {
           method: "POST",
           headers: {
             "content-type": "application/json",
           },
           body: JSON.stringify(payload),
-        }),
-      fetchSnapshot: (tileKey) =>
-        this.#env.TILE_OWNER
+        });
+
+        if (response.ok) {
+          return { ok: true };
+        }
+
+        const errorBody = await readJson<{ code?: string; msg?: string }>(response);
+        return {
+          ok: false,
+          code: errorBody?.code ?? "watch_rejected",
+          msg: errorBody?.msg ?? `Watch request failed (${response.status})`,
+        };
+      },
+      fetchSnapshot: async (tileKey) => {
+        const response = await this.#env.TILE_OWNER
           .getByName(tileKey)
-          .fetch(`https://tile-owner.internal/snapshot?tile=${encodeURIComponent(tileKey)}`),
-      setCell: (payload) =>
-        this.#env.TILE_OWNER.getByName(payload.tile).fetch("https://tile-owner.internal/setCell", {
+          .fetch(`https://tile-owner.internal/snapshot?tile=${encodeURIComponent(tileKey)}`);
+
+        if (!response.ok) {
+          return null;
+        }
+
+        return readJson<Extract<ServerMessage, { t: "tileSnap" }>>(response);
+      },
+      setTileCell: async (payload) => {
+        const response = await this.#env.TILE_OWNER.getByName(payload.tile).fetch("https://tile-owner.internal/setCell", {
           method: "POST",
           headers: {
             "content-type": "application/json",
           },
           body: JSON.stringify(payload),
-        }),
+        });
+
+        if (!response.ok) {
+          return null;
+        }
+
+        return readJson<TileSetCellResponse>(response);
+      },
     };
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
@@ -269,44 +307,15 @@ export class ConnectionShardDO {
     action: "sub" | "unsub"
   ): Promise<{ ok: boolean; code?: string; msg?: string }> {
     const shard = this.#currentShardName();
-    const payload: TileWatchRequest = {
-      tile: tileKey,
-      shard,
-      action,
-    };
-
-    const response = await this.#tileGateway.watchTile(tileKey, payload);
-
-    if (response.ok) {
-      return { ok: true };
-    }
-
-    const errorBody = await readJson<{ code?: string; msg?: string }>(response);
-    return {
-      ok: false,
-      code: errorBody?.code ?? "watch_rejected",
-      msg: errorBody?.msg ?? `Watch request failed (${response.status})`,
-    };
+    return this.#tileGateway.watchTile(tileKey, action, shard);
   }
 
   async #fetchTileSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null> {
-    const response = await this.#tileGateway.fetchSnapshot(tileKey);
-
-    if (!response.ok) {
-      return null;
-    }
-
-    return readJson<Extract<ServerMessage, { t: "tileSnap" }>>(response);
+    return this.#tileGateway.fetchSnapshot(tileKey);
   }
 
   async #setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null> {
-    const response = await this.#tileGateway.setCell(payload);
-
-    if (!response.ok) {
-      return null;
-    }
-
-    return readJson<TileSetCellResponse>(response);
+    return this.#tileGateway.setTileCell(payload);
   }
 
   async #sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void> {
