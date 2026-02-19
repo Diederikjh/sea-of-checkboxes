@@ -241,7 +241,10 @@ export class ConnectionShardDO {
     return this.#env.TILE_OWNER.getByName(tileKey);
   }
 
-  async #watchTile(tileKey: string, action: "sub" | "unsub"): Promise<void> {
+  async #watchTile(
+    tileKey: string,
+    action: "sub" | "unsub"
+  ): Promise<{ ok: boolean; code?: string; msg?: string }> {
     const shard = this.#currentShardName();
     const payload: TileWatchRequest = {
       tile: tileKey,
@@ -249,13 +252,24 @@ export class ConnectionShardDO {
       action,
     };
 
-    await this.#tileOwnerStub(tileKey).fetch("https://tile-owner.internal/watch", {
+    const response = await this.#tileOwnerStub(tileKey).fetch("https://tile-owner.internal/watch", {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
       body: JSON.stringify(payload),
     });
+
+    if (response.ok) {
+      return { ok: true };
+    }
+
+    const errorBody = await readJson<{ code?: string; msg?: string }>(response);
+    return {
+      ok: false,
+      code: errorBody?.code ?? "watch_rejected",
+      msg: errorBody?.msg ?? `Watch request failed (${response.status})`,
+    };
   }
 
   async #fetchTileSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null> {

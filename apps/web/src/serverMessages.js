@@ -51,6 +51,7 @@ export function createServerMessageHandler({
   selfIdentity,
   onVisualStateChanged = () => {},
   onTileCellsChanged = () => {},
+  setInteractionRestriction = () => {},
 }) {
   return (message) => {
     switch (message.t) {
@@ -102,6 +103,11 @@ export function createServerMessageHandler({
         break;
       }
       case "err": {
+        if (message.code === "setcell_rejected" && message.msg === "tile_readonly_hot") {
+          setInteractionRestriction("readonly", "Hot tile is read-only right now");
+        } else if (message.code === "tile_sub_denied") {
+          setInteractionRestriction("deny", "Tile is over capacity; access denied for now");
+        }
         setStatus(`Error: ${message.msg}`);
         break;
       }

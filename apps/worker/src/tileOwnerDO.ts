@@ -16,6 +16,9 @@ import {
 } from "./doCommon";
 import { TileOwner } from "./local/tileOwner";
 
+const TILE_READONLY_WATCHER_THRESHOLD = 8;
+const TILE_DENY_WATCHER_THRESHOLD = 12;
+
 export class TileOwnerDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -44,6 +47,16 @@ export class TileOwnerDO {
 
       await this.#ensureLoaded(payload.tile);
       if (payload.action === "sub") {
+        const alreadySubscribed = this.#subscriberShards.has(payload.shard);
+        if (!alreadySubscribed && this.#subscriberShards.size >= TILE_DENY_WATCHER_THRESHOLD) {
+          return jsonResponse(
+            {
+              code: "tile_sub_denied",
+              msg: "Tile is oversubscribed; new subscriptions are temporarily denied",
+            },
+            { status: 429 }
+          );
+        }
         this.#subscriberShards.add(payload.shard);
       } else {
         this.#subscriberShards.delete(payload.shard);
@@ -70,6 +83,15 @@ export class TileOwnerDO {
       }
 
       await this.#ensureLoaded(payload.tile);
+
+      if (this.#subscriberShards.size >= TILE_READONLY_WATCHER_THRESHOLD) {
+        return jsonResponse({
+          accepted: false,
+          changed: false,
+          ver: this.#tileOwner.getVersion(),
+          reason: "tile_readonly_hot",
+        } satisfies TileSetCellResponse);
+      }
 
       const result = this.#tileOwner.applySetCell({
         i: payload.i,

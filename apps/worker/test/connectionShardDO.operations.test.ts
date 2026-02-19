@@ -30,6 +30,7 @@ function createContext() {
   const clients = new Map<string, ConnectedClient>();
   const tileToClients = new Map<string, Set<string>>();
   const watched: Array<{ tile: string; action: "sub" | "unsub" }> = [];
+  let watchResult: { ok: boolean; code?: string; msg?: string } = { ok: true };
   const snapshots: Array<{ uid: string; tile: string }> = [];
   const sent: Array<{ uid: string; message: ServerMessage }> = [];
   const errors: Array<{ uid: string; code: string; msg: string }> = [];
@@ -55,6 +56,7 @@ function createContext() {
     },
     async watchTile(tileKey, action) {
       watched.push({ tile: tileKey, action });
+      return watchResult;
     },
     async setTileCell(payload) {
       setCellRequests.push(payload);
@@ -77,6 +79,9 @@ function createContext() {
     setCellRequests,
     setSetCellResult(value: TileSetCellResponse | null) {
       setCellResult = value;
+    },
+    setWatchResult(value: { ok: boolean; code?: string; msg?: string }) {
+      watchResult = value;
     },
   };
 }
@@ -153,6 +158,42 @@ describe("connection shard DO operations", () => {
     expect(harness.setCellRequests.length).toBe(1);
     expect(harness.errors.length).toBe(1);
     expect(harness.errors[0]?.code).toBe("setcell_rejected");
+  });
+
+  it("denies subscribe when tile owner rejects watch registration", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+    harness.clients.set(client.uid, client);
+    harness.setWatchResult({
+      ok: false,
+      code: "tile_sub_denied",
+      msg: "Tile is oversubscribed",
+    });
+
+    await handleSubMessage(harness.context, client, ["0:0"]);
+
+    expect(client.subscribed.has("0:0")).toBe(false);
+    expect(harness.tileToClients.has("0:0")).toBe(false);
+    expect(harness.errors[0]?.code).toBe("tile_sub_denied");
+    expect(harness.snapshots.length).toBe(0);
+  });
+
+  it("returns watch rejection before setCell when watch reassert fails", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+    client.subscribed.add("0:0");
+    harness.setWatchResult({ ok: false, code: "tile_sub_denied", msg: "Tile unavailable" });
+
+    await handleSetCellMessage(harness.context, client, {
+      t: "setCell",
+      tile: "0:0",
+      i: 9,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(harness.setCellRequests.length).toBe(0);
+    expect(harness.errors[0]?.code).toBe("tile_sub_denied");
   });
 
   it("disconnect removes subscriptions and unsubscribes last tile watcher", async () => {
