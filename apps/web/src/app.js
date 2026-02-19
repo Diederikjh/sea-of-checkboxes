@@ -17,6 +17,7 @@ import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { logger } from "./logger";
+import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
 import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
 import { createServerMessageHandler } from "./serverMessages";
 import { createRenderLoop } from "./renderLoop";
@@ -152,26 +153,29 @@ export async function startApp() {
   const perfProbe = createPerfProbe({
     enabled: isPerfProbeEnabled(),
   });
+  const protocolLogsEnabled = logger.isEnabled(logger.categories.PROTOCOL);
   const onWebGlContextLost = (event) => {
-    perfProbe.increment("webgl.context_lost");
-    console.error("WebGL context lost", event);
+    perfProbe.increment(PERF_COUNTER.WEBGL_CONTEXT_LOST);
     event.preventDefault();
   };
   const onWebGlContextRestored = () => {
-    perfProbe.increment("webgl.context_restored");
-    console.info("WebGL context restored");
+    perfProbe.increment(PERF_COUNTER.WEBGL_CONTEXT_RESTORED);
   };
-  canvas.addEventListener("webglcontextlost", onWebGlContextLost, { passive: false });
-  canvas.addEventListener("webglcontextrestored", onWebGlContextRestored);
+  if (perfProbe.enabled) {
+    canvas.addEventListener("webglcontextlost", onWebGlContextLost, { passive: false });
+    canvas.addEventListener("webglcontextrestored", onWebGlContextRestored);
+  }
 
   const wireTransport = createWireTransport();
   const transport = {
     connect(onServerMessage) {
       wireTransport.connect((payload) => {
-        perfProbe.increment("ws.rx_count");
-        perfProbe.increment("ws.rx_bytes", payload.length);
-        const message = perfProbe.measure("protocol.decode_ms", () => decodeServerMessageBinary(payload));
-        if (logger.isEnabled(logger.categories.PROTOCOL)) {
+        perfProbe.increment(PERF_COUNTER.WS_RX_COUNT);
+        perfProbe.increment(PERF_COUNTER.WS_RX_BYTES, payload.length);
+        const message = perfProbe.measure(PERF_TIMING.PROTOCOL_DECODE_MS, () =>
+          decodeServerMessageBinary(payload)
+        );
+        if (protocolLogsEnabled) {
           const payloadInfo = describePayload(payload);
           logger.protocol("rx", {
             ...payloadInfo,
@@ -182,10 +186,12 @@ export async function startApp() {
       });
     },
     send(message) {
-      const payload = perfProbe.measure("protocol.encode_ms", () => encodeClientMessageBinary(message));
-      perfProbe.increment("ws.tx_count");
-      perfProbe.increment("ws.tx_bytes", payload.length);
-      if (logger.isEnabled(logger.categories.PROTOCOL)) {
+      const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
+        encodeClientMessageBinary(message)
+      );
+      perfProbe.increment(PERF_COUNTER.WS_TX_COUNT);
+      perfProbe.increment(PERF_COUNTER.WS_TX_BYTES, payload.length);
+      if (protocolLogsEnabled) {
         logger.protocol("tx", {
           ...describePayload(payload),
           ...summarizeMessage(message),
@@ -255,8 +261,10 @@ export async function startApp() {
 
   return () => {
     window.removeEventListener("resize", onResize);
-    canvas.removeEventListener("webglcontextlost", onWebGlContextLost);
-    canvas.removeEventListener("webglcontextrestored", onWebGlContextRestored);
+    if (perfProbe.enabled) {
+      canvas.removeEventListener("webglcontextlost", onWebGlContextLost);
+      canvas.removeEventListener("webglcontextrestored", onWebGlContextRestored);
+    }
     teardownInputHandlers();
     cursorLabels.destroy();
     renderLoop.dispose();

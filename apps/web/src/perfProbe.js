@@ -6,6 +6,9 @@ function toBool(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+const PERF_SAMPLE_WINDOW_KEY = "__seaPerfSamples";
+const MAX_STORED_SAMPLES = 600;
+
 function createNoopPerfProbe() {
   return Object.freeze({
     enabled: false,
@@ -23,14 +26,13 @@ function recordSampleOnWindow(sample) {
     return;
   }
 
-  const key = "__seaPerfSamples";
-  const existing = window[key];
+  const existing = window[PERF_SAMPLE_WINDOW_KEY];
   const samples = Array.isArray(existing) ? existing : [];
   samples.push(sample);
-  if (samples.length > 600) {
+  if (samples.length > MAX_STORED_SAMPLES) {
     samples.shift();
   }
-  window[key] = samples;
+  window[PERF_SAMPLE_WINDOW_KEY] = samples;
 }
 
 export function isPerfProbeEnabled({
@@ -97,15 +99,8 @@ export function createPerfProbe({ enabled = false, windowMs = 1_000 } = {}) {
       };
     }
 
-    const counterSummary = {};
-    for (const [name, value] of counters.entries()) {
-      counterSummary[name] = Number(value.toFixed ? value.toFixed(2) : value);
-    }
-
-    const gaugeSummary = {};
-    for (const [name, value] of gauges.entries()) {
-      gaugeSummary[name] = Number(value.toFixed ? value.toFixed(2) : value);
-    }
+    const counterSummary = Object.fromEntries(counters.entries());
+    const gaugeSummary = Object.fromEntries(gauges.entries());
 
     const sample = {
       elapsedMs: Number(elapsedMs.toFixed(1)),
@@ -115,7 +110,6 @@ export function createPerfProbe({ enabled = false, windowMs = 1_000 } = {}) {
     };
 
     recordSampleOnWindow(sample);
-    console.log("[perf]", sample);
     console.log("[perf-json]", JSON.stringify(sample));
 
     counters.clear();

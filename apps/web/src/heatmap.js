@@ -52,6 +52,7 @@ export class HeatStore {
 
     let hasVisibleHeat = false;
     const decayFactor = Math.exp(-dtSeconds / HEAT_TAU_SECONDS);
+    // Only decay tiles that currently contain visible heat.
     for (const tileKey of this.#activeTiles) {
       const tile = this.#tiles.get(tileKey);
       if (!tile) {

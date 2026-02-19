@@ -8,6 +8,7 @@ import {
   CURSOR_TTL_MS,
   cursorRadiusPx,
 } from "./cursorRenderConfig";
+import { PERF_COUNTER, PERF_GAUGE, PERF_TIMING } from "./perfMetricKeys";
 import { createPerfProbe } from "./perfProbe";
 import { smoothCursors } from "./cursorSmoothing";
 import { renderDirtyAreas, renderScene } from "./renderer";
@@ -172,16 +173,16 @@ export function createRenderLoop({
   };
 
   const onTick = (ticker) => {
-    perfProbe.increment("frame.total");
+    perfProbe.increment(PERF_COUNTER.FRAME_TOTAL);
     const dtSeconds = ticker.deltaMS / 1_000;
-    const hasAnimatedHeat = perfProbe.measure("heat.decay_ms", () => heatStore.decay(dtSeconds));
+    const hasAnimatedHeat = perfProbe.measure(PERF_TIMING.HEAT_DECAY_MS, () => heatStore.decay(dtSeconds));
     const nowMs = Date.now();
-    perfProbe.measure("cursor.smooth_ms", () => smoothCursors(cursors, dtSeconds));
-    perfProbe.measure("cursor.dirty_index_ms", () => updateCursorDirtyRegions(nowMs));
-    perfProbe.gauge("cursor.count", cursors.size);
+    perfProbe.measure(PERF_TIMING.CURSOR_SMOOTH_MS, () => smoothCursors(cursors, dtSeconds));
+    perfProbe.measure(PERF_TIMING.CURSOR_DIRTY_INDEX_MS, () => updateCursorDirtyRegions(nowMs));
+    perfProbe.gauge(PERF_GAUGE.CURSOR_COUNT, cursors.size);
 
     if (needsSubscriptionRefresh) {
-      perfProbe.measure("subscriptions.sync_ms", () => syncSubscriptions());
+      perfProbe.measure(PERF_TIMING.SUBSCRIPTIONS_SYNC_MS, () => syncSubscriptions());
       needsRender = true;
     }
 
@@ -192,9 +193,9 @@ export function createRenderLoop({
     };
 
     if (shouldPatchDirtyAreas(frameState)) {
-      perfProbe.increment("frame.patch");
-      perfProbe.gauge("dirty.tile_count", dirtyTileCells.size);
-      const activeCursors = perfProbe.measure("render.patch_ms", () => renderDirtyAreas({
+      perfProbe.increment(PERF_COUNTER.FRAME_PATCH);
+      perfProbe.gauge(PERF_GAUGE.DIRTY_TILE_COUNT, dirtyTileCells.size);
+      const activeCursors = perfProbe.measure(PERF_TIMING.RENDER_PATCH_MS, () => renderDirtyAreas({
         graphics,
         camera,
         viewportWidth: app.renderer.width,
@@ -205,7 +206,7 @@ export function createRenderLoop({
         heatStore,
         cursors,
       }));
-      perfProbe.measure("cursor.labels_ms", () =>
+      perfProbe.measure(PERF_TIMING.CURSOR_LABELS_MS, () =>
         cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height)
       );
       dirtyTileCells.clear();
@@ -214,13 +215,13 @@ export function createRenderLoop({
     }
 
     if (shouldSkipFrame(frameState)) {
-      perfProbe.increment("frame.skip");
+      perfProbe.increment(PERF_COUNTER.FRAME_SKIP);
       perfProbe.flushMaybe();
       return;
     }
 
-    perfProbe.increment("frame.full");
-    const activeCursors = perfProbe.measure("render.full_ms", () => renderScene({
+    perfProbe.increment(PERF_COUNTER.FRAME_FULL);
+    const activeCursors = perfProbe.measure(PERF_TIMING.RENDER_FULL_MS, () => renderScene({
       graphics,
       camera,
       viewportWidth: app.renderer.width,
@@ -231,7 +232,7 @@ export function createRenderLoop({
       cursors,
     }));
 
-    perfProbe.measure("cursor.labels_ms", () =>
+    perfProbe.measure(PERF_TIMING.CURSOR_LABELS_MS, () =>
       cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height)
     );
 
