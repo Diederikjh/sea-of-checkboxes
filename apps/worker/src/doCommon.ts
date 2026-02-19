@@ -19,6 +19,15 @@ export interface DurableObjectStateLike {
   };
 }
 
+export interface R2ObjectBodyLike {
+  text(): Promise<string>;
+}
+
+export interface R2BucketLike {
+  get(key: string): Promise<R2ObjectBodyLike | null>;
+  put(key: string, value: string): Promise<void>;
+}
+
 export interface ExecutionContextLike {
   waitUntil(promise: Promise<unknown>): void;
 }
@@ -26,6 +35,7 @@ export interface ExecutionContextLike {
 export interface Env {
   CONNECTION_SHARD: DurableObjectNamespaceLike;
   TILE_OWNER: DurableObjectNamespaceLike;
+  TILE_SNAPSHOTS?: R2BucketLike;
 }
 
 export interface TileWatchRequest {
