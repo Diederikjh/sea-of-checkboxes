@@ -12,7 +12,6 @@ import {
   type Env,
   type TileSetCellRequest,
   type TileSetCellResponse,
-  type TileWatchRequest,
 } from "./doCommon";
 import {
   disconnectClientFromShard,
@@ -25,12 +24,14 @@ import {
 } from "./connectionShardDOOperations";
 import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
 import { CursorCoordinator } from "./cursorCoordinator";
+import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
   type SocketPairFactory,
   type WebSocketUpgradeResponseFactory,
 } from "./socketPair";
+import { readBinaryMessageEventPayload } from "./socketMessagePayload";
 import { fanoutTileBatchToSubscribers } from "./tileBatchFanout";
 
 function toBinaryPayload(data: unknown): Uint8Array | null {
@@ -152,6 +153,10 @@ export class ConnectionShardDO {
         this.#sendServerMessage(client, message);
       },
     });
+    this.#tileGateway = new ConnectionShardTileGateway({
+      tileOwnerNamespace: this.#env.TILE_OWNER,
+      getCurrentShardName: () => this.#currentShardName(),
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -218,7 +223,7 @@ export class ConnectionShardDO {
     const context = this.#operationsContext();
 
     serverSocket.addEventListener("message", (event: unknown) => {
-      const payload = toBinaryPayload(readMessageEventData(event));
+      const payload = readBinaryMessageEventPayload(event);
       if (!payload) {
         this.#sendError(client, "bad_message", "Expected binary message payload");
         return;

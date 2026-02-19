@@ -1,4 +1,5 @@
 import { MAX_REMOTE_CURSORS, TILE_SIZE } from "@sea/domain";
+import { CURSOR_TTL_MS, cursorRadiusPx } from "./cursorRenderConfig";
 
 function heatToColor(heat) {
   if (heat < 0.05) {
@@ -115,6 +116,14 @@ function indicesFromDirtyBlock(dirtyIndices) {
     return [];
   }
 
+  const dirtyCount = dirtyIndices.size;
+  const blockArea = (maxX - minX + 1) * (maxY - minY + 1);
+  // Keep sparse dirty sets sparse; expanding distant cursor footprints into a
+  // block can trigger large unnecessary redraws.
+  if (blockArea > dirtyCount * 4) {
+    return dirtyIndices;
+  }
+
   const indices = [];
   for (let y = minY; y <= maxY; y += 1) {
     for (let x = minX; x <= maxX; x += 1) {
@@ -196,21 +205,29 @@ function* iterateVisibleTiles(visibleTiles, tileStore, dirtyTileCells = null) {
 
 function getActiveCursors(cursors, nowMs) {
   return [...cursors.values()]
-    .filter((cursor) => nowMs - cursor.seenAt < 5_000)
+    .filter((cursor) => nowMs - cursor.seenAt < CURSOR_TTL_MS)
     .sort((a, b) => b.seenAt - a.seenAt)
     .slice(0, MAX_REMOTE_CURSORS);
 }
 
 function drawCursors({ graphics, cursors, camera, viewportWidth, viewportHeight }) {
-  const cellPx = camera.cellPixelSize;
+  const radiusPx = cursorRadiusPx(camera.cellPixelSize);
   for (const cursor of cursors) {
     const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
     const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
     const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
+    if (
+      screen.x + radiusPx < 0
+      || screen.x - radiusPx > viewportWidth
+      || screen.y + radiusPx < 0
+      || screen.y - radiusPx > viewportHeight
+    ) {
+      continue;
+    }
     const color = stableCursorColor(cursor.uid);
 
     graphics.beginFill(color, 0.9);
-    graphics.drawCircle(screen.x, screen.y, Math.max(2, cellPx * 0.28));
+    graphics.drawCircle(screen.x, screen.y, radiusPx);
     graphics.endFill();
   }
 }
@@ -224,9 +241,10 @@ export function renderDirtyAreas({
   dirtyTileCells,
   tileStore,
   heatStore,
+  cursors,
 }) {
   if (dirtyTileCells.size === 0) {
-    return;
+    return [];
   }
 
   for (const { tile, tileData, dirtyIndices } of iterateVisibleTiles(visibleTiles, tileStore, dirtyTileCells)) {
@@ -241,6 +259,20 @@ export function renderDirtyAreas({
       dirtyIndices,
     });
   }
+
+  let activeCursors = [];
+  if (cursors) {
+    activeCursors = getActiveCursors(cursors, Date.now());
+    drawCursors({
+      graphics,
+      cursors: activeCursors,
+      camera,
+      viewportWidth,
+      viewportHeight,
+    });
+  }
+
+  return activeCursors;
 }
 
 export function renderScene({
