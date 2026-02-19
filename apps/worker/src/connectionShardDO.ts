@@ -1,8 +1,4 @@
 import {
-  MAX_REMOTE_CURSORS,
-  tileKeyFromWorld,
-} from "@sea/domain";
-import {
   decodeClientMessageBinary,
   encodeServerMessageBinary,
   type ClientMessage,
@@ -27,24 +23,15 @@ import {
   type ConnectedClient,
   type ConnectionShardDOOperationsContext,
 } from "./connectionShardDOOperations";
-import {
-  type CursorPresence,
-  type CursorRelayBatch,
-  isValidCursorRelayBatch,
-} from "./cursorRelay";
+import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
+import { CursorCoordinator } from "./cursorCoordinator";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
   type SocketPairFactory,
   type WebSocketUpgradeResponseFactory,
 } from "./socketPair";
-import { selectCursorSubscriptions } from "./cursorSelection";
-import { peerShardNames } from "./sharding";
 import { fanoutTileBatchToSubscribers } from "./tileBatchFanout";
-
-const CURSOR_TTL_MS = 5_000;
-const CURSOR_SELECTION_REFRESH_MS = 250;
-const CURSOR_RELAY_FLUSH_MS = 100;
 
 function toBinaryPayload(data: unknown): Uint8Array | null {
   if (data instanceof Uint8Array) {
@@ -74,14 +61,7 @@ export class ConnectionShardDO {
   #tileToClients: Map<string, Set<string>>;
   #socketPairFactory: SocketPairFactory;
   #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
-  #cursorByUid: Map<string, CursorPresence>;
-  #cursorTileIndex: Map<string, Set<string>>;
-  #localCursorSeqByUid: Map<string, number>;
-  #pendingCursorRelays: Map<string, CursorPresence>;
-  #cursorRelayFlushTimer: ReturnType<typeof setTimeout> | null;
-  #cursorSelectionDirty: boolean;
-  #lastCursorSelectionRefreshMs: number;
-  #cursorSelectionRefreshTimer: ReturnType<typeof setTimeout> | null;
+  #cursorCoordinator: CursorCoordinator;
 
   constructor(
     state: DurableObjectStateLike,
@@ -99,14 +79,14 @@ export class ConnectionShardDO {
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
-    this.#cursorByUid = new Map();
-    this.#cursorTileIndex = new Map();
-    this.#localCursorSeqByUid = new Map();
-    this.#pendingCursorRelays = new Map();
-    this.#cursorRelayFlushTimer = null;
-    this.#cursorSelectionDirty = false;
-    this.#lastCursorSelectionRefreshMs = 0;
-    this.#cursorSelectionRefreshTimer = null;
+    this.#cursorCoordinator = new CursorCoordinator({
+      clients: this.#clients,
+      connectionShardNamespace: this.#env.CONNECTION_SHARD,
+      getCurrentShardName: () => this.#currentShardName(),
+      sendServerMessage: (client, message) => {
+        this.#sendServerMessage(client, message);
+      },
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -169,8 +149,7 @@ export class ConnectionShardDO {
 
     this.#clients.set(uid, client);
     this.#sendServerMessage(client, { t: "hello", uid, name });
-    this.#markCursorSelectionDirty();
-    this.#refreshCursorSelections(true);
+    this.#cursorCoordinator.onClientConnected(client);
     const context = this.#operationsContext();
 
     serverSocket.addEventListener("message", (event: unknown) => {
@@ -214,23 +193,21 @@ export class ConnectionShardDO {
       switch (message.t) {
         case "sub":
           await handleSubMessage(context, client, message.tiles);
-          this.#markCursorSelectionDirty();
-          this.#refreshCursorSelections(true);
+          this.#cursorCoordinator.onSubscriptionsChanged(true);
           return;
         case "unsub":
           await handleUnsubMessage(context, client, message.tiles);
-          this.#markCursorSelectionDirty();
-          this.#refreshCursorSelections(true);
+          this.#cursorCoordinator.onSubscriptionsChanged(true);
           return;
         case "setCell":
           await handleSetCellMessage(context, client, message);
-          this.#refreshCursorSelections(false);
+          this.#cursorCoordinator.onActivity();
           return;
         case "resyncTile":
           await handleResyncMessage(context, client, message.tile);
           return;
         case "cur":
-          this.#receiveLocalCursorUpdate(client, message.x, message.y);
+          this.#cursorCoordinator.onLocalCursor(client, message.x, message.y);
           return;
         default:
           return;
@@ -249,7 +226,7 @@ export class ConnectionShardDO {
         this.#sendServerMessage(client, batch);
       },
     });
-    this.#refreshCursorSelections(false);
+    this.#cursorCoordinator.onActivity();
   }
 
   #sendServerMessage(client: ConnectedClient, message: ServerMessage): void {
@@ -335,249 +312,11 @@ export class ConnectionShardDO {
 
   async #disconnectClient(context: ConnectionShardDOOperationsContext, uid: string): Promise<void> {
     await disconnectClientFromShard(context, uid);
-    this.#removeCursor(uid);
-    this.#localCursorSeqByUid.delete(uid);
-    this.#pendingCursorRelays.delete(uid);
-    this.#markCursorSelectionDirty();
-    this.#refreshCursorSelections(true);
-  }
-
-  #receiveLocalCursorUpdate(client: ConnectedClient, x: number, y: number): void {
-    const nowMs = Date.now();
-    client.lastCursorX = x;
-    client.lastCursorY = y;
-
-    const nextSeq = (this.#localCursorSeqByUid.get(client.uid) ?? 0) + 1;
-    this.#localCursorSeqByUid.set(client.uid, nextSeq);
-
-    const state: CursorPresence = {
-      uid: client.uid,
-      name: client.name,
-      x,
-      y,
-      seenAt: nowMs,
-      seq: nextSeq,
-      tileKey: tileKeyFromWorld(x, y),
-    };
-    this.#upsertCursor(state);
-    this.#markCursorSelectionDirty();
-    this.#refreshCursorSelections(false);
-    this.#sendCursorToSubscribedClients(state);
-
-    this.#pendingCursorRelays.set(state.uid, {
-      uid: state.uid,
-      name: state.name,
-      x: state.x,
-      y: state.y,
-      seenAt: state.seenAt,
-      seq: state.seq,
-      tileKey: state.tileKey,
-    });
-    this.#scheduleCursorRelayFlush();
+    this.#cursorCoordinator.onClientDisconnected(uid);
   }
 
   #receiveCursorBatch(batch: CursorRelayBatch): void {
-    if (batch.from === this.#currentShardName()) {
-      return;
-    }
-
-    let hadChanges = false;
-    for (const update of batch.updates) {
-      const existing = this.#cursorByUid.get(update.uid);
-      if (existing && existing.seq >= update.seq) {
-        continue;
-      }
-
-      const state: CursorPresence = {
-        uid: update.uid,
-        name: update.name,
-        x: update.x,
-        y: update.y,
-        seenAt: update.seenAt,
-        seq: update.seq,
-        tileKey: update.tileKey,
-      };
-      this.#upsertCursor(state);
-      this.#sendCursorToSubscribedClients(state);
-      hadChanges = true;
-    }
-
-    if (!hadChanges) {
-      return;
-    }
-
-    this.#markCursorSelectionDirty();
-    this.#refreshCursorSelections(false);
-  }
-
-  #scheduleCursorRelayFlush(): void {
-    if (this.#cursorRelayFlushTimer) {
-      return;
-    }
-
-    this.#cursorRelayFlushTimer = setTimeout(() => {
-      this.#cursorRelayFlushTimer = null;
-      void this.#flushCursorRelays();
-    }, CURSOR_RELAY_FLUSH_MS);
-  }
-
-  async #flushCursorRelays(): Promise<void> {
-    if (this.#pendingCursorRelays.size === 0) {
-      return;
-    }
-
-    const updates = Array.from(this.#pendingCursorRelays.values());
-    this.#pendingCursorRelays.clear();
-
-    const currentShard = this.#currentShardName();
-    const peers = peerShardNames(currentShard);
-    if (peers.length === 0) {
-      return;
-    }
-
-    const body = JSON.stringify({
-      from: currentShard,
-      updates,
-    });
-
-    void Promise.all(
-      peers.map(async (peerShard) => {
-        const stub = this.#env.CONNECTION_SHARD.getByName(peerShard);
-        await stub.fetch("https://connection-shard.internal/cursor-batch", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-          },
-          body,
-        });
-      })
-    ).catch(() => {
-      // Cursor fanout is best-effort.
-    });
-  }
-
-  #upsertCursor(state: CursorPresence): void {
-    const previous = this.#cursorByUid.get(state.uid);
-    if (previous?.tileKey && previous.tileKey !== state.tileKey) {
-      const bucket = this.#cursorTileIndex.get(previous.tileKey);
-      if (bucket) {
-        bucket.delete(state.uid);
-        if (bucket.size === 0) {
-          this.#cursorTileIndex.delete(previous.tileKey);
-        }
-      }
-    }
-
-    let tileBucket = this.#cursorTileIndex.get(state.tileKey);
-    if (!tileBucket) {
-      tileBucket = new Set();
-      this.#cursorTileIndex.set(state.tileKey, tileBucket);
-    }
-    tileBucket.add(state.uid);
-    this.#cursorByUid.set(state.uid, state);
-  }
-
-  #removeCursor(uid: string): void {
-    const existing = this.#cursorByUid.get(uid);
-    if (!existing) {
-      return;
-    }
-
-    const tileBucket = this.#cursorTileIndex.get(existing.tileKey);
-    if (tileBucket) {
-      tileBucket.delete(uid);
-      if (tileBucket.size === 0) {
-        this.#cursorTileIndex.delete(existing.tileKey);
-      }
-    }
-
-    this.#cursorByUid.delete(uid);
-  }
-
-  #markCursorSelectionDirty(): void {
-    this.#cursorSelectionDirty = true;
-  }
-
-  #pruneTransientState(nowMs: number): void {
-    for (const [uid, cursor] of this.#cursorByUid) {
-      if (nowMs - cursor.seenAt <= CURSOR_TTL_MS) {
-        continue;
-      }
-      this.#removeCursor(uid);
-    }
-  }
-
-  #refreshCursorSelections(force: boolean): void {
-    const nowMs = Date.now();
-    if (!force && !this.#cursorSelectionDirty) {
-      return;
-    }
-    if (!force && nowMs - this.#lastCursorSelectionRefreshMs < CURSOR_SELECTION_REFRESH_MS) {
-      const delayMs = CURSOR_SELECTION_REFRESH_MS - (nowMs - this.#lastCursorSelectionRefreshMs);
-      if (!this.#cursorSelectionRefreshTimer) {
-        this.#cursorSelectionRefreshTimer = setTimeout(() => {
-          this.#cursorSelectionRefreshTimer = null;
-          this.#refreshCursorSelections(true);
-        }, delayMs);
-      }
-      return;
-    }
-
-    if (this.#cursorSelectionRefreshTimer) {
-      clearTimeout(this.#cursorSelectionRefreshTimer);
-      this.#cursorSelectionRefreshTimer = null;
-    }
-
-    this.#pruneTransientState(nowMs);
-
-    for (const client of this.#clients.values()) {
-      const previous = client.cursorSubscriptions ?? new Set<string>();
-      const next = new Set(
-        selectCursorSubscriptions({
-          client,
-          cursorByUid: this.#cursorByUid,
-          cursorTileIndex: this.#cursorTileIndex,
-          nowMs,
-          cursorTtlMs: CURSOR_TTL_MS,
-          nearestLimit: MAX_REMOTE_CURSORS,
-        })
-      );
-
-      client.cursorSubscriptions = next;
-
-      for (const uid of next) {
-        if (previous.has(uid)) {
-          continue;
-        }
-        const cursor = this.#cursorByUid.get(uid);
-        if (!cursor) {
-          continue;
-        }
-        this.#sendCursorUpdate(client, cursor);
-      }
-    }
-
-    this.#lastCursorSelectionRefreshMs = nowMs;
-    this.#cursorSelectionDirty = false;
-  }
-
-  #sendCursorToSubscribedClients(cursor: CursorPresence): void {
-    for (const client of this.#clients.values()) {
-      if (!client.cursorSubscriptions?.has(cursor.uid)) {
-        continue;
-      }
-      this.#sendCursorUpdate(client, cursor);
-    }
-  }
-
-  #sendCursorUpdate(client: ConnectedClient, cursor: CursorPresence): void {
-    this.#sendServerMessage(client, {
-      t: "curUp",
-      uid: cursor.uid,
-      name: cursor.name,
-      x: cursor.x,
-      y: cursor.y,
-    });
+    this.#cursorCoordinator.onCursorBatch(batch);
   }
 
   #operationsContext(): ConnectionShardDOOperationsContext {
