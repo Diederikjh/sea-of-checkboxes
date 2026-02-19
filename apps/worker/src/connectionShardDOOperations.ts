@@ -16,6 +16,9 @@ export interface ConnectedClient {
   name: string;
   socket: SocketLike;
   subscribed: Set<string>;
+  lastCursorX?: number | null;
+  lastCursorY?: number | null;
+  cursorSubscriptions?: Set<string>;
 }
 
 export interface ConnectionShardDOOperationsContext {

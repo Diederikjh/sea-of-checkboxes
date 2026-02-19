@@ -213,6 +213,56 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "cellUpBatch")).toBe(false);
   });
 
+  it("ingests cursor batches and forwards only to clients with cursor subscriptions", async () => {
+    const harness = createHarness();
+    const socketA = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+    const socketB = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_b",
+      name: "Bob",
+      shard: "shard-a",
+    });
+
+    socketA.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socketA.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+
+    const response = await harness.shard.fetch(
+      new Request("https://connection-shard.internal/cursor-batch", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "shard-1",
+          updates: [
+            {
+              uid: "u_remote",
+              name: "Remote",
+              x: 1.5,
+              y: 1.5,
+              seenAt: Date.now(),
+              seq: 1,
+              tileKey: "0:0",
+            },
+          ],
+        }),
+      })
+    );
+
+    expect(response.status).toBe(204);
+
+    await waitFor(() => {
+      const messagesA = decodeMessages(socketA);
+      expect(messagesA.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(true);
+    });
+
+    const messagesB = decodeMessages(socketB);
+    expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(false);
+  });
+
   it("unsubscribes watcher on socket close when last subscriber disconnects", async () => {
     const harness = createHarness();
     const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {

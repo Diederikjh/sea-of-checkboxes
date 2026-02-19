@@ -3,8 +3,7 @@ import {
   jsonResponse,
   type Env,
 } from "./doCommon";
-
-const SHARD_COUNT = 8;
+import { shardNameForUid } from "./sharding";
 const NAME_ADJECTIVES = ["Brisk", "Quiet", "Amber", "Mint", "Rust", "Blue"];
 const NAME_NOUNS = ["Otter", "Falcon", "Badger", "Stoat", "Fox", "Heron"];
 
@@ -28,16 +27,6 @@ function generateName(): string {
     .toString()
     .padStart(3, "0");
   return `${adjective}${noun}${suffix}`;
-}
-
-function shardNameForUid(uid: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < uid.length; index += 1) {
-    hash ^= uid.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  const shard = Math.abs(hash) % SHARD_COUNT;
-  return `shard-${shard}`;
 }
 
 export async function handleWorkerFetch(request: Request, env: Env): Promise<Response> {
