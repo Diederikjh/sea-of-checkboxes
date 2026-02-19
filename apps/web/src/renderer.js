@@ -224,9 +224,10 @@ export function renderDirtyAreas({
   dirtyTileCells,
   tileStore,
   heatStore,
+  cursors,
 }) {
   if (dirtyTileCells.size === 0) {
-    return;
+    return [];
   }
 
   for (const { tile, tileData, dirtyIndices } of iterateVisibleTiles(visibleTiles, tileStore, dirtyTileCells)) {
@@ -241,6 +242,20 @@ export function renderDirtyAreas({
       dirtyIndices,
     });
   }
+
+  let activeCursors = [];
+  if (cursors) {
+    activeCursors = getActiveCursors(cursors, Date.now());
+    drawCursors({
+      graphics,
+      cursors: activeCursors,
+      camera,
+      viewportWidth,
+      viewportHeight,
+    });
+  }
+
+  return activeCursors;
 }
 
 export function renderScene({

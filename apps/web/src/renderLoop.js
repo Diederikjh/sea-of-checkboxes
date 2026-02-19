@@ -1,35 +1,39 @@
+import {
+  cellIndexFromWorld,
+  tileKeyFromWorld,
+} from "@sea/domain";
+
 import { smoothCursors } from "./cursorSmoothing";
 import { renderDirtyAreas, renderScene } from "./renderer";
 import { reconcileSubscriptions } from "./subscriptions";
 
-function hasRecentCursorActivity(cursors, nowMs) {
-  if (cursors.size === 0) {
-    return false;
-  }
-  return [...cursors.values()].some((cursor) => nowMs - cursor.seenAt < 5_000);
-}
-
 function shouldPatchDirtyAreas({
   needsRender,
   hasAnimatedHeat,
-  hasCursorMotion,
-  hasRecentCursor,
   dirtyTileCells,
 }) {
   return !needsRender
     && !hasAnimatedHeat
-    && !hasCursorMotion
-    && !hasRecentCursor
     && dirtyTileCells.size > 0;
 }
 
 function shouldSkipFrame({
   needsRender,
   hasAnimatedHeat,
-  hasCursorMotion,
-  hasRecentCursor,
+  dirtyTileCells,
 }) {
-  return !needsRender && !hasAnimatedHeat && !hasCursorMotion && !hasRecentCursor;
+  return !needsRender && !hasAnimatedHeat && dirtyTileCells.size === 0;
+}
+
+function cursorWorldPosition(cursor) {
+  return {
+    x: Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x,
+    y: Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y,
+  };
+}
+
+function isCursorActive(cursor, nowMs) {
+  return nowMs - cursor.seenAt < 5_000;
 }
 
 export function createRenderLoop({
@@ -45,6 +49,7 @@ export function createRenderLoop({
 }) {
   let subscribedTiles = new Set();
   let visibleTiles = [];
+  let previousCursorDraw = new Map();
   let needsSubscriptionRefresh = true;
   let needsRender = true;
   const dirtyTileCells = new Map();
@@ -77,6 +82,73 @@ export function createRenderLoop({
     dirtyTileCells.set(tileKey, updated);
   };
 
+  const markCursorFootprintDirty = (worldX, worldY) => {
+    if (!Number.isFinite(worldX) || !Number.isFinite(worldY) || camera.cellPixelSize <= 0) {
+      return;
+    }
+
+    const radiusWorld = Math.max(2, camera.cellPixelSize * 0.28) / camera.cellPixelSize;
+    const minX = Math.floor(worldX - radiusWorld);
+    const maxX = Math.floor(worldX + radiusWorld);
+    const minY = Math.floor(worldY - radiusWorld);
+    const maxY = Math.floor(worldY + radiusWorld);
+    const byTile = new Map();
+
+    for (let worldCellY = minY; worldCellY <= maxY; worldCellY += 1) {
+      for (let worldCellX = minX; worldCellX <= maxX; worldCellX += 1) {
+        const tileKey = tileKeyFromWorld(worldCellX, worldCellY);
+        let indices = byTile.get(tileKey);
+        if (!indices) {
+          indices = [];
+          byTile.set(tileKey, indices);
+        }
+        indices.push(cellIndexFromWorld(worldCellX, worldCellY));
+      }
+    }
+
+    for (const [tileKey, indices] of byTile.entries()) {
+      markTileCellsDirty(tileKey, indices);
+    }
+  };
+
+  const updateCursorDirtyRegions = (nowMs) => {
+    const nextCursorDraw = new Map();
+    const seen = new Set();
+
+    for (const [uid, cursor] of cursors.entries()) {
+      const previous = previousCursorDraw.get(uid) ?? null;
+      const active = isCursorActive(cursor, nowMs);
+      const position = cursorWorldPosition(cursor);
+
+      if (active) {
+        nextCursorDraw.set(uid, position);
+        seen.add(uid);
+
+        const hasMoved = !previous
+          || Math.abs(previous.x - position.x) > 0.01
+          || Math.abs(previous.y - position.y) > 0.01;
+        if (hasMoved) {
+          if (previous) {
+            markCursorFootprintDirty(previous.x, previous.y);
+          }
+          markCursorFootprintDirty(position.x, position.y);
+        }
+      } else if (previous) {
+        markCursorFootprintDirty(previous.x, previous.y);
+        seen.add(uid);
+      }
+    }
+
+    for (const [uid, previous] of previousCursorDraw.entries()) {
+      if (seen.has(uid)) {
+        continue;
+      }
+      markCursorFootprintDirty(previous.x, previous.y);
+    }
+
+    previousCursorDraw = nextCursorDraw;
+  };
+
   const syncSubscriptions = () => {
     const updated = reconcileSubscriptions({
       camera,
@@ -95,8 +167,9 @@ export function createRenderLoop({
   const onTick = (ticker) => {
     const dtSeconds = ticker.deltaMS / 1_000;
     const hasAnimatedHeat = heatStore.decay(dtSeconds);
-    const hasCursorMotion = smoothCursors(cursors, dtSeconds);
-    const hasRecentCursor = hasRecentCursorActivity(cursors, Date.now());
+    const nowMs = Date.now();
+    smoothCursors(cursors, dtSeconds);
+    updateCursorDirtyRegions(nowMs);
 
     if (needsSubscriptionRefresh) {
       syncSubscriptions();
@@ -106,12 +179,11 @@ export function createRenderLoop({
     const frameState = {
       needsRender,
       hasAnimatedHeat,
-      hasCursorMotion,
-      hasRecentCursor,
+      dirtyTileCells,
     };
 
     if (shouldPatchDirtyAreas({ ...frameState, dirtyTileCells })) {
-      renderDirtyAreas({
+      const activeCursors = renderDirtyAreas({
         graphics,
         camera,
         viewportWidth: app.renderer.width,
@@ -120,7 +192,9 @@ export function createRenderLoop({
         dirtyTileCells,
         tileStore,
         heatStore,
+        cursors,
       });
+      cursorLabels.update(activeCursors, camera, app.renderer.width, app.renderer.height);
       dirtyTileCells.clear();
       return;
     }

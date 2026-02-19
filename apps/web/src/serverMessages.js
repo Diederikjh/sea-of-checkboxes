@@ -51,6 +51,7 @@ export function createServerMessageHandler({
   selfIdentity,
   onVisualStateChanged = () => {},
   onTileCellsChanged = () => {},
+  onCursorChanged = () => {},
 }) {
   return (message) => {
     switch (message.t) {
@@ -98,7 +99,7 @@ export function createServerMessageHandler({
         }
 
         upsertRemoteCursor(cursors, message, Date.now());
-        onVisualStateChanged();
+        onCursorChanged();
         break;
       }
       case "err": {
