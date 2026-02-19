@@ -1,4 +1,4 @@
-export const DEFAULT_CURSOR_NEAREST_LIMIT = 10;
+import { MAX_REMOTE_CURSORS } from "@sea/domain";
 
 export interface CursorSelectionClient {
   uid: string;
@@ -52,7 +52,7 @@ export function selectCursorSubscriptions(params: CursorSelectionParams): string
     return [];
   }
 
-  const limit = params.nearestLimit ?? DEFAULT_CURSOR_NEAREST_LIMIT;
+  const limit = params.nearestLimit ?? MAX_REMOTE_CURSORS;
   const candidates = new Set<string>();
 
   for (const tileKey of params.client.subscribed) {

@@ -26,6 +26,7 @@ import type {
   TileBatchMessage,
   TileWatcher,
 } from "./types";
+import { fanoutTileBatchToSubscribers } from "../tileBatchFanout";
 
 interface ConnectionShardOptions {
   nowMs?: () => number;
@@ -100,18 +101,14 @@ export class ConnectionShard implements TileWatcher {
   }
 
   receiveTileBatch(message: TileBatchMessage): void {
-    const localSubscribers = this.#tileToClients.get(message.tile);
-    if (!localSubscribers || localSubscribers.size === 0) {
-      return;
-    }
-
-    for (const uid of localSubscribers) {
-      const client = this.#clients.get(uid);
-      if (!client) {
-        continue;
-      }
-      sendServerMessage(client, message);
-    }
+    fanoutTileBatchToSubscribers({
+      message,
+      tileToClients: this.#tileToClients,
+      clients: this.#clients,
+      sendServerMessage: (client, batch) => {
+        sendServerMessage(client, batch);
+      },
+    });
   }
 
   #handleClientMessage(client: ClientRecord, message: ClientMessage): void {

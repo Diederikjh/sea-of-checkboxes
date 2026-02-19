@@ -1,4 +1,7 @@
 import {
+  MAX_REMOTE_CURSORS,
+} from "@sea/domain";
+import {
   decodeServerMessageBinary,
   encodeClientMessageBinary,
   type ServerMessage,
@@ -261,6 +264,110 @@ describe("ConnectionShardDO websocket handling", () => {
 
     const messagesB = decodeMessages(socketB);
     expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(false);
+  });
+
+  it("rejects malformed cursor-batch payloads", async () => {
+    const harness = createHarness();
+    const badBodies = [
+      {},
+      { from: "", updates: [] },
+      { from: "shard-1", updates: {} },
+      {
+        from: "shard-1",
+        updates: [{ uid: "u_a", name: "A", x: 1, y: 1, seenAt: Date.now(), seq: 0, tileKey: "0:0" }],
+      },
+      {
+        from: "shard-1",
+        updates: [{ uid: "u_a", name: "A", x: 1, y: 1, seenAt: Date.now(), seq: 1, tileKey: "bad" }],
+      },
+    ];
+
+    for (const body of badBodies) {
+      const response = await harness.shard.fetch(
+        new Request("https://connection-shard.internal/cursor-batch", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        })
+      );
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("limits remote cursor subscription to nearest MAX_REMOTE_CURSORS", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_view",
+      name: "Viewer",
+      shard: "shard-a",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+
+    const updates = Array.from({ length: MAX_REMOTE_CURSORS + 2 }, (_, index) => ({
+      uid: `u_remote_${index}`,
+      name: `Remote${index}`,
+      x: 1 + index,
+      y: 0.5,
+      seenAt: Date.now(),
+      seq: 1,
+      tileKey: "0:0",
+    }));
+
+    const response = await harness.shard.fetch(
+      new Request("https://connection-shard.internal/cursor-batch", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "shard-1",
+          updates,
+        }),
+      })
+    );
+    expect(response.status).toBe(204);
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      const remoteUids = new Set(
+        messages
+          .filter((message): message is Extract<ServerMessage, { t: "curUp" }> => message.t === "curUp")
+          .filter((message) => message.uid.startsWith("u_remote_"))
+          .map((message) => message.uid)
+      );
+
+      expect(remoteUids.size).toBe(MAX_REMOTE_CURSORS);
+      expect(remoteUids.has("u_remote_0")).toBe(true);
+      expect(remoteUids.has(`u_remote_${MAX_REMOTE_CURSORS + 1}`)).toBe(false);
+    });
+  });
+
+  it("forwards local cursor updates via DO runtime path", async () => {
+    const harness = createHarness();
+    const socketA = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+    const socketB = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_b",
+      name: "Bob",
+      shard: "shard-a",
+    });
+
+    socketA.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socketB.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socketB.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+    socketA.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 0.5 }));
+
+    await waitFor(() => {
+      const messagesB = decodeMessages(socketB);
+      expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_a")).toBe(true);
+    });
   });
 
   it("unsubscribes watcher on socket close when last subscriber disconnects", async () => {

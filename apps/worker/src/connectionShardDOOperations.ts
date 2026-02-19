@@ -150,45 +150,6 @@ export async function handleResyncMessage(
   await context.sendSnapshotToClient(client, tileKey);
 }
 
-export function handleCursorMessage(
-  context: ConnectionShardDOOperationsContext,
-  client: ConnectedClient,
-  x: number,
-  y: number
-): void {
-  for (const target of context.clients.values()) {
-    if (target.uid === client.uid) {
-      continue;
-    }
-
-    context.sendServerMessage(target, {
-      t: "curUp",
-      uid: client.uid,
-      name: client.name,
-      x,
-      y,
-    });
-  }
-}
-
-export function receiveTileBatchMessage(
-  context: ConnectionShardDOOperationsContext,
-  message: Extract<ServerMessage, { t: "cellUpBatch" }>
-): void {
-  const subscribers = context.tileToClients.get(message.tile);
-  if (!subscribers || subscribers.size === 0) {
-    return;
-  }
-
-  for (const uid of subscribers) {
-    const client = context.clients.get(uid);
-    if (!client) {
-      continue;
-    }
-    context.sendServerMessage(client, message);
-  }
-}
-
 export async function disconnectClientFromShard(
   context: ConnectionShardDOOperationsContext,
   uid: string

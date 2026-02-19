@@ -4,10 +4,8 @@ import { describe, expect, it } from "vitest";
 import type { TileSetCellResponse } from "../src/doCommon";
 import {
   disconnectClientFromShard,
-  handleCursorMessage,
   handleSetCellMessage,
   handleSubMessage,
-  receiveTileBatchMessage,
   type ConnectedClient,
   type ConnectionShardDOOperationsContext,
 } from "../src/connectionShardDOOperations";
@@ -155,36 +153,6 @@ describe("connection shard DO operations", () => {
     expect(harness.setCellRequests.length).toBe(1);
     expect(harness.errors.length).toBe(1);
     expect(harness.errors[0]?.code).toBe("setcell_rejected");
-  });
-
-  it("fans out cursor and tile batch only to relevant clients", () => {
-    const harness = createContext();
-    const clientA = createClient("u_a", "Alice");
-    const clientB = createClient("u_b", "Bob");
-    const clientC = createClient("u_c", "Cara");
-    harness.clients.set(clientA.uid, clientA);
-    harness.clients.set(clientB.uid, clientB);
-    harness.clients.set(clientC.uid, clientC);
-
-    handleCursorMessage(harness.context, clientA, 12.5, -7.25);
-    harness.tileToClients.set("0:0", new Set(["u_b"]));
-    receiveTileBatchMessage(harness.context, {
-      t: "cellUpBatch",
-      tile: "0:0",
-      fromVer: 1,
-      toVer: 1,
-      ops: [[5, 1]],
-    });
-
-    const cursorTargets = harness.sent
-      .filter((entry) => entry.message.t === "curUp")
-      .map((entry) => entry.uid);
-    const batchTargets = harness.sent
-      .filter((entry) => entry.message.t === "cellUpBatch")
-      .map((entry) => entry.uid);
-
-    expect(cursorTargets.sort()).toEqual(["u_b", "u_c"]);
-    expect(batchTargets).toEqual(["u_b"]);
   });
 
   it("disconnect removes subscriptions and unsubscribes last tile watcher", async () => {

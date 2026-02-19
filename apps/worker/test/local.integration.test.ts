@@ -159,4 +159,27 @@ describe("local ConnectionShard + TileOwner integration", () => {
     const newChurnErrors = messages.filter((msg) => msg.t === "err" && msg.code === "churn_limit");
     expect(newChurnErrors.length).toBe(churnErrors.length);
   });
+
+  it("local receiveTileBatch only reaches subscribed clients", () => {
+    const runtime = new LocalRealtimeRuntime();
+    const shard = new ConnectionShard(runtime, "shard-a");
+
+    const clientA = collectMessages();
+    const clientB = collectMessages();
+    shard.connectClient("u_a", "Alice", clientA.sink);
+    shard.connectClient("u_b", "Bob", clientB.sink);
+
+    sendClient(shard, "u_a", { t: "sub", tiles: ["0:0"] });
+
+    shard.receiveTileBatch({
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 1,
+      toVer: 1,
+      ops: [[3, 1]],
+    });
+
+    expect(clientA.messages.some((message) => message.t === "cellUpBatch" && message.tile === "0:0")).toBe(true);
+    expect(clientB.messages.some((message) => message.t === "cellUpBatch")).toBe(false);
+  });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_REMOTE_CURSORS } from "@sea/domain";
 
 import {
   selectCursorSubscriptions,
@@ -69,5 +70,43 @@ describe("cursor selection", () => {
     });
 
     expect(selected).toEqual(["u_near", "u_far"]);
+  });
+
+  it("supports configurable nearest limits (for easy future tuning)", () => {
+    const nowMs = 10_000;
+    const client = {
+      uid: "u_viewer",
+      subscribed: new Set(["0:0"]),
+      lastCursorX: 0.5,
+      lastCursorY: 0.5,
+    };
+
+    const cursorByUid = new Map<string, CursorSelectionState>();
+    const cursorTileIndex = new Map<string, Set<string>>();
+    const ids: string[] = [];
+
+    for (let index = 0; index < MAX_REMOTE_CURSORS + 5; index += 1) {
+      const uid = `u_${index}`;
+      ids.push(uid);
+      cursorByUid.set(uid, {
+        uid,
+        x: index,
+        y: 0.5,
+        seenAt: nowMs,
+        tileKey: "0:0",
+      });
+    }
+    cursorTileIndex.set("0:0", new Set(ids));
+
+    const selected = selectCursorSubscriptions({
+      client,
+      cursorByUid,
+      cursorTileIndex,
+      nowMs,
+      cursorTtlMs: 5_000,
+      nearestLimit: 3,
+    });
+
+    expect(selected).toEqual(ids.slice(0, 3));
   });
 });

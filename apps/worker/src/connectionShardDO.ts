@@ -1,6 +1,5 @@
 import {
   MAX_REMOTE_CURSORS,
-  parseTileKeyStrict,
   tileKeyFromWorld,
 } from "@sea/domain";
 import {
@@ -25,10 +24,14 @@ import {
   handleSetCellMessage,
   handleSubMessage,
   handleUnsubMessage,
-  receiveTileBatchMessage,
   type ConnectedClient,
   type ConnectionShardDOOperationsContext,
 } from "./connectionShardDOOperations";
+import {
+  type CursorPresence,
+  type CursorRelayBatch,
+  isValidCursorRelayBatch,
+} from "./cursorRelay";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
@@ -37,35 +40,11 @@ import {
 } from "./socketPair";
 import { selectCursorSubscriptions } from "./cursorSelection";
 import { peerShardNames } from "./sharding";
+import { fanoutTileBatchToSubscribers } from "./tileBatchFanout";
 
 const CURSOR_TTL_MS = 5_000;
 const CURSOR_SELECTION_REFRESH_MS = 250;
 const CURSOR_RELAY_FLUSH_MS = 100;
-
-interface CursorState {
-  uid: string;
-  name: string;
-  x: number;
-  y: number;
-  seenAt: number;
-  seq: number;
-  tileKey: string;
-}
-
-interface CursorRelayUpdate {
-  uid: string;
-  name: string;
-  x: number;
-  y: number;
-  seenAt: number;
-  seq: number;
-  tileKey: string;
-}
-
-interface CursorRelayBatch {
-  from: string;
-  updates: CursorRelayUpdate[];
-}
 
 function toBinaryPayload(data: unknown): Uint8Array | null {
   if (data instanceof Uint8Array) {
@@ -87,53 +66,6 @@ function readMessageEventData(event: unknown): unknown {
   return (event as { data: unknown }).data;
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isValidCursorRelayUpdate(value: unknown): value is CursorRelayUpdate {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const update = value as Partial<CursorRelayUpdate>;
-  if (typeof update.uid !== "string" || update.uid.length === 0) {
-    return false;
-  }
-  if (typeof update.name !== "string" || update.name.length === 0) {
-    return false;
-  }
-  if (!isFiniteNumber(update.x) || !isFiniteNumber(update.y)) {
-    return false;
-  }
-  if (typeof update.seq !== "number" || !Number.isInteger(update.seq) || update.seq < 1) {
-    return false;
-  }
-  if (!isFiniteNumber(update.seenAt) || update.seenAt < 0) {
-    return false;
-  }
-  if (typeof update.tileKey !== "string" || parseTileKeyStrict(update.tileKey) === null) {
-    return false;
-  }
-
-  return true;
-}
-
-function isValidCursorRelayBatch(value: unknown): value is CursorRelayBatch {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const batch = value as Partial<CursorRelayBatch>;
-  if (typeof batch.from !== "string" || batch.from.length === 0) {
-    return false;
-  }
-  if (!Array.isArray(batch.updates)) {
-    return false;
-  }
-  return batch.updates.every((update) => isValidCursorRelayUpdate(update));
-}
-
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -142,10 +74,10 @@ export class ConnectionShardDO {
   #tileToClients: Map<string, Set<string>>;
   #socketPairFactory: SocketPairFactory;
   #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
-  #cursorByUid: Map<string, CursorState>;
+  #cursorByUid: Map<string, CursorPresence>;
   #cursorTileIndex: Map<string, Set<string>>;
   #localCursorSeqByUid: Map<string, number>;
-  #pendingCursorRelays: Map<string, CursorRelayUpdate>;
+  #pendingCursorRelays: Map<string, CursorPresence>;
   #cursorRelayFlushTimer: ReturnType<typeof setTimeout> | null;
   #cursorSelectionDirty: boolean;
   #lastCursorSelectionRefreshMs: number;
@@ -309,7 +241,14 @@ export class ConnectionShardDO {
   }
 
   #receiveTileBatch(message: Extract<ServerMessage, { t: "cellUpBatch" }>): void {
-    receiveTileBatchMessage(this.#operationsContext(), message);
+    fanoutTileBatchToSubscribers({
+      message,
+      tileToClients: this.#tileToClients,
+      clients: this.#clients,
+      sendServerMessage: (client, batch) => {
+        this.#sendServerMessage(client, batch);
+      },
+    });
     this.#refreshCursorSelections(false);
   }
 
@@ -411,7 +350,7 @@ export class ConnectionShardDO {
     const nextSeq = (this.#localCursorSeqByUid.get(client.uid) ?? 0) + 1;
     this.#localCursorSeqByUid.set(client.uid, nextSeq);
 
-    const state: CursorState = {
+    const state: CursorPresence = {
       uid: client.uid,
       name: client.name,
       x,
@@ -449,7 +388,7 @@ export class ConnectionShardDO {
         continue;
       }
 
-      const state: CursorState = {
+      const state: CursorPresence = {
         uid: update.uid,
         name: update.name,
         x: update.x,
@@ -517,7 +456,7 @@ export class ConnectionShardDO {
     });
   }
 
-  #upsertCursor(state: CursorState): void {
+  #upsertCursor(state: CursorPresence): void {
     const previous = this.#cursorByUid.get(state.uid);
     if (previous?.tileKey && previous.tileKey !== state.tileKey) {
       const bucket = this.#cursorTileIndex.get(previous.tileKey);
@@ -622,7 +561,7 @@ export class ConnectionShardDO {
     this.#cursorSelectionDirty = false;
   }
 
-  #sendCursorToSubscribedClients(cursor: CursorState): void {
+  #sendCursorToSubscribedClients(cursor: CursorPresence): void {
     for (const client of this.#clients.values()) {
       if (!client.cursorSubscriptions?.has(cursor.uid)) {
         continue;
@@ -631,7 +570,7 @@ export class ConnectionShardDO {
     }
   }
 
-  #sendCursorUpdate(client: ConnectedClient, cursor: CursorState): void {
+  #sendCursorUpdate(client: ConnectedClient, cursor: CursorPresence): void {
     this.#sendServerMessage(client, {
       t: "curUp",
       uid: cursor.uid,
