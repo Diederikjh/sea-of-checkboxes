@@ -26,7 +26,6 @@ function createHarness() {
   const cursors = new Map();
   const selfIdentity = { uid: null };
   const onVisualStateChanged = vi.fn();
-  const onCursorChanged = vi.fn();
 
   const handler = createServerMessageHandler({
     identityEl,
@@ -37,7 +36,6 @@ function createHarness() {
     cursors,
     selfIdentity,
     onVisualStateChanged,
-    onCursorChanged,
   });
 
   return {
@@ -50,7 +48,6 @@ function createHarness() {
     cursors,
     selfIdentity,
     onVisualStateChanged,
-    onCursorChanged,
   };
 }
 
@@ -138,7 +135,6 @@ describe("server message handling", () => {
 
     harness.handler({ t: "curUp", uid: "u_self", name: "Me", x: 1, y: 2 });
     expect(harness.cursors.size).toBe(0);
-    expect(harness.onCursorChanged).not.toHaveBeenCalled();
     expect(harness.onVisualStateChanged).not.toHaveBeenCalled();
 
     harness.handler({ t: "curUp", uid: "u_other", name: "Other", x: 10, y: 20 });
@@ -146,7 +142,6 @@ describe("server message handling", () => {
     expect(first).toBeDefined();
     expect(first.drawX).toBe(10);
     expect(first.drawY).toBe(20);
-    expect(harness.onCursorChanged).toHaveBeenCalledTimes(1);
     expect(harness.onVisualStateChanged).not.toHaveBeenCalled();
 
     harness.handler({ t: "curUp", uid: "u_other", name: "Other2", x: 14, y: 25 });
@@ -156,7 +151,6 @@ describe("server message handling", () => {
     expect(second.y).toBe(25);
     expect(second.drawX).toBe(10);
     expect(second.drawY).toBe(20);
-    expect(harness.onCursorChanged).toHaveBeenCalledTimes(2);
   });
 
   it("forwards server errors to status", () => {

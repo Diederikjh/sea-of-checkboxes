@@ -3,6 +3,11 @@ import {
   tileKeyFromWorld,
 } from "@sea/domain";
 
+import {
+  CURSOR_MOVE_EPSILON,
+  CURSOR_TTL_MS,
+  cursorRadiusPx,
+} from "./cursorRenderConfig";
 import { smoothCursors } from "./cursorSmoothing";
 import { renderDirtyAreas, renderScene } from "./renderer";
 import { reconcileSubscriptions } from "./subscriptions";
@@ -33,7 +38,7 @@ function cursorWorldPosition(cursor) {
 }
 
 function isCursorActive(cursor, nowMs) {
-  return nowMs - cursor.seenAt < 5_000;
+  return nowMs - cursor.seenAt < CURSOR_TTL_MS;
 }
 
 export function createRenderLoop({
@@ -87,7 +92,7 @@ export function createRenderLoop({
       return;
     }
 
-    const radiusWorld = Math.max(2, camera.cellPixelSize * 0.28) / camera.cellPixelSize;
+    const radiusWorld = cursorRadiusPx(camera.cellPixelSize) / camera.cellPixelSize;
     const minX = Math.floor(worldX - radiusWorld);
     const maxX = Math.floor(worldX + radiusWorld);
     const minY = Math.floor(worldY - radiusWorld);
@@ -125,8 +130,8 @@ export function createRenderLoop({
         seen.add(uid);
 
         const hasMoved = !previous
-          || Math.abs(previous.x - position.x) > 0.01
-          || Math.abs(previous.y - position.y) > 0.01;
+          || Math.abs(previous.x - position.x) > CURSOR_MOVE_EPSILON
+          || Math.abs(previous.y - position.y) > CURSOR_MOVE_EPSILON;
         if (hasMoved) {
           if (previous) {
             markCursorFootprintDirty(previous.x, previous.y);
@@ -182,7 +187,7 @@ export function createRenderLoop({
       dirtyTileCells,
     };
 
-    if (shouldPatchDirtyAreas({ ...frameState, dirtyTileCells })) {
+    if (shouldPatchDirtyAreas(frameState)) {
       const activeCursors = renderDirtyAreas({
         graphics,
         camera,

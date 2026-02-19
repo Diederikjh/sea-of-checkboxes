@@ -1,4 +1,5 @@
 import { MAX_REMOTE_CURSORS, TILE_SIZE } from "@sea/domain";
+import { CURSOR_TTL_MS, cursorRadiusPx } from "./cursorRenderConfig";
 
 function heatToColor(heat) {
   if (heat < 0.05) {
@@ -196,13 +197,13 @@ function* iterateVisibleTiles(visibleTiles, tileStore, dirtyTileCells = null) {
 
 function getActiveCursors(cursors, nowMs) {
   return [...cursors.values()]
-    .filter((cursor) => nowMs - cursor.seenAt < 5_000)
+    .filter((cursor) => nowMs - cursor.seenAt < CURSOR_TTL_MS)
     .sort((a, b) => b.seenAt - a.seenAt)
     .slice(0, MAX_REMOTE_CURSORS);
 }
 
 function drawCursors({ graphics, cursors, camera, viewportWidth, viewportHeight }) {
-  const cellPx = camera.cellPixelSize;
+  const radiusPx = cursorRadiusPx(camera.cellPixelSize);
   for (const cursor of cursors) {
     const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
     const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
@@ -210,7 +211,7 @@ function drawCursors({ graphics, cursors, camera, viewportWidth, viewportHeight 
     const color = stableCursorColor(cursor.uid);
 
     graphics.beginFill(color, 0.9);
-    graphics.drawCircle(screen.x, screen.y, Math.max(2, cellPx * 0.28));
+    graphics.drawCircle(screen.x, screen.y, radiusPx);
     graphics.endFill();
   }
 }
