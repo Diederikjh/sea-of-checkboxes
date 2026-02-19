@@ -179,6 +179,9 @@ export function handleSetCellMessage(
     i: message.i,
     v: message.v,
     op: message.op,
+    uid: client.uid,
+    name: client.name,
+    atMs: nowMs,
   });
 
   if (!result.accepted) {

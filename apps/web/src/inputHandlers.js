@@ -26,6 +26,52 @@ function buildWorldPointerContext(event, world) {
   };
 }
 
+function formatEditTimestamp(atMs) {
+  const date = new Date(atMs);
+  if (Number.isNaN(date.getTime())) {
+    return "time unknown";
+  }
+  return date.toLocaleString();
+}
+
+function showEditInfoPopup(editInfoPopupEl, clientX, clientY, text) {
+  editInfoPopupEl.textContent = text;
+  editInfoPopupEl.hidden = false;
+  editInfoPopupEl.style.left = `${clientX + 12}px`;
+  editInfoPopupEl.style.top = `${clientY + 12}px`;
+
+  const rect = editInfoPopupEl.getBoundingClientRect();
+  const clampedLeft = Math.min(
+    Math.max(8, clientX + 12),
+    Math.max(8, window.innerWidth - rect.width - 8)
+  );
+  const clampedTop = Math.min(
+    Math.max(8, clientY + 12),
+    Math.max(8, window.innerHeight - rect.height - 8)
+  );
+  editInfoPopupEl.style.left = `${clampedLeft}px`;
+  editInfoPopupEl.style.top = `${clampedTop}px`;
+}
+
+function hideEditInfoPopup(editInfoPopupEl) {
+  editInfoPopupEl.hidden = true;
+}
+
+async function fetchCellLastEditInfo(fetchImpl, apiBaseUrl, tileKey, cellIndex) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetch unavailable");
+  }
+
+  const response = await fetchImpl(
+    `${apiBaseUrl}/cell-last-edit?tile=${encodeURIComponent(tileKey)}&i=${cellIndex}`
+  );
+  if (!response.ok) {
+    throw new Error(`unexpected_status_${response.status}`);
+  }
+
+  return response.json();
+}
+
 export function setupInputHandlers({
   canvas,
   camera,
@@ -35,14 +81,37 @@ export function setupInputHandlers({
   tileStore,
   heatStore,
   setStatus,
+  inspectToggleEl,
+  inspectLabelEl,
+  editInfoPopupEl,
+  apiBaseUrl,
+  fetchImpl = typeof fetch === "function" ? fetch.bind(globalThis) : undefined,
   onViewportChanged,
 }) {
   let dragging = false;
   let dragStart = null;
   let lastCursorSent = 0;
+  let inspectModeEnabled = false;
+
+  const setInspectMode = (enabled) => {
+    inspectModeEnabled = enabled;
+    inspectToggleEl.setAttribute("aria-pressed", enabled ? "true" : "false");
+    inspectLabelEl.textContent = enabled ? "Inspect mode on" : "Inspect mode off";
+    if (!enabled) {
+      hideEditInfoPopup(editInfoPopupEl);
+    }
+  };
+
+  setInspectMode(false);
 
   const onContextMenu = (event) => {
     event.preventDefault();
+  };
+
+  const onInspectToggleClick = () => {
+    const next = !inspectModeEnabled;
+    setInspectMode(next);
+    setStatus(next ? "Inspect mode: click a checkbox to see last edit" : "Inspect mode off");
   };
 
   const onWheel = (event) => {
@@ -54,6 +123,7 @@ export function setupInputHandlers({
   };
 
   const onPointerDown = (event) => {
+    hideEditInfoPopup(editInfoPopupEl);
     dragging = true;
     dragStart = {
       x: event.clientX,
@@ -96,6 +166,44 @@ export function setupInputHandlers({
       return;
     }
 
+    const { width, height } = getViewportSize();
+    const world = toWorldCell(event.clientX, event.clientY, camera, width, height);
+    const tileKey = tileKeyFromWorld(world.x, world.y);
+    const cellIndex = cellIndexFromWorld(world.x, world.y);
+
+    if (inspectModeEnabled) {
+      logger.ui("click_inspect", {
+        ...buildWorldPointerContext(event, world),
+        tile: tileKey,
+        i: cellIndex,
+      });
+
+      void fetchCellLastEditInfo(fetchImpl, apiBaseUrl, tileKey, cellIndex)
+        .then((payload) => {
+          const edit = payload?.edit;
+          if (!edit) {
+            showEditInfoPopup(editInfoPopupEl, event.clientX, event.clientY, "no edits for this box");
+            setStatus("no edits for this box");
+            return;
+          }
+
+          showEditInfoPopup(
+            editInfoPopupEl,
+            event.clientX,
+            event.clientY,
+            `${edit.name} (${edit.uid})\n${formatEditTimestamp(edit.atMs)}`
+          );
+          setStatus(`Last edit by ${edit.name}`);
+        })
+        .catch(() => {
+          setStatus("Could not load edit info");
+          showEditInfoPopup(editInfoPopupEl, event.clientX, event.clientY, "Could not load edit info");
+        });
+
+      dragStart = null;
+      return;
+    }
+
     if (!canEditAtZoom(camera)) {
       logger.ui("click_blocked", {
         reason: "zoom",
@@ -107,10 +215,6 @@ export function setupInputHandlers({
       return;
     }
 
-    const { width, height } = getViewportSize();
-    const world = toWorldCell(event.clientX, event.clientY, camera, width, height);
-    const tileKey = tileKeyFromWorld(world.x, world.y);
-    const cellIndex = cellIndexFromWorld(world.x, world.y);
     const nowMs = Date.now();
 
     if (heatStore.isLocallyDisabled(tileKey, cellIndex, nowMs)) {
@@ -153,6 +257,7 @@ export function setupInputHandlers({
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", onPointerUp);
+  inspectToggleEl.addEventListener("click", onInspectToggleClick);
 
   return () => {
     canvas.removeEventListener("contextmenu", onContextMenu);
@@ -160,5 +265,6 @@ export function setupInputHandlers({
     canvas.removeEventListener("pointerdown", onPointerDown);
     canvas.removeEventListener("pointermove", onPointerMove);
     canvas.removeEventListener("pointerup", onPointerUp);
+    inspectToggleEl.removeEventListener("click", onInspectToggleClick);
   };
 }

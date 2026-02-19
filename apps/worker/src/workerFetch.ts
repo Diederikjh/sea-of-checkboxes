@@ -1,5 +1,8 @@
+import { isCellIndexValid } from "@sea/domain";
+
 import {
   isWebSocketUpgrade,
+  isValidTileKey,
   jsonResponse,
   type Env,
 } from "./doCommon";
@@ -37,6 +40,23 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
       ok: true,
       ws: "/ws",
     });
+  }
+
+  if (url.pathname === "/cell-last-edit" && request.method === "GET") {
+    const tileKey = url.searchParams.get("tile");
+    const rawIndex = url.searchParams.get("i");
+    if (!tileKey || !isValidTileKey(tileKey) || !rawIndex || !/^\d+$/.test(rawIndex)) {
+      return new Response("Invalid tile or cell index", { status: 400 });
+    }
+
+    const index = Number.parseInt(rawIndex, 10);
+    if (!isCellIndexValid(index)) {
+      return new Response("Invalid tile or cell index", { status: 400 });
+    }
+
+    return env.TILE_OWNER.getByName(tileKey).fetch(
+      `https://tile-owner.internal/cell-last-edit?tile=${encodeURIComponent(tileKey)}&i=${index}`
+    );
   }
 
   if (url.pathname !== "/ws") {

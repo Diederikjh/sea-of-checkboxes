@@ -1,4 +1,5 @@
 import type {
+  CellLastEditRecord,
   DurableObjectStateLike,
   R2BucketLike,
 } from "./doCommon";
@@ -6,6 +7,7 @@ import type {
 export interface TileSnapshotRecord {
   bits: string;
   ver: number;
+  edits?: CellLastEditRecord[];
 }
 
 export interface TileOwnerPersistedState {
@@ -33,12 +35,43 @@ function isValidSnapshotRecord(value: unknown): value is TileSnapshotRecord {
     return false;
   }
 
-  const candidate = value as { bits?: unknown; ver?: unknown };
+  const candidate = value as { bits?: unknown; ver?: unknown; edits?: unknown };
+  const editsValid =
+    typeof candidate.edits === "undefined" ||
+    (Array.isArray(candidate.edits) && candidate.edits.every((entry) => isValidLastEditRecord(entry)));
+
   return (
     typeof candidate.bits === "string" &&
     Number.isInteger(candidate.ver) &&
     typeof candidate.ver === "number" &&
-    candidate.ver >= 0
+    candidate.ver >= 0 &&
+    editsValid
+  );
+}
+
+function isValidLastEditRecord(value: unknown): value is CellLastEditRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as {
+    i?: unknown;
+    uid?: unknown;
+    name?: unknown;
+    atMs?: unknown;
+  };
+
+  return (
+    Number.isInteger(candidate.i) &&
+    typeof candidate.i === "number" &&
+    candidate.i >= 0 &&
+    typeof candidate.uid === "string" &&
+    candidate.uid.length > 0 &&
+    typeof candidate.name === "string" &&
+    candidate.name.length > 0 &&
+    Number.isInteger(candidate.atMs) &&
+    typeof candidate.atMs === "number" &&
+    candidate.atMs >= 0
   );
 }
 

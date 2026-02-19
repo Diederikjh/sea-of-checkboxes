@@ -22,6 +22,7 @@ import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
 import { createServerMessageHandler } from "./serverMessages";
 import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
+import { resolveApiBaseUrl } from "./transportConfig";
 import { createWireTransport } from "./wireTransport";
 
 function formatByteCount(bytes) {
@@ -131,6 +132,9 @@ export async function startApp() {
     statusEl,
     zoomEl,
     titleEl,
+    inspectToggleEl,
+    inspectLabelEl,
+    editInfoPopupEl,
   } = getRequiredElements();
 
   applyBranding(titleEl);
@@ -150,6 +154,7 @@ export async function startApp() {
   const camera = createCamera();
   const tileStore = new TileStore(512);
   const heatStore = new HeatStore();
+  const apiBaseUrl = resolveApiBaseUrl();
   const perfProbe = createPerfProbe({
     enabled: isPerfProbeEnabled(),
   });
@@ -251,6 +256,10 @@ export async function startApp() {
     tileStore,
     heatStore,
     setStatus,
+    inspectToggleEl,
+    inspectLabelEl,
+    editInfoPopupEl,
+    apiBaseUrl,
     onViewportChanged: renderLoop.markViewportDirty,
   });
 

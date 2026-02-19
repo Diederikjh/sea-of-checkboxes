@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isMockTransportEnabled, resolveWebSocketUrl } from "../src/transportConfig";
+import { isMockTransportEnabled, resolveApiBaseUrl, resolveWebSocketUrl } from "../src/transportConfig";
 
 describe("transport config", () => {
   it("enables mock transport from env flag", () => {
@@ -44,5 +44,30 @@ describe("transport config", () => {
 
   it("falls back to local worker ws url when location is unavailable", () => {
     expect(resolveWebSocketUrl(undefined, {})).toBe("ws://127.0.0.1:8787/ws");
+  });
+
+  it("derives api base url from websocket url rules", () => {
+    expect(
+      resolveApiBaseUrl(
+        { protocol: "http:", host: "localhost:5173" },
+        {}
+      )
+    ).toBe("http://127.0.0.1:8787");
+
+    expect(
+      resolveApiBaseUrl(
+        { protocol: "https:", host: "example.com" },
+        {}
+      )
+    ).toBe("https://example.com");
+  });
+
+  it("uses explicit api base env override", () => {
+    expect(
+      resolveApiBaseUrl(
+        { protocol: "https:", host: "example.com" },
+        { VITE_API_BASE_URL: "https://api.example.com/" }
+      )
+    ).toBe("https://api.example.com");
   });
 });

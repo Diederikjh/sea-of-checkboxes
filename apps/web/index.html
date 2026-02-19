@@ -13,7 +13,12 @@
         <p id="identity">Connecting...</p>
         <p id="status"></p>
         <p id="zoom-readout"></p>
-        <p class="hint">Wheel = zoom, drag = pan, click = toggle</p>
+        <div id="inspect-mode-row">
+          <button id="inspect-mode-toggle" type="button" aria-pressed="false" title="Inspect last edit">?</button>
+          <span id="inspect-mode-label">Inspect mode off</span>
+        </div>
+        <p class="hint">Wheel = zoom, drag = pan, click = toggle, ? + click = who edited</p>
+        <div id="edit-info-popup" hidden></div>
       </aside>
     </div>
     <script type="module" src="/src/main.js"></script>

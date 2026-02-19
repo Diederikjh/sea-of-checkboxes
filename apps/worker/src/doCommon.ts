@@ -49,6 +49,9 @@ export interface TileSetCellRequest {
   i: number;
   v: 0 | 1;
   op: string;
+  uid?: string;
+  name?: string;
+  atMs?: number;
 }
 
 export interface TileSetCellResponse {
@@ -56,6 +59,22 @@ export interface TileSetCellResponse {
   changed: boolean;
   ver: number;
   reason?: string;
+}
+
+export interface CellLastEditInfo {
+  uid: string;
+  name: string;
+  atMs: number;
+}
+
+export interface CellLastEditRecord extends CellLastEditInfo {
+  i: number;
+}
+
+export interface TileCellLastEditResponse {
+  tile: string;
+  i: number;
+  edit: CellLastEditInfo | null;
 }
 
 export function jsonResponse(value: unknown, init: ResponseInit = {}): Response {

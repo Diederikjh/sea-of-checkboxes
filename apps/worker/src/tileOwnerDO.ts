@@ -1,4 +1,4 @@
-import { TILE_CELL_COUNT } from "@sea/domain";
+import { TILE_CELL_COUNT, isCellIndexValid } from "@sea/domain";
 import {
   decodeRle64,
   type ServerMessage,
@@ -11,6 +11,7 @@ import {
   type DurableObjectStateLike,
   type Env,
   type TileSetCellRequest,
+  type TileCellLastEditResponse,
   type TileSetCellResponse,
   type TileWatchRequest,
 } from "./doCommon";
@@ -90,6 +91,9 @@ export class TileOwnerDO {
         i: payload.i,
         v: payload.v,
         op: payload.op,
+        ...(typeof payload.uid === "string" ? { uid: payload.uid } : {}),
+        ...(typeof payload.name === "string" ? { name: payload.name } : {}),
+        ...(typeof payload.atMs === "number" ? { atMs: payload.atMs } : {}),
       });
 
       if (result.changed) {
@@ -137,6 +141,27 @@ export class TileOwnerDO {
       return jsonResponse(body);
     }
 
+    if (url.pathname === "/cell-last-edit" && request.method === "GET") {
+      const tileKey = url.searchParams.get("tile");
+      const rawIndex = url.searchParams.get("i");
+      if (!tileKey || !isValidTileKey(tileKey) || !rawIndex || !/^\d+$/.test(rawIndex)) {
+        return new Response("Invalid tile or cell index", { status: 400 });
+      }
+
+      const index = Number.parseInt(rawIndex, 10);
+      if (!isCellIndexValid(index)) {
+        return new Response("Invalid tile or cell index", { status: 400 });
+      }
+
+      await this.#ensureLoaded(tileKey);
+      const body: TileCellLastEditResponse = {
+        tile: tileKey,
+        i: index,
+        edit: this.#tileOwner.getCellLastEdit(index),
+      };
+      return jsonResponse(body);
+    }
+
     return new Response("Not found", { status: 404 });
   }
 
@@ -160,7 +185,7 @@ export class TileOwnerDO {
     const persisted = await this.#persistence.load(tileKey);
     if (persisted.snapshot) {
       const bits = decodeRle64(persisted.snapshot.bits, TILE_CELL_COUNT);
-      this.#tileOwner.loadSnapshot(bits, persisted.snapshot.ver);
+      this.#tileOwner.loadSnapshot(bits, persisted.snapshot.ver, persisted.snapshot.edits ?? []);
     }
 
     for (const shard of persisted.subscribers) {
@@ -175,6 +200,7 @@ export class TileOwnerDO {
     await this.#persistence.saveSnapshot(this.#activeTileKey(), {
       bits: snapshot.bits,
       ver: snapshot.ver,
+      edits: this.#tileOwner.getPersistedLastEdits(),
     });
   }
 

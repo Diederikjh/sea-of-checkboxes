@@ -34,3 +34,22 @@ export function resolveWebSocketUrl(
   const protocol = locationLike.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${locationLike.host}/ws`;
 }
+
+export function resolveApiBaseUrl(
+  locationLike = typeof window !== "undefined" ? window.location : undefined,
+  env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {}
+) {
+  const envUrl = typeof env.VITE_API_BASE_URL === "string" ? env.VITE_API_BASE_URL.trim() : "";
+  if (envUrl.length > 0) {
+    return envUrl.replace(/\/+$/, "");
+  }
+
+  const wsUrl = resolveWebSocketUrl(locationLike, env);
+  try {
+    const parsed = new URL(wsUrl);
+    const protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+    return `${protocol}//${parsed.host}`;
+  } catch {
+    return "http://127.0.0.1:8787";
+  }
+}

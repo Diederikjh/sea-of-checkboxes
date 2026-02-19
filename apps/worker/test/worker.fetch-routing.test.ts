@@ -15,6 +15,7 @@ function createEnv() {
       TILE_OWNER: tileOwner,
     },
     connectionShard,
+    tileOwner,
   };
 }
 
@@ -35,6 +36,44 @@ describe("top-level worker fetch routing", () => {
     const { env } = createEnv();
     const response = await handleWorkerFetch(new Request("https://worker.local/unknown"), env);
     expect(response.status).toBe(404);
+  });
+
+  it("forwards cell-last-edit requests to tile owner by tile key", async () => {
+    const { env, tileOwner } = createEnv();
+    const response = await handleWorkerFetch(
+      new Request("https://worker.local/cell-last-edit?tile=2:3&i=17"),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(tileOwner.requestedNames).toEqual(["2:3"]);
+
+    const stub = tileOwner.stubs.get("2:3");
+    expect(stub?.requests.length).toBe(1);
+    const request = stub?.requests[0]?.request;
+    expect(request?.method).toBe("GET");
+    const forwardedUrl = new URL(request?.url ?? "https://tile-owner.internal/");
+    expect(forwardedUrl.pathname).toBe("/cell-last-edit");
+    expect(forwardedUrl.searchParams.get("tile")).toBe("2:3");
+    expect(forwardedUrl.searchParams.get("i")).toBe("17");
+  });
+
+  it("rejects invalid cell-last-edit requests", async () => {
+    const { env, tileOwner } = createEnv();
+    const badRequests = [
+      "https://worker.local/cell-last-edit",
+      "https://worker.local/cell-last-edit?tile=2:3",
+      "https://worker.local/cell-last-edit?tile=bad&i=1",
+      "https://worker.local/cell-last-edit?tile=2:3&i=-1",
+      "https://worker.local/cell-last-edit?tile=2:3&i=abc",
+    ];
+
+    for (const url of badRequests) {
+      const response = await handleWorkerFetch(new Request(url), env);
+      expect(response.status).toBe(400);
+    }
+
+    expect(tileOwner.requestedNames.length).toBe(0);
   });
 
   it("rejects /ws when upgrade header is missing", async () => {

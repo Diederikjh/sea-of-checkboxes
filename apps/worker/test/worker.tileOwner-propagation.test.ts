@@ -159,6 +159,73 @@ describe("TileOwnerDO propagation across restart", () => {
     expect(bits[15]).toBe(1);
   });
 
+  it("returns per-cell last edit metadata and null for untouched cells", async () => {
+    const harness = createTileOwnerHarness();
+    const owner = harness.createInstance();
+
+    await owner.fetch(
+      await postJson("/setCell", {
+        tile: "0:0",
+        i: 15,
+        v: 1,
+        op: "op_1",
+        uid: "u_a",
+        name: "Alice",
+        atMs: 1_700_000_000_000,
+      })
+    );
+
+    const editedResponse = await owner.fetch(await getJson("/cell-last-edit?tile=0:0&i=15"));
+    expect(editedResponse.ok).toBe(true);
+    await expect(editedResponse.json()).resolves.toEqual({
+      tile: "0:0",
+      i: 15,
+      edit: {
+        uid: "u_a",
+        name: "Alice",
+        atMs: 1_700_000_000_000,
+      },
+    });
+
+    const untouchedResponse = await owner.fetch(await getJson("/cell-last-edit?tile=0:0&i=16"));
+    expect(untouchedResponse.ok).toBe(true);
+    await expect(untouchedResponse.json()).resolves.toEqual({
+      tile: "0:0",
+      i: 16,
+      edit: null,
+    });
+  });
+
+  it("persists cell last edit metadata across re-instantiation", async () => {
+    const harness = createTileOwnerHarness();
+    const first = harness.createInstance();
+
+    await first.fetch(
+      await postJson("/setCell", {
+        tile: "0:0",
+        i: 42,
+        v: 1,
+        op: "op_1",
+        uid: "u_a",
+        name: "Alice",
+        atMs: 1_700_000_000_123,
+      })
+    );
+
+    const second = harness.createInstance();
+    const response = await second.fetch(await getJson("/cell-last-edit?tile=0:0&i=42"));
+    expect(response.ok).toBe(true);
+    await expect(response.json()).resolves.toEqual({
+      tile: "0:0",
+      i: 42,
+      edit: {
+        uid: "u_a",
+        name: "Alice",
+        atMs: 1_700_000_000_123,
+      },
+    });
+  });
+
   it("persists unsubscribe state across re-instantiation", async () => {
     const harness = createTileOwnerHarness();
     const first = harness.createInstance();

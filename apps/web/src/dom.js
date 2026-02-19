@@ -8,8 +8,11 @@ export function getRequiredElements() {
   const statusEl = document.querySelector("#status");
   const zoomEl = document.querySelector("#zoom-readout");
   const titleEl = document.querySelector("#hud h1");
+  const inspectToggleEl = document.querySelector("#inspect-mode-toggle");
+  const inspectLabelEl = document.querySelector("#inspect-mode-label");
+  const editInfoPopupEl = document.querySelector("#edit-info-popup");
 
-  if (!canvas || !identityEl || !statusEl || !zoomEl) {
+  if (!canvas || !identityEl || !statusEl || !zoomEl || !inspectToggleEl || !inspectLabelEl || !editInfoPopupEl) {
     throw new Error("Missing required DOM elements");
   }
 
@@ -19,6 +22,9 @@ export function getRequiredElements() {
     statusEl,
     zoomEl,
     titleEl,
+    inspectToggleEl,
+    inspectLabelEl,
+    editInfoPopupEl,
   };
 }
 
