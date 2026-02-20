@@ -61,6 +61,10 @@ export class ConnectionShardDO {
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
+    this.#tileGateway = new ConnectionShardTileGateway({
+      tileOwnerNamespace: this.#env.TILE_OWNER,
+      getCurrentShardName: () => this.#currentShardName(),
+    });
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
       connectionShardNamespace: this.#env.CONNECTION_SHARD,
@@ -223,8 +227,16 @@ export class ConnectionShardDO {
     }
   }
 
-  async #watchTile(tileKey: string, action: "sub" | "unsub"): Promise<void> {
-    await this.#tileGateway.watchTile(tileKey, action);
+  async #watchTile(
+    tileKey: string,
+    action: "sub" | "unsub"
+  ): Promise<{ ok: boolean; code?: string; msg?: string }> {
+    const result = await this.#tileGateway.watchTile(tileKey, action);
+    if (!result) {
+      // Compatibility path for older gateway implementations that return void.
+      return { ok: true };
+    }
+    return result;
   }
 
   async #fetchTileSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null> {
