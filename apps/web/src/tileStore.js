@@ -21,6 +21,16 @@ export class TileStore {
     });
   }
 
+  applyOptimistic(tileKey, i, v) {
+    const tile = this.#cache.get(tileKey);
+    if (!tile) {
+      return { applied: false, knownTile: false };
+    }
+
+    const changed = applyCellOp(tile.bits, i, v);
+    return { applied: changed, knownTile: true };
+  }
+
   applySingle(tileKey, i, v, ver) {
     const tile = this.#cache.get(tileKey);
     if (!tile) {

@@ -87,6 +87,7 @@ export function setupInputHandlers({
   apiBaseUrl,
   fetchImpl = typeof fetch === "function" ? fetch.bind(globalThis) : undefined,
   onViewportChanged,
+  onTileCellsChanged = () => {},
 }) {
   let dragging = false;
   let dragStart = null;
@@ -241,6 +242,12 @@ export function setupInputHandlers({
       v: nextValue,
       op: createOpId(),
     };
+
+    const optimisticResult = tileStore.applyOptimistic(tileKey, cellIndex, nextValue);
+    if (optimisticResult.applied) {
+      onTileCellsChanged(tileKey, [cellIndex]);
+    }
+
     logger.ui("click_setCell", {
       ...buildWorldPointerContext(event, world),
       tile: tileKey,

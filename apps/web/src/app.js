@@ -261,6 +261,7 @@ export async function startApp() {
     editInfoPopupEl,
     apiBaseUrl,
     onViewportChanged: renderLoop.markViewportDirty,
+    onTileCellsChanged: renderLoop.markTileCellsDirty,
   });
 
   const onResize = () => {
