@@ -97,6 +97,7 @@ export function setupInputHandlers({
     inspectModeEnabled = enabled;
     inspectToggleEl.setAttribute("aria-pressed", enabled ? "true" : "false");
     inspectLabelEl.textContent = enabled ? "Inspect mode on" : "Inspect mode off";
+    canvas.style.cursor = enabled ? "help" : "default";
     if (!enabled) {
       hideEditInfoPopup(editInfoPopupEl);
     }
@@ -266,5 +267,6 @@ export function setupInputHandlers({
     canvas.removeEventListener("pointermove", onPointerMove);
     canvas.removeEventListener("pointerup", onPointerUp);
     inspectToggleEl.removeEventListener("click", onInspectToggleClick);
+    canvas.style.cursor = "default";
   };
 }
