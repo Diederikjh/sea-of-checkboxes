@@ -247,7 +247,12 @@ export class ConnectionShardDO {
     action: "sub" | "unsub"
   ): Promise<{ ok: boolean; code?: string; msg?: string }> {
     const shard = this.#currentShardName();
-    return this.#tileGateway.watchTile(tileKey, action, shard);
+    const result = await this.#tileGateway.watchTile(tileKey, action, shard);
+    if (!result) {
+      // Compatibility path for older gateway implementations that return void.
+      return { ok: true };
+    }
+    return result;
   }
 
   async #fetchTileSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null> {

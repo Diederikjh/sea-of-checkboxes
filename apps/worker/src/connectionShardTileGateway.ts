@@ -13,7 +13,7 @@ export interface ConnectionShardTileGateway {
     tileKey: string,
     action: "sub" | "unsub",
     shard: string
-  ): Promise<{ ok: boolean; code?: string; msg?: string }>;
+  ): Promise<{ ok: boolean; code?: string; msg?: string } | void>;
   fetchSnapshot(tileKey: string): Promise<Extract<ServerMessage, { t: "tileSnap" }> | null>;
   setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null>;
 }
