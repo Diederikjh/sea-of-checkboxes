@@ -76,17 +76,17 @@ describe("wire transport selection", () => {
     );
   });
 
-  it("includes identity query params when identity is provided", () => {
+  it("includes identity query params when identity provider returns one", () => {
     createWireTransport({
       env: {},
       locationLike: {
         protocol: "https:",
         host: "example.com",
       },
-      identity: {
+      identityProvider: () => ({
         uid: "u_saved123",
         name: "BriskOtter481",
-      },
+      }),
     });
 
     expect(mocks.createWebSocketTransport).toHaveBeenCalledWith(
