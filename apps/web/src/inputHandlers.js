@@ -91,6 +91,7 @@ export function setupInputHandlers({
 }) {
   let dragging = false;
   let dragStart = null;
+  let pendingSetCell = null;
   let lastCursorSent = 0;
   let inspectModeEnabled = false;
 
@@ -132,6 +133,46 @@ export function setupInputHandlers({
       y: event.clientY,
       moved: false,
     };
+
+    if (inspectModeEnabled || !canEditAtZoom(camera)) {
+      pendingSetCell = null;
+      return;
+    }
+
+    const { width, height } = getViewportSize();
+    const world = toWorldCell(event.clientX, event.clientY, camera, width, height);
+    const tileKey = tileKeyFromWorld(world.x, world.y);
+    const cellIndex = cellIndexFromWorld(world.x, world.y);
+    const nowMs = Date.now();
+
+    if (heatStore.isLocallyDisabled(tileKey, cellIndex, nowMs)) {
+      pendingSetCell = null;
+      return;
+    }
+
+    const tileData = tileStore.get(tileKey);
+    if (!tileData) {
+      pendingSetCell = null;
+      return;
+    }
+
+    const currentValue = tileData.bits[cellIndex];
+    const nextValue = currentValue === 1 ? 0 : 1;
+    const optimisticResult = tileStore.applyOptimistic(tileKey, cellIndex, nextValue);
+    if (!optimisticResult.applied) {
+      pendingSetCell = null;
+      return;
+    }
+
+    onTileCellsChanged(tileKey, [cellIndex]);
+    pendingSetCell = {
+      tileKey,
+      cellIndex,
+      currentValue,
+      nextValue,
+      world,
+      op: createOpId(),
+    };
   };
 
   const onPointerMove = (event) => {
@@ -140,6 +181,16 @@ export function setupInputHandlers({
       const deltaY = event.clientY - dragStart.y;
       const moved = Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2;
       dragStart.moved = dragStart.moved || moved;
+
+      if (moved && pendingSetCell) {
+        tileStore.applyOptimistic(
+          pendingSetCell.tileKey,
+          pendingSetCell.cellIndex,
+          pendingSetCell.currentValue
+        );
+        onTileCellsChanged(pendingSetCell.tileKey, [pendingSetCell.cellIndex]);
+        pendingSetCell = null;
+      }
 
       camera.x -= event.movementX / camera.cellPixelSize;
       camera.y -= event.movementY / camera.cellPixelSize;
@@ -164,6 +215,7 @@ export function setupInputHandlers({
     dragging = false;
 
     if (!clickLike) {
+      pendingSetCell = null;
       dragStart = null;
       return;
     }
@@ -206,6 +258,26 @@ export function setupInputHandlers({
       return;
     }
 
+    if (pendingSetCell) {
+      logger.ui("click_setCell", {
+        ...buildWorldPointerContext(event, pendingSetCell.world),
+        tile: pendingSetCell.tileKey,
+        i: pendingSetCell.cellIndex,
+        currentValue: pendingSetCell.currentValue,
+        nextValue: pendingSetCell.nextValue,
+      });
+      transport.send({
+        t: "setCell",
+        tile: pendingSetCell.tileKey,
+        i: pendingSetCell.cellIndex,
+        v: pendingSetCell.nextValue,
+        op: pendingSetCell.op,
+      });
+      pendingSetCell = null;
+      dragStart = null;
+      return;
+    }
+
     if (!canEditAtZoom(camera)) {
       logger.ui("click_blocked", {
         reason: "zoom",
@@ -242,11 +314,6 @@ export function setupInputHandlers({
       v: nextValue,
       op: createOpId(),
     };
-
-    const optimisticResult = tileStore.applyOptimistic(tileKey, cellIndex, nextValue);
-    if (optimisticResult.applied) {
-      onTileCellsChanged(tileKey, [cellIndex]);
-    }
 
     logger.ui("click_setCell", {
       ...buildWorldPointerContext(event, world),
