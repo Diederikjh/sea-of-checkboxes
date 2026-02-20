@@ -52,11 +52,13 @@ export function createServerMessageHandler({
   onVisualStateChanged = () => {},
   onTileCellsChanged = () => {},
   setInteractionRestriction = () => {},
+  onIdentityReceived = () => {},
 }) {
   return (message) => {
     switch (message.t) {
       case "hello": {
         selfIdentity.uid = message.uid;
+        onIdentityReceived({ uid: message.uid, name: message.name });
         identityEl.textContent = `You are ${message.name} (${message.uid})`;
         onVisualStateChanged();
         break;

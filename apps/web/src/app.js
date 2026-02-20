@@ -16,6 +16,7 @@ import { createCursorLabels } from "./cursorLabels";
 import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
+import { readStoredIdentity, writeStoredIdentity } from "./identityStore";
 import { logger } from "./logger";
 import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
 import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
@@ -173,7 +174,9 @@ export async function startApp() {
     canvas.addEventListener("webglcontextrestored", onWebGlContextRestored);
   }
 
-  const wireTransport = createWireTransport();
+  const wireTransport = createWireTransport({
+    identityProvider: readStoredIdentity,
+  });
   const transport = {
     connect(onServerMessage) {
       wireTransport.connect((payload) => {
@@ -266,6 +269,9 @@ export async function startApp() {
       onVisualStateChanged: renderLoop.markVisualDirty,
       onTileCellsChanged: renderLoop.markTileCellsDirty,
       setInteractionRestriction,
+      onIdentityReceived: ({ uid, name }) => {
+        writeStoredIdentity({ uid, name });
+      },
     })
   );
 

@@ -9,6 +9,8 @@ import {
 import { shardNameForUid } from "./sharding";
 const NAME_ADJECTIVES = ["Brisk", "Quiet", "Amber", "Mint", "Rust", "Blue"];
 const NAME_NOUNS = ["Otter", "Falcon", "Badger", "Stoat", "Fox", "Heron"];
+const UID_PATTERN = /^u_[A-Za-z0-9]{1,32}$/;
+const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]{2,31}$/;
 const CELL_LAST_EDIT_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, OPTIONS",
@@ -36,6 +38,20 @@ function generateName(): string {
     .toString()
     .padStart(3, "0");
   return `${adjective}${noun}${suffix}`;
+}
+
+function resolveIdentity(url: URL): { uid: string; name: string } {
+  const requestedUid = url.searchParams.get("uid")?.trim() ?? "";
+  const requestedName = url.searchParams.get("name")?.trim() ?? "";
+
+  if (UID_PATTERN.test(requestedUid) && NAME_PATTERN.test(requestedName)) {
+    return { uid: requestedUid, name: requestedName };
+  }
+
+  return {
+    uid: generateUid(),
+    name: generateName(),
+  };
 }
 
 function withCellLastEditCors(response: Response): Response {
@@ -98,8 +114,7 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
     return new Response("Expected websocket upgrade", { status: 426 });
   }
 
-  const uid = generateUid();
-  const name = generateName();
+  const { uid, name } = resolveIdentity(url);
   const shardName = shardNameForUid(uid);
 
   const shardUrl = new URL("https://connection-shard.internal/ws");

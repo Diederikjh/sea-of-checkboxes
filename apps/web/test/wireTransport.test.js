@@ -75,4 +75,44 @@ describe("wire transport selection", () => {
       expect.any(Object)
     );
   });
+
+  it("includes identity query params when identity is provided", () => {
+    createWireTransport({
+      env: {},
+      locationLike: {
+        protocol: "https:",
+        host: "example.com",
+      },
+      identity: {
+        uid: "u_saved123",
+        name: "BriskOtter481",
+      },
+    });
+
+    expect(mocks.createWebSocketTransport).toHaveBeenCalledWith(
+      "wss://example.com/ws?uid=u_saved123&name=BriskOtter481",
+      expect.any(Object)
+    );
+  });
+
+  it("re-resolves websocket url from identity provider", () => {
+    let currentIdentity = null;
+    createWireTransport({
+      env: {},
+      locationLike: {
+        protocol: "https:",
+        host: "example.com",
+      },
+      identityProvider: () => currentIdentity,
+    });
+
+    const options = mocks.createWebSocketTransport.mock.calls[0]?.[1];
+    expect(options.resolveUrl()).toBe("wss://example.com/ws");
+
+    currentIdentity = {
+      uid: "u_saved123",
+      name: "BriskOtter481",
+    };
+    expect(options.resolveUrl()).toBe("wss://example.com/ws?uid=u_saved123&name=BriskOtter481");
+  });
 });

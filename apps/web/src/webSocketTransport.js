@@ -19,6 +19,7 @@ function toUint8Array(messageData) {
 
 export class WebSocketTransport {
   #url;
+  #resolveUrl;
   #wsFactory;
   #socket;
   #onServerPayload;
@@ -29,6 +30,7 @@ export class WebSocketTransport {
 
   constructor(url, options = {}) {
     this.#url = url;
+    this.#resolveUrl = options.resolveUrl ?? (() => this.#url);
     this.#wsFactory = options.wsFactory ?? ((wsUrl) => new WebSocket(wsUrl));
     this.#socket = null;
     this.#onServerPayload = () => {};
@@ -91,7 +93,8 @@ export class WebSocketTransport {
       return;
     }
 
-    const socket = this.#wsFactory(this.#url);
+    const wsUrl = this.#resolveUrl();
+    const socket = this.#wsFactory(wsUrl);
     socket.binaryType = "arraybuffer";
     socket.onmessage = (event) => {
       const payload = toUint8Array(event.data);
@@ -106,7 +109,7 @@ export class WebSocketTransport {
       }
 
       this.#reconnectDelayMs = MIN_RECONNECT_MS;
-      logger.other("ws open", { url: this.#url });
+      logger.other("ws open", { url: wsUrl });
       this.#flushPending();
     };
     socket.onclose = () => {
@@ -115,7 +118,7 @@ export class WebSocketTransport {
       }
 
       logger.other("ws close", {
-        url: this.#url,
+        url: wsUrl,
         pending: this.#pendingSends.length,
         disposed: this.#disposed,
       });

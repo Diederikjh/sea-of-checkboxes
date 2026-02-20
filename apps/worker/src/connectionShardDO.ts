@@ -28,6 +28,7 @@ import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
+  type SocketLike,
   type SocketPairFactory,
   type WebSocketUpgradeResponseFactory,
 } from "./socketPair";
@@ -107,7 +108,7 @@ export class ConnectionShardDO {
     return new Response("Not found", { status: 404 });
   }
 
-  #handleWebSocketConnect(request: Request, url: URL): Response {
+  async #handleWebSocketConnect(request: Request, url: URL): Promise<Response> {
     if (!isWebSocketUpgrade(request)) {
       return new Response("Expected websocket upgrade", { status: 426 });
     }
@@ -126,6 +127,19 @@ export class ConnectionShardDO {
     const serverSocket = pair.server;
 
     serverSocket.accept();
+    const context = this.#operationsContext();
+    const existingClient = this.#clients.get(uid);
+    if (existingClient) {
+      try {
+        const maybeClose = (existingClient.socket as unknown as { close?: () => void }).close;
+        if (typeof maybeClose === "function") {
+          maybeClose.call(existingClient.socket);
+        }
+      } catch {
+        // Ignore close errors from stale sockets.
+      }
+      await this.#disconnectClientIfCurrent(context, uid, existingClient.socket);
+    }
 
     const client: ConnectedClient = {
       uid,
@@ -140,7 +154,6 @@ export class ConnectionShardDO {
     this.#clients.set(uid, client);
     this.#sendServerMessage(client, { t: "hello", uid, name });
     this.#cursorCoordinator.onClientConnected(client);
-    const context = this.#operationsContext();
 
     serverSocket.addEventListener("message", (event: unknown) => {
       const payload = readBinaryMessageEventPayload(event);
@@ -149,13 +162,13 @@ export class ConnectionShardDO {
         return;
       }
 
-      void this.#receiveClientPayload(uid, payload).catch(() => {
+      void this.#receiveClientPayload(uid, serverSocket, payload).catch(() => {
         this.#sendError(client, "internal", "Failed to process client payload");
       });
     });
 
     const onClose = () => {
-      void this.#disconnectClient(context, uid);
+      void this.#disconnectClientIfCurrent(context, uid, serverSocket);
     };
 
     serverSocket.addEventListener("close", onClose);
@@ -164,9 +177,9 @@ export class ConnectionShardDO {
     return this.#upgradeResponseFactory.createResponse(clientSocket);
   }
 
-  async #receiveClientPayload(uid: string, payload: Uint8Array): Promise<void> {
+  async #receiveClientPayload(uid: string, socket: SocketLike, payload: Uint8Array): Promise<void> {
     const client = this.#clients.get(uid);
-    if (!client) {
+    if (!client || client.socket !== socket) {
       return;
     }
     const context = this.#operationsContext();
@@ -271,7 +284,16 @@ export class ConnectionShardDO {
     return this.#shardName ?? this.#state.id.toString();
   }
 
-  async #disconnectClient(context: ConnectionShardDOOperationsContext, uid: string): Promise<void> {
+  async #disconnectClientIfCurrent(
+    context: ConnectionShardDOOperationsContext,
+    uid: string,
+    socket: SocketLike
+  ): Promise<void> {
+    const current = this.#clients.get(uid);
+    if (!current || current.socket !== socket) {
+      return;
+    }
+
     await disconnectClientFromShard(context, uid);
     this.#cursorCoordinator.onClientDisconnected(uid);
   }

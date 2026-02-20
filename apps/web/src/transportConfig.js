@@ -1,3 +1,5 @@
+import { isValidIdentity } from "./identityStore";
+
 function toBool(value) {
   if (typeof value !== "string") {
     return false;
@@ -5,6 +7,21 @@ function toBool(value) {
 
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function withIdentityQueryParams(wsUrl, identity) {
+  if (!isValidIdentity(identity)) {
+    return wsUrl;
+  }
+
+  try {
+    const parsed = new URL(wsUrl);
+    parsed.searchParams.set("uid", identity.uid.trim());
+    parsed.searchParams.set("name", identity.name.trim());
+    return parsed.toString();
+  } catch {
+    return wsUrl;
+  }
 }
 
 export function isMockTransportEnabled(
@@ -15,24 +32,25 @@ export function isMockTransportEnabled(
 
 export function resolveWebSocketUrl(
   locationLike = typeof window !== "undefined" ? window.location : undefined,
-  env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {}
+  env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {},
+  identity = null
 ) {
   const envUrl = typeof env.VITE_WS_URL === "string" ? env.VITE_WS_URL.trim() : "";
   if (envUrl.length > 0) {
-    return envUrl;
+    return withIdentityQueryParams(envUrl, identity);
   }
 
   if (!locationLike || typeof locationLike.host !== "string") {
-    return "ws://127.0.0.1:8787/ws";
+    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity);
   }
 
   const host = locationLike.host.toLowerCase();
   if (host === "localhost:5173" || host === "127.0.0.1:5173") {
-    return "ws://127.0.0.1:8787/ws";
+    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity);
   }
 
   const protocol = locationLike.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${locationLike.host}/ws`;
+  return withIdentityQueryParams(`${protocol}//${locationLike.host}/ws`, identity);
 }
 
 export function resolveApiBaseUrl(

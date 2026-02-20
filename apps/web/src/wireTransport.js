@@ -7,14 +7,18 @@ export function createWireTransport({
   env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {},
   locationLike = typeof window !== "undefined" ? window.location : undefined,
   wsFactory,
+  identity = null,
+  identityProvider,
 } = {}) {
   if (isMockTransportEnabled(env)) {
     logger.other("transport", { mode: "mock" });
     return createMockTransport();
   }
 
-  const wsUrl = resolveWebSocketUrl(locationLike, env);
+  const resolveIdentity =
+    typeof identityProvider === "function" ? identityProvider : () => identity;
+  const resolveUrl = () => resolveWebSocketUrl(locationLike, env, resolveIdentity());
+  const wsUrl = resolveUrl();
   logger.other("transport", { mode: "ws", wsUrl });
-  return createWebSocketTransport(wsUrl, { wsFactory });
+  return createWebSocketTransport(wsUrl, { wsFactory, resolveUrl });
 }
-

@@ -216,6 +216,31 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "cellUpBatch")).toBe(false);
   });
 
+  it("replaces an existing uid connection without letting stale socket events evict the new client", async () => {
+    const harness = createHarness();
+    const firstSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_same",
+      name: "Alice",
+      shard: "shard-a",
+    });
+    const secondSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_same",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    firstSocket.emitClose();
+    secondSocket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+
+    await waitFor(() => {
+      const tileStub = harness.tileOwners.getByName("0:0");
+      expect(tileStub.watchRequests.length).toBe(1);
+    });
+
+    const secondMessages = decodeMessages(secondSocket);
+    expect(secondMessages.some((message) => message.t === "hello" && message.uid === "u_same")).toBe(true);
+  });
+
   it("ingests cursor batches and forwards only to clients with cursor subscriptions", async () => {
     const harness = createHarness();
     const socketA = await connectClient(harness.shard, harness.socketPairFactory, {

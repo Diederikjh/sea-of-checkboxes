@@ -138,4 +138,37 @@ describe("websocket transport", () => {
     expect(Array.from(socket.sent[0] ?? Uint8Array.from([]))).toEqual([8]);
     expect(Array.from(socket.sent[socket.sent.length - 1] ?? Uint8Array.from([]))).toEqual([7]);
   });
+
+  it("resolves websocket url per connection attempt", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [];
+      const urls = [];
+      let currentUrl = "ws://example/ws";
+      const transport = createWebSocketTransport("ws://example/ws", {
+        resolveUrl: () => currentUrl,
+        wsFactory: (url) => {
+          urls.push(url);
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.connect(() => {});
+      expect(urls).toEqual(["ws://example/ws"]);
+
+      currentUrl = "ws://example/ws?uid=u_saved123&name=BriskOtter481";
+      sockets[0].readyState = 3;
+      sockets[0].onclose?.();
+      vi.advanceTimersByTime(250);
+
+      expect(urls).toEqual([
+        "ws://example/ws",
+        "ws://example/ws?uid=u_saved123&name=BriskOtter481",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

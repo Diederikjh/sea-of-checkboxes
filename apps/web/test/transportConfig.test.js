@@ -46,6 +46,26 @@ describe("transport config", () => {
     expect(resolveWebSocketUrl(undefined, {})).toBe("ws://127.0.0.1:8787/ws");
   });
 
+  it("appends persisted identity to websocket url", () => {
+    expect(
+      resolveWebSocketUrl(
+        { protocol: "https:", host: "example.com" },
+        {},
+        { uid: "u_saved123", name: "BriskOtter481" }
+      )
+    ).toBe("wss://example.com/ws?uid=u_saved123&name=BriskOtter481");
+  });
+
+  it("ignores invalid identity when building websocket url", () => {
+    expect(
+      resolveWebSocketUrl(
+        { protocol: "https:", host: "example.com" },
+        {},
+        { uid: "u_saved123", name: "bad name" }
+      )
+    ).toBe("wss://example.com/ws");
+  });
+
   it("derives api base url from websocket url rules", () => {
     expect(
       resolveApiBaseUrl(

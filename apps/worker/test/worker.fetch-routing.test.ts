@@ -146,4 +146,63 @@ describe("top-level worker fetch routing", () => {
     expect(forwarded.headers.get("upgrade")).toBe("websocket");
     expect(forwarded.headers.get("x-trace-id")).toBe("trace_123");
   });
+
+  it("reuses provided uid/name query params when both are valid", async () => {
+    const { env, connectionShard } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/ws?uid=u_saved123&name=BriskOtter481", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(connectionShard.requestedNames.length).toBe(1);
+
+    const shardName = connectionShard.requestedNames[0];
+    if (!shardName) {
+      throw new Error("Expected shard name");
+    }
+
+    const stub = connectionShard.stubs.get(shardName);
+    const forwarded = stub?.requests[0]?.request;
+    if (!forwarded) {
+      throw new Error("Missing forwarded request");
+    }
+
+    const forwardedUrl = new URL(forwarded.url);
+    expect(forwardedUrl.searchParams.get("uid")).toBe("u_saved123");
+    expect(forwardedUrl.searchParams.get("name")).toBe("BriskOtter481");
+  });
+
+  it("falls back to generated uid/name when provided identity is invalid", async () => {
+    const { env, connectionShard } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/ws?uid=u_saved123&name=bad name", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(connectionShard.requestedNames.length).toBe(1);
+    const shardName = connectionShard.requestedNames[0];
+    if (!shardName) {
+      throw new Error("Expected shard name");
+    }
+
+    const stub = connectionShard.stubs.get(shardName);
+    const forwarded = stub?.requests[0]?.request;
+    if (!forwarded) {
+      throw new Error("Missing forwarded request");
+    }
+
+    const forwardedUrl = new URL(forwarded.url);
+    expect(forwardedUrl.searchParams.get("uid")).toMatch(/^u_[0-9a-f]{8}$/);
+    expect(forwardedUrl.searchParams.get("name")).toMatch(/^[A-Za-z]+\d{3}$/);
+  });
 });
