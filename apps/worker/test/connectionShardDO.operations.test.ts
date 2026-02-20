@@ -1,7 +1,7 @@
 import type { ServerMessage } from "@sea/protocol";
 import { describe, expect, it } from "vitest";
 
-import type { TileSetCellResponse } from "../src/doCommon";
+import type { TileSetCellRequest, TileSetCellResponse } from "../src/doCommon";
 import {
   disconnectClientFromShard,
   handleSetCellMessage,
@@ -35,7 +35,7 @@ function createContext() {
   const sent: Array<{ uid: string; message: ServerMessage }> = [];
   const errors: Array<{ uid: string; code: string; msg: string }> = [];
   const badTiles: Array<{ uid: string; tile: string }> = [];
-  const setCellRequests: Array<{ tile: string; i: number; v: 0 | 1; op: string }> = [];
+  const setCellRequests: TileSetCellRequest[] = [];
   let setCellResult: TileSetCellResponse | null = {
     accepted: true,
     changed: true,
@@ -156,6 +156,10 @@ describe("connection shard DO operations", () => {
 
     expect(harness.watched).toEqual([{ tile: "0:0", action: "sub" }]);
     expect(harness.setCellRequests.length).toBe(1);
+    expect(harness.setCellRequests[0]).toMatchObject({
+      uid: "u_a",
+      name: "Alice",
+    });
     expect(harness.errors.length).toBe(1);
     expect(harness.errors[0]?.code).toBe("setcell_rejected");
   });

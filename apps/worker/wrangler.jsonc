@@ -15,6 +15,13 @@
       }
     ]
   },
+  "r2_buckets": [
+    {
+      "binding": "TILE_SNAPSHOTS",
+      "bucket_name": "sea-of-checkboxes-tiles",
+      "preview_bucket_name": "sea-of-checkboxes-tiles-preview"
+    }
+  ],
   "migrations": [
     {
       "tag": "v1",
@@ -22,4 +29,3 @@
     }
   ]
 }
-

@@ -17,9 +17,12 @@ import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { logger } from "./logger";
+import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
+import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
 import { createServerMessageHandler } from "./serverMessages";
 import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
+import { resolveApiBaseUrl } from "./transportConfig";
 import { createWireTransport } from "./wireTransport";
 
 function formatByteCount(bytes) {
@@ -131,6 +134,9 @@ export async function startApp() {
     titleEl,
     interactionOverlayEl,
     interactionOverlayTextEl,
+    inspectToggleEl,
+    inspectLabelEl,
+    editInfoPopupEl,
   } = getRequiredElements();
 
   applyBranding(titleEl);
@@ -150,25 +156,54 @@ export async function startApp() {
   const camera = createCamera();
   const tileStore = new TileStore(512);
   const heatStore = new HeatStore();
+  const apiBaseUrl = resolveApiBaseUrl();
+  const perfProbe = createPerfProbe({
+    enabled: isPerfProbeEnabled(),
+  });
+  const protocolLogsEnabled = logger.isEnabled(logger.categories.PROTOCOL);
+  const onWebGlContextLost = (event) => {
+    perfProbe.increment(PERF_COUNTER.WEBGL_CONTEXT_LOST);
+    event.preventDefault();
+  };
+  const onWebGlContextRestored = () => {
+    perfProbe.increment(PERF_COUNTER.WEBGL_CONTEXT_RESTORED);
+  };
+  if (perfProbe.enabled) {
+    canvas.addEventListener("webglcontextlost", onWebGlContextLost, { passive: false });
+    canvas.addEventListener("webglcontextrestored", onWebGlContextRestored);
+  }
+
   const wireTransport = createWireTransport();
   const transport = {
     connect(onServerMessage) {
       wireTransport.connect((payload) => {
-        const payloadInfo = describePayload(payload);
-        const message = decodeServerMessageBinary(payload);
-        logger.protocol("rx", {
-          ...payloadInfo,
-          ...summarizeMessage(message),
-        });
+        perfProbe.increment(PERF_COUNTER.WS_RX_COUNT);
+        perfProbe.increment(PERF_COUNTER.WS_RX_BYTES, payload.length);
+        const message = perfProbe.measure(PERF_TIMING.PROTOCOL_DECODE_MS, () =>
+          decodeServerMessageBinary(payload)
+        );
+        if (protocolLogsEnabled) {
+          const payloadInfo = describePayload(payload);
+          logger.protocol("rx", {
+            ...payloadInfo,
+            ...summarizeMessage(message),
+          });
+        }
         onServerMessage(message);
       });
     },
     send(message) {
-      const payload = encodeClientMessageBinary(message);
-      logger.protocol("tx", {
-        ...describePayload(payload),
-        ...summarizeMessage(message),
-      });
+      const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
+        encodeClientMessageBinary(message)
+      );
+      perfProbe.increment(PERF_COUNTER.WS_TX_COUNT);
+      perfProbe.increment(PERF_COUNTER.WS_TX_BYTES, payload.length);
+      if (protocolLogsEnabled) {
+        logger.protocol("tx", {
+          ...describePayload(payload),
+          ...summarizeMessage(message),
+        });
+      }
       wireTransport.send(payload);
     },
     dispose() {
@@ -214,6 +249,7 @@ export async function startApp() {
     cursorLabels,
     transport,
     setStatus,
+    perfProbe,
   });
 
   updateZoomReadout(camera, zoomEl);
@@ -245,6 +281,10 @@ export async function startApp() {
     tileStore,
     heatStore,
     setStatus,
+    inspectToggleEl,
+    inspectLabelEl,
+    editInfoPopupEl,
+    apiBaseUrl,
     onViewportChanged: renderLoop.markViewportDirty,
   });
 
@@ -255,6 +295,10 @@ export async function startApp() {
 
   return () => {
     window.removeEventListener("resize", onResize);
+    if (perfProbe.enabled) {
+      canvas.removeEventListener("webglcontextlost", onWebGlContextLost);
+      canvas.removeEventListener("webglcontextrestored", onWebGlContextRestored);
+    }
     teardownInputHandlers();
     cursorLabels.destroy();
     renderLoop.dispose();

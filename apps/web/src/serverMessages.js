@@ -99,7 +99,6 @@ export function createServerMessageHandler({
         }
 
         upsertRemoteCursor(cursors, message, Date.now());
-        onVisualStateChanged();
         break;
       }
       case "err": {

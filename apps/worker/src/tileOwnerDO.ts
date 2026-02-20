@@ -1,4 +1,4 @@
-import { TILE_CELL_COUNT } from "@sea/domain";
+import { TILE_CELL_COUNT, isCellIndexValid } from "@sea/domain";
 import {
   decodeRle64,
   type ServerMessage,
@@ -11,29 +11,45 @@ import {
   type DurableObjectStateLike,
   type Env,
   type TileSetCellRequest,
+  type TileCellLastEditResponse,
   type TileSetCellResponse,
   type TileWatchRequest,
 } from "./doCommon";
 import { TileOwner } from "./local/tileOwner";
+import {
+  DurableObjectStorageTileOwnerPersistence,
+  LazyMigratingR2TileOwnerPersistence,
+  type TileOwnerPersistence,
+} from "./tileOwnerPersistence";
 
 const TILE_READONLY_WATCHER_THRESHOLD = 8;
 const TILE_DENY_WATCHER_THRESHOLD = 12;
 
 export class TileOwnerDO {
-  #state: DurableObjectStateLike;
   #env: Env;
   #tileOwner: TileOwner;
   #tileKey: string | null;
   #subscriberShards: Set<string>;
   #loaded: boolean;
+  #persistence: TileOwnerPersistence;
 
-  constructor(state: DurableObjectStateLike, env: Env) {
-    this.#state = state;
+  constructor(
+    state: DurableObjectStateLike,
+    env: Env,
+    options: {
+      persistence?: TileOwnerPersistence;
+    } = {}
+  ) {
     this.#env = env;
     this.#tileOwner = new TileOwner("0:0");
     this.#tileKey = null;
     this.#subscriberShards = new Set();
     this.#loaded = false;
+    this.#persistence =
+      options.persistence ??
+      (env.TILE_SNAPSHOTS
+        ? new LazyMigratingR2TileOwnerPersistence(state, env.TILE_SNAPSHOTS)
+        : new DurableObjectStorageTileOwnerPersistence(state));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -97,6 +113,9 @@ export class TileOwnerDO {
         i: payload.i,
         v: payload.v,
         op: payload.op,
+        ...(typeof payload.uid === "string" ? { uid: payload.uid } : {}),
+        ...(typeof payload.name === "string" ? { name: payload.name } : {}),
+        ...(typeof payload.atMs === "number" ? { atMs: payload.atMs } : {}),
       });
 
       if (result.changed) {
@@ -144,6 +163,27 @@ export class TileOwnerDO {
       return jsonResponse(body);
     }
 
+    if (url.pathname === "/cell-last-edit" && request.method === "GET") {
+      const tileKey = url.searchParams.get("tile");
+      const rawIndex = url.searchParams.get("i");
+      if (!tileKey || !isValidTileKey(tileKey) || !rawIndex || !/^\d+$/.test(rawIndex)) {
+        return new Response("Invalid tile or cell index", { status: 400 });
+      }
+
+      const index = Number.parseInt(rawIndex, 10);
+      if (!isCellIndexValid(index)) {
+        return new Response("Invalid tile or cell index", { status: 400 });
+      }
+
+      await this.#ensureLoaded(tileKey);
+      const body: TileCellLastEditResponse = {
+        tile: tileKey,
+        i: index,
+        edit: this.#tileOwner.getCellLastEdit(index),
+      };
+      return jsonResponse(body);
+    }
+
     return new Response("Not found", { status: 404 });
   }
 
@@ -164,19 +204,14 @@ export class TileOwnerDO {
       return;
     }
 
-    const persisted = await this.#state.storage.get<{ bits: string; ver: number }>("snapshot");
-    if (persisted) {
-      const bits = decodeRle64(persisted.bits, TILE_CELL_COUNT);
-      this.#tileOwner.loadSnapshot(bits, persisted.ver);
+    const persisted = await this.#persistence.load(tileKey);
+    if (persisted.snapshot) {
+      const bits = decodeRle64(persisted.snapshot.bits, TILE_CELL_COUNT);
+      this.#tileOwner.loadSnapshot(bits, persisted.snapshot.ver, persisted.snapshot.edits ?? []);
     }
 
-    const subscribers = await this.#state.storage.get<string[]>("subscribers");
-    if (Array.isArray(subscribers)) {
-      for (const shard of subscribers) {
-        if (typeof shard === "string" && shard.length > 0) {
-          this.#subscriberShards.add(shard);
-        }
-      }
+    for (const shard of persisted.subscribers) {
+      this.#subscriberShards.add(shard);
     }
 
     this.#loaded = true;
@@ -184,13 +219,21 @@ export class TileOwnerDO {
 
   async #persistSnapshot(): Promise<void> {
     const snapshot = this.#tileOwner.getSnapshotMessage();
-    await this.#state.storage.put("snapshot", {
+    await this.#persistence.saveSnapshot(this.#activeTileKey(), {
       bits: snapshot.bits,
       ver: snapshot.ver,
+      edits: this.#tileOwner.getPersistedLastEdits(),
     });
   }
 
   async #persistSubscribers(): Promise<void> {
-    await this.#state.storage.put("subscribers", Array.from(this.#subscriberShards));
+    await this.#persistence.saveSubscribers(this.#activeTileKey(), Array.from(this.#subscriberShards));
+  }
+
+  #activeTileKey(): string {
+    if (!this.#tileKey) {
+      throw new Error("TileOwnerDO tile key was not initialized");
+    }
+    return this.#tileKey;
   }
 }

@@ -2,11 +2,15 @@ import { TILE_ENCODING, isCellIndexValid } from "@sea/domain";
 import { createEmptyTileState, encodeRle64 } from "@sea/protocol";
 
 import type { TileBatchMessage, TileSnapshotMessage, TileWatcher } from "./types";
+import type { CellLastEditInfo, CellLastEditRecord } from "../doCommon";
 
 export interface SetCellIntent {
   i: number;
   v: 0 | 1;
   op: string;
+  uid?: string;
+  name?: string;
+  atMs?: number;
 }
 
 export interface SetCellResult {
@@ -23,12 +27,14 @@ export class TileOwner {
   #bits: Uint8Array;
   #ver: number;
   #watchers: Map<string, TileWatcher>;
+  #cellLastEdits: Array<CellLastEditInfo | null>;
 
   constructor(tileKey: string) {
     this.tileKey = tileKey;
     this.#bits = createEmptyTileState().bits;
     this.#ver = 0;
     this.#watchers = new Map();
+    this.#cellLastEdits = new Array<CellLastEditInfo | null>(this.#bits.length).fill(null);
     this.recentEdits = [];
   }
 
@@ -54,7 +60,7 @@ export class TileOwner {
     return this.#ver;
   }
 
-  loadSnapshot(bits: Uint8Array, ver: number): void {
+  loadSnapshot(bits: Uint8Array, ver: number, edits: CellLastEditRecord[] = []): void {
     if (!Number.isInteger(ver) || ver < 0) {
       throw new Error(`Invalid tile version: ${ver}`);
     }
@@ -65,6 +71,56 @@ export class TileOwner {
 
     this.#bits = bits.slice();
     this.#ver = ver;
+    this.#cellLastEdits = new Array<CellLastEditInfo | null>(this.#bits.length).fill(null);
+
+    for (const edit of edits) {
+      if (!isCellIndexValid(edit.i)) {
+        continue;
+      }
+
+      this.#cellLastEdits[edit.i] = {
+        uid: edit.uid,
+        name: edit.name,
+        atMs: edit.atMs,
+      };
+    }
+  }
+
+  getCellLastEdit(index: number): CellLastEditInfo | null {
+    if (!isCellIndexValid(index)) {
+      return null;
+    }
+
+    const edit = this.#cellLastEdits[index];
+    if (!edit) {
+      return null;
+    }
+
+    return {
+      uid: edit.uid,
+      name: edit.name,
+      atMs: edit.atMs,
+    };
+  }
+
+  getPersistedLastEdits(): CellLastEditRecord[] {
+    const edits: CellLastEditRecord[] = [];
+
+    for (let index = 0; index < this.#cellLastEdits.length; index += 1) {
+      const edit = this.#cellLastEdits[index];
+      if (!edit) {
+        continue;
+      }
+
+      edits.push({
+        i: index,
+        uid: edit.uid,
+        name: edit.name,
+        atMs: edit.atMs,
+      });
+    }
+
+    return edits;
   }
 
   applySetCell(intent: SetCellIntent): SetCellResult {
@@ -88,7 +144,14 @@ export class TileOwner {
 
     this.#bits[intent.i] = intent.v;
     this.#ver += 1;
-    this.recentEdits.push({ index: intent.i, atMs: Date.now() });
+    const atMs =
+      Number.isInteger(intent.atMs) && typeof intent.atMs === "number" && intent.atMs >= 0
+        ? intent.atMs
+        : Date.now();
+    const uid = typeof intent.uid === "string" && intent.uid.length > 0 ? intent.uid : "unknown";
+    const name = typeof intent.name === "string" && intent.name.length > 0 ? intent.name : "Unknown";
+    this.#cellLastEdits[intent.i] = { uid, name, atMs };
+    this.recentEdits.push({ index: intent.i, atMs });
     if (this.recentEdits.length > 5_000) {
       this.recentEdits.shift();
     }

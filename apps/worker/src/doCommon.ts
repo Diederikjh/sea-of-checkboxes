@@ -19,6 +19,15 @@ export interface DurableObjectStateLike {
   };
 }
 
+export interface R2ObjectBodyLike {
+  text(): Promise<string>;
+}
+
+export interface R2BucketLike {
+  get(key: string): Promise<R2ObjectBodyLike | null>;
+  put(key: string, value: string): Promise<void>;
+}
+
 export interface ExecutionContextLike {
   waitUntil(promise: Promise<unknown>): void;
 }
@@ -26,6 +35,7 @@ export interface ExecutionContextLike {
 export interface Env {
   CONNECTION_SHARD: DurableObjectNamespaceLike;
   TILE_OWNER: DurableObjectNamespaceLike;
+  TILE_SNAPSHOTS?: R2BucketLike;
 }
 
 export interface TileWatchRequest {
@@ -39,6 +49,9 @@ export interface TileSetCellRequest {
   i: number;
   v: 0 | 1;
   op: string;
+  uid?: string;
+  name?: string;
+  atMs?: number;
 }
 
 export interface TileSetCellResponse {
@@ -46,6 +59,22 @@ export interface TileSetCellResponse {
   changed: boolean;
   ver: number;
   reason?: string;
+}
+
+export interface CellLastEditInfo {
+  uid: string;
+  name: string;
+  atMs: number;
+}
+
+export interface CellLastEditRecord extends CellLastEditInfo {
+  i: number;
+}
+
+export interface TileCellLastEditResponse {
+  tile: string;
+  i: number;
+  edit: CellLastEditInfo | null;
 }
 
 export function jsonResponse(value: unknown, init: ResponseInit = {}): Response {

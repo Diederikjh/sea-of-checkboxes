@@ -31,27 +31,8 @@ import {
   type SocketPairFactory,
   type WebSocketUpgradeResponseFactory,
 } from "./socketPair";
+import { readBinaryMessageEventPayload } from "./socketMessagePayload";
 import { fanoutTileBatchToSubscribers } from "./tileBatchFanout";
-
-function toBinaryPayload(data: unknown): Uint8Array | null {
-  if (data instanceof Uint8Array) {
-    return data;
-  }
-  if (data instanceof ArrayBuffer) {
-    return new Uint8Array(data);
-  }
-  return null;
-}
-
-function readMessageEventData(event: unknown): unknown {
-  if (typeof event !== "object" || event === null) {
-    return null;
-  }
-  if (!("data" in event)) {
-    return null;
-  }
-  return (event as { data: unknown }).data;
-}
 
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
@@ -91,6 +72,10 @@ export class ConnectionShardDO {
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
       },
+    });
+    this.#tileGateway = new ConnectionShardTileGateway({
+      tileOwnerNamespace: this.#env.TILE_OWNER,
+      getCurrentShardName: () => this.#currentShardName(),
     });
   }
 
@@ -158,7 +143,7 @@ export class ConnectionShardDO {
     const context = this.#operationsContext();
 
     serverSocket.addEventListener("message", (event: unknown) => {
-      const payload = toBinaryPayload(readMessageEventData(event));
+      const payload = readBinaryMessageEventPayload(event);
       if (!payload) {
         this.#sendError(client, "bad_message", "Expected binary message payload");
         return;

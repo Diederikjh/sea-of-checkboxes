@@ -89,6 +89,55 @@ body,
   font-size: 0.88rem;
 }
 
+#inspect-mode-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#inspect-mode-toggle {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(173, 181, 189, 0.55);
+  background: rgba(20, 30, 40, 0.85);
+  color: #e8f3ff;
+  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+#inspect-mode-toggle:hover {
+  border-color: rgba(226, 232, 240, 0.9);
+}
+
+#inspect-mode-toggle[aria-pressed="true"] {
+  background: rgba(198, 232, 255, 0.92);
+  color: #10202f;
+  border-color: rgba(198, 232, 255, 0.92);
+}
+
+#inspect-mode-label {
+  font-size: 0.82rem;
+  color: #b9d0e7;
+}
+
 .hint {
   color: #9fb0c0;
+}
+
+#edit-info-popup {
+  position: fixed;
+  z-index: 40;
+  max-width: 280px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(173, 181, 189, 0.45);
+  background: rgba(6, 12, 16, 0.95);
+  color: #e8f3ff;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  pointer-events: none;
+  white-space: pre-line;
 }

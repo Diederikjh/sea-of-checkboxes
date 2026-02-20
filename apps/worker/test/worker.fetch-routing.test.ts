@@ -6,6 +6,10 @@ import {
   StubNamespace,
 } from "./helpers/doStubs";
 
+function workerRequest(path: string, init?: RequestInit): Request {
+  return new Request(`https://worker.local${path}`, init);
+}
+
 function createEnv() {
   const connectionShard = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const tileOwner = new StubNamespace((name) => new RecordingDurableObjectStub(name));
@@ -15,13 +19,14 @@ function createEnv() {
       TILE_OWNER: tileOwner,
     },
     connectionShard,
+    tileOwner,
   };
 }
 
 describe("top-level worker fetch routing", () => {
   it("returns health payload on /health", async () => {
     const { env } = createEnv();
-    const response = await handleWorkerFetch(new Request("https://worker.local/health"), env);
+    const response = await handleWorkerFetch(workerRequest("/health"), env);
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
@@ -33,20 +38,73 @@ describe("top-level worker fetch routing", () => {
 
   it("returns 404 for unknown paths", async () => {
     const { env } = createEnv();
-    const response = await handleWorkerFetch(new Request("https://worker.local/unknown"), env);
+    const response = await handleWorkerFetch(workerRequest("/unknown"), env);
     expect(response.status).toBe(404);
+  });
+
+  it("forwards cell-last-edit requests to tile owner by tile key", async () => {
+    const { env, tileOwner } = createEnv();
+    const response = await handleWorkerFetch(workerRequest("/cell-last-edit?tile=2:3&i=17"), env);
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(tileOwner.requestedNames).toEqual(["2:3"]);
+
+    const stub = tileOwner.stubs.get("2:3");
+    expect(stub?.requests.length).toBe(1);
+    const request = stub?.requests[0]?.request;
+    expect(request?.method).toBe("GET");
+    const forwardedUrl = new URL(request?.url ?? "https://tile-owner.internal/");
+    expect(forwardedUrl.pathname).toBe("/cell-last-edit");
+    expect(forwardedUrl.searchParams.get("tile")).toBe("2:3");
+    expect(forwardedUrl.searchParams.get("i")).toBe("17");
+  });
+
+  it("rejects invalid cell-last-edit requests", async () => {
+    const { env, tileOwner } = createEnv();
+    const badPaths = [
+      "/cell-last-edit",
+      "/cell-last-edit?tile=2:3",
+      "/cell-last-edit?tile=bad&i=1",
+      "/cell-last-edit?tile=2:3&i=-1",
+      "/cell-last-edit?tile=2:3&i=abc",
+    ];
+
+    for (const path of badPaths) {
+      const response = await handleWorkerFetch(workerRequest(path), env);
+      expect(response.status).toBe(400);
+      expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    }
+
+    expect(tileOwner.requestedNames.length).toBe(0);
+  });
+
+  it("responds to cell-last-edit preflight requests", async () => {
+    const { env, tileOwner } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/cell-last-edit", {
+        method: "OPTIONS",
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-allow-methods")).toContain("GET");
+    expect(response.headers.get("access-control-allow-methods")).toContain("OPTIONS");
+    expect(tileOwner.requestedNames.length).toBe(0);
   });
 
   it("rejects /ws when upgrade header is missing", async () => {
     const { env } = createEnv();
-    const response = await handleWorkerFetch(new Request("https://worker.local/ws"), env);
+    const response = await handleWorkerFetch(workerRequest("/ws"), env);
     expect(response.status).toBe(426);
   });
 
   it("forwards websocket requests to selected shard with uid/name/shard params", async () => {
     const { env, connectionShard } = createEnv();
     const response = await handleWorkerFetch(
-      new Request("https://worker.local/ws", {
+      workerRequest("/ws", {
         headers: {
           upgrade: "websocket",
           "x-trace-id": "trace_123",
