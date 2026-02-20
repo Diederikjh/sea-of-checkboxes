@@ -24,10 +24,7 @@ import {
 } from "./connectionShardDOOperations";
 import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
 import { CursorCoordinator } from "./cursorCoordinator";
-import {
-  createConnectionShardTileGateway,
-  type ConnectionShardTileGateway,
-} from "./connectionShardTileGateway";
+import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
@@ -83,7 +80,10 @@ export class ConnectionShardDO {
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
-    this.#tileGateway = createConnectionShardTileGateway(this.#env.TILE_OWNER);
+    this.#tileGateway = new ConnectionShardTileGateway({
+      tileOwnerNamespace: this.#env.TILE_OWNER,
+      getCurrentShardName: () => this.#currentShardName(),
+    });
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
       connectionShardNamespace: this.#env.CONNECTION_SHARD,
@@ -246,8 +246,7 @@ export class ConnectionShardDO {
     tileKey: string,
     action: "sub" | "unsub"
   ): Promise<{ ok: boolean; code?: string; msg?: string }> {
-    const shard = this.#currentShardName();
-    const result = await this.#tileGateway.watchTile(tileKey, action, shard);
+    const result = await this.#tileGateway.watchTile(tileKey, action);
     if (!result) {
       // Compatibility path for older gateway implementations that return void.
       return { ok: true };

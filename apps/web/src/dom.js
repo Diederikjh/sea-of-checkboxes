@@ -2,18 +2,25 @@ import { EDIT_MIN_CELL_PX } from "@sea/domain";
 
 import { APP_NAME } from "./appConstants";
 
-export function getRequiredElements() {
-  const canvas = document.querySelector("#viewport");
-  const identityEl = document.querySelector("#identity");
-  const statusEl = document.querySelector("#status");
-  const zoomEl = document.querySelector("#zoom-readout");
-  const titleEl = document.querySelector("#hud h1");
-  const interactionOverlayEl = document.querySelector("#interaction-overlay");
-  const interactionOverlayTextEl = document.querySelector("#interaction-overlay-text");
-
-  if (!canvas || !identityEl || !statusEl || !zoomEl || !interactionOverlayEl || !interactionOverlayTextEl) {
-    throw new Error("Missing required DOM elements");
+function queryRequiredElement(selector) {
+  const element = document.querySelector(selector);
+  if (!element) {
+    throw new Error(`Missing required DOM element: ${selector}`);
   }
+  return element;
+}
+
+export function getRequiredElements() {
+  const canvas = queryRequiredElement("#viewport");
+  const identityEl = queryRequiredElement("#identity");
+  const statusEl = queryRequiredElement("#status");
+  const zoomEl = queryRequiredElement("#zoom-readout");
+  const titleEl = document.querySelector("#hud h1");
+  const interactionOverlayEl = queryRequiredElement("#interaction-overlay");
+  const interactionOverlayTextEl = queryRequiredElement("#interaction-overlay-text");
+  const inspectToggleEl = queryRequiredElement("#inspect-mode-toggle");
+  const inspectLabelEl = queryRequiredElement("#inspect-mode-label");
+  const editInfoPopupEl = queryRequiredElement("#edit-info-popup");
 
   return {
     canvas,
@@ -23,6 +30,9 @@ export function getRequiredElements() {
     titleEl,
     interactionOverlayEl,
     interactionOverlayTextEl,
+    inspectToggleEl,
+    inspectLabelEl,
+    editInfoPopupEl,
   };
 }
 
