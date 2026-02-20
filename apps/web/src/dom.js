@@ -16,6 +16,8 @@ export function getRequiredElements() {
   const statusEl = queryRequiredElement("#status");
   const zoomEl = queryRequiredElement("#zoom-readout");
   const titleEl = document.querySelector("#hud h1");
+  const interactionOverlayEl = queryRequiredElement("#interaction-overlay");
+  const interactionOverlayTextEl = queryRequiredElement("#interaction-overlay-text");
   const inspectToggleEl = queryRequiredElement("#inspect-mode-toggle");
   const inspectLabelEl = queryRequiredElement("#inspect-mode-label");
   const editInfoPopupEl = queryRequiredElement("#edit-info-popup");
@@ -26,6 +28,8 @@ export function getRequiredElements() {
     statusEl,
     zoomEl,
     titleEl,
+    interactionOverlayEl,
+    interactionOverlayTextEl,
     inspectToggleEl,
     inspectLabelEl,
     editInfoPopupEl,

@@ -7,6 +7,7 @@ import { createServerMessageHandler } from "../src/serverMessages";
 function createHarness() {
   const identityEl = { textContent: "" };
   const statuses = [];
+  const restrictions = [];
 
   const tileStore = {
     setSnapshot: vi.fn(),
@@ -30,6 +31,7 @@ function createHarness() {
   const handler = createServerMessageHandler({
     identityEl,
     setStatus: (value) => statuses.push(value),
+    setInteractionRestriction: (state, message) => restrictions.push({ state, message }),
     tileStore,
     heatStore,
     transport,
@@ -42,6 +44,7 @@ function createHarness() {
     handler,
     identityEl,
     statuses,
+    restrictions,
     tileStore,
     heatStore,
     transport,
@@ -159,5 +162,32 @@ describe("server message handling", () => {
     harness.handler({ t: "err", code: "bad_tile", msg: "Invalid tile" });
 
     expect(harness.statuses.at(-1)).toBe("Error: Invalid tile");
+    expect(harness.restrictions).toEqual([]);
+  });
+
+  it("triggers read-only overlay hint for hot-tile write rejection", () => {
+    const harness = createHarness();
+
+    harness.handler({ t: "err", code: "setcell_rejected", msg: "tile_readonly_hot" });
+
+    expect(harness.restrictions.at(-1)).toEqual({
+      state: "readonly",
+      message: "Hot tile is read-only right now",
+    });
+  });
+
+  it("triggers deny overlay hint for oversubscription", () => {
+    const harness = createHarness();
+
+    harness.handler({
+      t: "err",
+      code: "tile_sub_denied",
+      msg: "Tile is oversubscribed; new subscriptions are temporarily denied",
+    });
+
+    expect(harness.restrictions.at(-1)).toEqual({
+      state: "deny",
+      message: "Tile is over capacity; access denied for now",
+    });
   });
 });

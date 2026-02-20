@@ -23,6 +23,52 @@ body,
   display: block;
 }
 
+.interaction-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgba(132, 23, 23, 0.1);
+  border: 2px solid rgba(255, 88, 88, 0.4);
+  z-index: 8;
+}
+
+.interaction-overlay[hidden] {
+  display: none;
+}
+
+.interaction-overlay span {
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #ffd7d7;
+  background: rgba(88, 18, 18, 0.68);
+  border: 1px solid rgba(255, 140, 140, 0.4);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.interaction-overlay[data-state="readonly"] {
+  align-items: flex-start;
+  justify-content: flex-end;
+  background: rgba(217, 171, 16, 0.08);
+  border-color: rgba(250, 226, 141, 0.35);
+}
+
+.interaction-overlay[data-state="readonly"] span {
+  margin: 18px;
+  color: #fff6ca;
+  background: rgba(115, 94, 12, 0.58);
+  border-color: rgba(255, 229, 120, 0.5);
+}
+
+.interaction-overlay[data-state="deny"] {
+  background: rgba(141, 24, 24, 0.2);
+  border-color: rgba(255, 116, 116, 0.55);
+}
+
 #hud {
   position: fixed;
   top: 16px;

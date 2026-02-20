@@ -27,7 +27,10 @@ export interface ConnectionShardDOOperationsContext {
   sendServerMessage(client: ConnectedClient, message: ServerMessage): void;
   sendError(client: ConnectedClient, code: string, msg: string): void;
   sendBadTile(client: ConnectedClient, tileKey: string): void;
-  watchTile(tileKey: string, action: "sub" | "unsub"): Promise<void>;
+  watchTile(
+    tileKey: string,
+    action: "sub" | "unsub"
+  ): Promise<{ ok: boolean; code?: string; msg?: string }>;
   setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null>;
   sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void>;
 }
@@ -83,7 +86,16 @@ export async function handleSubMessage(
     subscribers.add(client.uid);
 
     if (wasEmpty) {
-      await context.watchTile(tileKey, "sub");
+      const watchResult = await context.watchTile(tileKey, "sub");
+      if (!watchResult.ok) {
+        subscribers.delete(client.uid);
+        client.subscribed.delete(tileKey);
+        if (subscribers.size === 0) {
+          context.tileToClients.delete(tileKey);
+        }
+        context.sendError(client, watchResult.code ?? "watch_rejected", watchResult.msg ?? "Tile unavailable");
+        continue;
+      }
     }
 
     await context.sendSnapshotToClient(client, tileKey);
@@ -123,7 +135,11 @@ export async function handleSetCellMessage(
 
   // Re-assert watch before writes. This self-heals TileOwnerDO watcher sets
   // if the tile DO was recycled and forgot in-memory shard subscriptions.
-  await context.watchTile(message.tile, "sub");
+  const watchResult = await context.watchTile(message.tile, "sub");
+  if (!watchResult.ok) {
+    context.sendError(client, watchResult.code ?? "watch_rejected", watchResult.msg ?? "Tile unavailable");
+    return;
+  }
 
   const result = await context.setTileCell({
     tile: message.tile,

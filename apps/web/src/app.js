@@ -132,6 +132,8 @@ export async function startApp() {
     statusEl,
     zoomEl,
     titleEl,
+    interactionOverlayEl,
+    interactionOverlayTextEl,
     inspectToggleEl,
     inspectLabelEl,
     editInfoPopupEl,
@@ -215,6 +217,28 @@ export async function startApp() {
     statusEl.textContent = value;
   };
 
+  let interactionTimerId = null;
+  const clearInteractionTimer = () => {
+    if (interactionTimerId !== null) {
+      window.clearTimeout(interactionTimerId);
+      interactionTimerId = null;
+    }
+  };
+
+  const setInteractionRestriction = (state, message) => {
+    interactionOverlayEl.dataset.state = state;
+    interactionOverlayTextEl.textContent = message;
+    interactionOverlayEl.hidden = false;
+
+    clearInteractionTimer();
+    interactionTimerId = window.setTimeout(() => {
+      interactionOverlayEl.hidden = true;
+      delete interactionOverlayEl.dataset.state;
+      interactionOverlayTextEl.textContent = "";
+      interactionTimerId = null;
+    }, 3000);
+  };
+
   const renderLoop = createRenderLoop({
     app,
     graphics,
@@ -241,6 +265,7 @@ export async function startApp() {
       selfIdentity,
       onVisualStateChanged: renderLoop.markVisualDirty,
       onTileCellsChanged: renderLoop.markTileCellsDirty,
+      setInteractionRestriction,
     })
   );
 
@@ -279,6 +304,7 @@ export async function startApp() {
     cursorLabels.destroy();
     renderLoop.dispose();
     transport.dispose();
+    clearInteractionTimer();
     app.destroy(true);
   };
 }
