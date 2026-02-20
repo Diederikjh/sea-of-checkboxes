@@ -47,6 +47,7 @@ describe("top-level worker fetch routing", () => {
     const response = await handleWorkerFetch(workerRequest("/cell-last-edit?tile=2:3&i=17"), env);
 
     expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expect(tileOwner.requestedNames).toEqual(["2:3"]);
 
     const stub = tileOwner.stubs.get("2:3");
@@ -72,8 +73,25 @@ describe("top-level worker fetch routing", () => {
     for (const path of badPaths) {
       const response = await handleWorkerFetch(workerRequest(path), env);
       expect(response.status).toBe(400);
+      expect(response.headers.get("access-control-allow-origin")).toBe("*");
     }
 
+    expect(tileOwner.requestedNames.length).toBe(0);
+  });
+
+  it("responds to cell-last-edit preflight requests", async () => {
+    const { env, tileOwner } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/cell-last-edit", {
+        method: "OPTIONS",
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-allow-methods")).toContain("GET");
+    expect(response.headers.get("access-control-allow-methods")).toContain("OPTIONS");
     expect(tileOwner.requestedNames.length).toBe(0);
   });
 
