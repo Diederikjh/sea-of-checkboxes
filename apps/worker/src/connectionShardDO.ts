@@ -62,10 +62,6 @@ export class ConnectionShardDO {
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
-    this.#tileGateway = new ConnectionShardTileGateway({
-      tileOwnerNamespace: this.#env.TILE_OWNER,
-      getCurrentShardName: () => this.#currentShardName(),
-    });
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
       connectionShardNamespace: this.#env.CONNECTION_SHARD,

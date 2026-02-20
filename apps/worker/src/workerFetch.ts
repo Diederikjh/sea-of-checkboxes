@@ -1,4 +1,7 @@
-import { isCellIndexValid } from "@sea/domain";
+import {
+  isCellIndexValid,
+  normalizeIdentity,
+} from "@sea/domain";
 
 import {
   isWebSocketUpgrade,
@@ -9,8 +12,6 @@ import {
 import { shardNameForUid } from "./sharding";
 const NAME_ADJECTIVES = ["Brisk", "Quiet", "Amber", "Mint", "Rust", "Blue"];
 const NAME_NOUNS = ["Otter", "Falcon", "Badger", "Stoat", "Fox", "Heron"];
-const UID_PATTERN = /^u_[A-Za-z0-9]{1,32}$/;
-const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]{2,31}$/;
 const CELL_LAST_EDIT_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, OPTIONS",
@@ -41,11 +42,12 @@ function generateName(): string {
 }
 
 function resolveIdentity(url: URL): { uid: string; name: string } {
-  const requestedUid = url.searchParams.get("uid")?.trim() ?? "";
-  const requestedName = url.searchParams.get("name")?.trim() ?? "";
-
-  if (UID_PATTERN.test(requestedUid) && NAME_PATTERN.test(requestedName)) {
-    return { uid: requestedUid, name: requestedName };
+  const requestedIdentity = normalizeIdentity({
+    uid: url.searchParams.get("uid"),
+    name: url.searchParams.get("name"),
+  });
+  if (requestedIdentity) {
+    return requestedIdentity;
   }
 
   return {

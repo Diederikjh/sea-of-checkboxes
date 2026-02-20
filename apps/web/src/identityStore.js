@@ -1,6 +1,6 @@
+import { isValidIdentity as isValidIdentityFromDomain, normalizeIdentity } from "@sea/domain";
+
 const STORAGE_KEY = "sea.identity.v1";
-const UID_PATTERN = /^u_[A-Za-z0-9]{1,32}$/;
-const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]{2,31}$/;
 
 function defaultStorage() {
   if (typeof window === "undefined") {
@@ -8,20 +8,6 @@ function defaultStorage() {
   }
 
   return window.localStorage ?? null;
-}
-
-function normalizeIdentity(identity) {
-  if (!identity || typeof identity !== "object") {
-    return null;
-  }
-
-  const uid = typeof identity.uid === "string" ? identity.uid.trim() : "";
-  const name = typeof identity.name === "string" ? identity.name.trim() : "";
-  if (!UID_PATTERN.test(uid) || !NAME_PATTERN.test(name)) {
-    return null;
-  }
-
-  return { uid, name };
 }
 
 export function readStoredIdentity({ storage = defaultStorage() } = {}) {
@@ -61,5 +47,5 @@ export function writeStoredIdentity(identity, { storage = defaultStorage() } = {
 }
 
 export function isValidIdentity(identity) {
-  return normalizeIdentity(identity) !== null;
+  return isValidIdentityFromDomain(identity);
 }
