@@ -111,9 +111,10 @@ export class ConnectionShardDO {
 
     const uid = url.searchParams.get("uid");
     const name = url.searchParams.get("name");
+    const token = url.searchParams.get("token");
     const shardName = url.searchParams.get("shard");
-    if (!uid || !name || !shardName) {
-      return new Response("Missing uid/name", { status: 400 });
+    if (!uid || !name || !token || !shardName) {
+      return new Response("Missing uid/name/token", { status: 400 });
     }
 
     this.#shardName = shardName;
@@ -148,7 +149,7 @@ export class ConnectionShardDO {
     };
 
     this.#clients.set(uid, client);
-    this.#sendServerMessage(client, { t: "hello", uid, name });
+    this.#sendServerMessage(client, { t: "hello", uid, name, token });
     this.#cursorCoordinator.onClientConnected(client);
 
     serverSocket.addEventListener("message", (event: unknown) => {

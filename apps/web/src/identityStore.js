@@ -1,6 +1,7 @@
-import { isValidIdentity as isValidIdentityFromDomain, normalizeIdentity } from "@sea/domain";
+import { normalizeIdentity } from "@sea/domain";
 
-const STORAGE_KEY = "sea.identity.v1";
+const STORAGE_KEY = "sea.identity.v2";
+const MAX_TOKEN_LENGTH = 2_048;
 
 function defaultStorage() {
   if (typeof window === "undefined") {
@@ -8,6 +9,23 @@ function defaultStorage() {
   }
 
   return window.localStorage ?? null;
+}
+
+export function normalizeStoredIdentity(value) {
+  const normalized = normalizeIdentity(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const token = typeof value?.token === "string" ? value.token.trim() : "";
+  if (token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
+    return null;
+  }
+
+  return {
+    ...normalized,
+    token,
+  };
 }
 
 export function readStoredIdentity({ storage = defaultStorage() } = {}) {
@@ -22,7 +40,7 @@ export function readStoredIdentity({ storage = defaultStorage() } = {}) {
     }
 
     const parsed = JSON.parse(raw);
-    return normalizeIdentity(parsed);
+    return normalizeStoredIdentity(parsed);
   } catch {
     return null;
   }
@@ -33,7 +51,7 @@ export function writeStoredIdentity(identity, { storage = defaultStorage() } = {
     return false;
   }
 
-  const normalized = normalizeIdentity(identity);
+  const normalized = normalizeStoredIdentity(identity);
   if (!normalized) {
     return false;
   }
@@ -44,8 +62,4 @@ export function writeStoredIdentity(identity, { storage = defaultStorage() } = {
   } catch {
     return false;
   }
-}
-
-export function isValidIdentity(identity) {
-  return isValidIdentityFromDomain(identity);
 }

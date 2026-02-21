@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { handleWorkerFetch } from "../src/workerFetch";
+import { createIdentityToken } from "../src/identityToken";
 import {
   RecordingDurableObjectStub,
   StubNamespace,
@@ -11,15 +12,18 @@ function workerRequest(path: string, init?: RequestInit): Request {
 }
 
 function createEnv() {
+  const identitySigningSecret = "test-worker-fetch-secret";
   const connectionShard = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const tileOwner = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   return {
     env: {
       CONNECTION_SHARD: connectionShard,
       TILE_OWNER: tileOwner,
+      IDENTITY_SIGNING_SECRET: identitySigningSecret,
     },
     connectionShard,
     tileOwner,
+    identitySigningSecret,
   };
 }
 
@@ -136,10 +140,13 @@ describe("top-level worker fetch routing", () => {
 
     const uid = forwardedUrl.searchParams.get("uid");
     const name = forwardedUrl.searchParams.get("name");
+    const token = forwardedUrl.searchParams.get("token");
     const forwardedShard = forwardedUrl.searchParams.get("shard");
 
     expect(uid).toMatch(/^u_[0-9a-f]{8}$/);
     expect(name).toMatch(/^[A-Za-z]+\d{3}$/);
+    expect(typeof token).toBe("string");
+    expect(token?.length).toBeGreaterThan(0);
     expect(forwardedShard).toBe(shardName);
 
     expect(forwarded.method).toBe("GET");
@@ -147,10 +154,11 @@ describe("top-level worker fetch routing", () => {
     expect(forwarded.headers.get("x-trace-id")).toBe("trace_123");
   });
 
-  it("reuses provided uid/name query params when both are valid", async () => {
-    const { env, connectionShard } = createEnv();
+  it("reuses identity from a valid signed token", async () => {
+    const { env, connectionShard, identitySigningSecret } = createEnv();
+    const token = await createIdentityToken("u_saved123", "BriskOtter481", identitySigningSecret);
     const response = await handleWorkerFetch(
-      workerRequest("/ws?uid=u_saved123&name=BriskOtter481", {
+      workerRequest(`/ws?token=${encodeURIComponent(token)}`, {
         headers: {
           upgrade: "websocket",
         },
@@ -175,12 +183,43 @@ describe("top-level worker fetch routing", () => {
     const forwardedUrl = new URL(forwarded.url);
     expect(forwardedUrl.searchParams.get("uid")).toBe("u_saved123");
     expect(forwardedUrl.searchParams.get("name")).toBe("BriskOtter481");
+    expect(forwardedUrl.searchParams.get("token")).toMatch(/^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   });
 
-  it("falls back to generated uid/name when provided identity is invalid", async () => {
+  it("ignores spoofed uid/name when token is valid", async () => {
+    const { env, connectionShard, identitySigningSecret } = createEnv();
+    const token = await createIdentityToken("u_saved123", "BriskOtter481", identitySigningSecret);
+    const response = await handleWorkerFetch(
+      workerRequest(`/ws?uid=u_spoofed&name=Spoofed999&token=${encodeURIComponent(token)}`, {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(connectionShard.requestedNames.length).toBe(1);
+    const shardName = connectionShard.requestedNames[0];
+    if (!shardName) {
+      throw new Error("Expected shard name");
+    }
+
+    const stub = connectionShard.stubs.get(shardName);
+    const forwarded = stub?.requests[0]?.request;
+    if (!forwarded) {
+      throw new Error("Missing forwarded request");
+    }
+
+    const forwardedUrl = new URL(forwarded.url);
+    expect(forwardedUrl.searchParams.get("uid")).toBe("u_saved123");
+    expect(forwardedUrl.searchParams.get("name")).toBe("BriskOtter481");
+  });
+
+  it("falls back to generated uid/name when token is malformed", async () => {
     const { env, connectionShard } = createEnv();
     const response = await handleWorkerFetch(
-      workerRequest("/ws?uid=u_saved123&name=bad name", {
+      workerRequest("/ws?token=tok", {
         headers: {
           upgrade: "websocket",
         },
@@ -204,5 +243,35 @@ describe("top-level worker fetch routing", () => {
     const forwardedUrl = new URL(forwarded.url);
     expect(forwardedUrl.searchParams.get("uid")).toMatch(/^u_[0-9a-f]{8}$/);
     expect(forwardedUrl.searchParams.get("name")).toMatch(/^[A-Za-z]+\d{3}$/);
+    expect(forwardedUrl.searchParams.get("token")).toMatch(/^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  });
+
+  it("falls back to generated uid/name when token signature is invalid", async () => {
+    const { env, connectionShard } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/ws?token=v2.eyJ1aWQiOiJ1X3NhdmVkMTIzIiwibmFtZSI6IkJyaXNrT3R0ZXI0ODEiLCJleHAiOjk5OTk5OTk5OTl9.bad", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(connectionShard.requestedNames.length).toBe(1);
+    const shardName = connectionShard.requestedNames[0];
+    if (!shardName) {
+      throw new Error("Expected shard name");
+    }
+
+    const stub = connectionShard.stubs.get(shardName);
+    const forwarded = stub?.requests[0]?.request;
+    if (!forwarded) {
+      throw new Error("Missing forwarded request");
+    }
+
+    const forwardedUrl = new URL(forwarded.url);
+    expect(forwardedUrl.searchParams.get("uid")).not.toBe("u_saved123");
+    expect(forwardedUrl.searchParams.get("name")).not.toBe("BriskOtter481");
   });
 });

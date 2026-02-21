@@ -86,11 +86,12 @@ describe("wire transport selection", () => {
       identityProvider: () => ({
         uid: "u_saved123",
         name: "BriskOtter481",
+        token: "tok_abc",
       }),
     });
 
     expect(mocks.createWebSocketTransport).toHaveBeenCalledWith(
-      "wss://example.com/ws?uid=u_saved123&name=BriskOtter481",
+      "wss://example.com/ws?token=tok_abc",
       expect.any(Object)
     );
   });
@@ -112,7 +113,8 @@ describe("wire transport selection", () => {
     currentIdentity = {
       uid: "u_saved123",
       name: "BriskOtter481",
+      token: "tok_abc",
     };
-    expect(options.resolveUrl()).toBe("wss://example.com/ws?uid=u_saved123&name=BriskOtter481");
+    expect(options.resolveUrl()).toBe("wss://example.com/ws?token=tok_abc");
   });
 });

@@ -269,8 +269,8 @@ export async function startApp() {
       onVisualStateChanged: renderLoop.markVisualDirty,
       onTileCellsChanged: renderLoop.markTileCellsDirty,
       setInteractionRestriction,
-      onIdentityReceived: ({ uid, name }) => {
-        writeStoredIdentity({ uid, name });
+      onIdentityReceived: ({ uid, name, token }) => {
+        writeStoredIdentity({ uid, name, token });
       },
     })
   );

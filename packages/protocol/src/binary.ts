@@ -368,6 +368,7 @@ export function encodeServerMessageBinary(message: ServerMessage): Uint8Array {
       writer.writeU8(SERVER_TAG.hello);
       writer.writeString(message.uid);
       writer.writeString(message.name);
+      writer.writeString(message.token);
       break;
     case "tileSnap": {
       if (message.enc !== TILE_ENCODING) {
@@ -432,6 +433,7 @@ export function decodeServerMessageBinary(payload: Uint8Array): ServerMessage {
         t: "hello",
         uid: reader.readString(),
         name: reader.readString(),
+        token: reader.readString(),
       };
       break;
     case SERVER_TAG.tileSnap:

@@ -1,4 +1,4 @@
-import { normalizeIdentity } from "@sea/domain";
+import { normalizeStoredIdentity } from "./identityStore";
 
 function toBool(value) {
   if (typeof value !== "string") {
@@ -10,15 +10,14 @@ function toBool(value) {
 }
 
 function withIdentityQueryParams(wsUrl, identity) {
-  const normalized = normalizeIdentity(identity);
+  const normalized = normalizeStoredIdentity(identity);
   if (!normalized) {
     return wsUrl;
   }
 
   try {
     const parsed = new URL(wsUrl);
-    parsed.searchParams.set("uid", normalized.uid);
-    parsed.searchParams.set("name", normalized.name);
+    parsed.searchParams.set("token", normalized.token);
     return parsed.toString();
   } catch {
     return wsUrl;

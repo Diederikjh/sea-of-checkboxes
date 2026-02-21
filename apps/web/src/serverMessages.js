@@ -58,7 +58,7 @@ export function createServerMessageHandler({
     switch (message.t) {
       case "hello": {
         selfIdentity.uid = message.uid;
-        onIdentityReceived({ uid: message.uid, name: message.name });
+        onIdentityReceived({ uid: message.uid, name: message.name, token: message.token });
         identityEl.textContent = `You are ${message.name} (${message.uid})`;
         onVisualStateChanged();
         break;

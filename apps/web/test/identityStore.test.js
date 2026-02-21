@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isValidIdentity, readStoredIdentity, writeStoredIdentity } from "../src/identityStore";
+import { normalizeStoredIdentity, readStoredIdentity, writeStoredIdentity } from "../src/identityStore";
 
 function createStorage(initial = {}) {
   const data = new Map(Object.entries(initial));
@@ -18,29 +18,41 @@ describe("identity storage", () => {
   it("writes and reads valid identity payloads", () => {
     const storage = createStorage();
 
-    expect(writeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481" }, { storage })).toBe(true);
+    expect(
+      writeStoredIdentity(
+        { uid: "u_saved123", name: "BriskOtter481", token: "tok_valid" },
+        { storage }
+      )
+    ).toBe(true);
     expect(readStoredIdentity({ storage })).toEqual({
       uid: "u_saved123",
       name: "BriskOtter481",
+      token: "tok_valid",
     });
   });
 
   it("rejects invalid payloads", () => {
     const storage = createStorage();
 
-    expect(writeStoredIdentity({ uid: "u_saved123", name: "bad name" }, { storage })).toBe(false);
+    expect(writeStoredIdentity({ uid: "u_saved123", name: "bad name", token: "tok" }, { storage })).toBe(false);
+    expect(writeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481" }, { storage })).toBe(false);
     expect(readStoredIdentity({ storage })).toBeNull();
   });
 
   it("returns null for malformed json", () => {
     const storage = createStorage({
-      "sea.identity.v1": "{",
+      "sea.identity.v2": "{",
     });
     expect(readStoredIdentity({ storage })).toBeNull();
   });
 
-  it("validates identity helper", () => {
-    expect(isValidIdentity({ uid: "u_saved123", name: "BriskOtter481" })).toBe(true);
-    expect(isValidIdentity({ uid: "u_saved123", name: "bad name" })).toBe(false);
+  it("normalizes identity payloads", () => {
+    expect(normalizeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481", token: " tok_abc " })).toEqual({
+      uid: "u_saved123",
+      name: "BriskOtter481",
+      token: "tok_abc",
+    });
+    expect(normalizeStoredIdentity({ uid: "u_saved123", name: "bad name", token: "tok_abc" })).toBeNull();
+    expect(normalizeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481" })).toBeNull();
   });
 });

@@ -158,14 +158,14 @@ describe("websocket transport", () => {
       transport.connect(() => {});
       expect(urls).toEqual(["ws://example/ws"]);
 
-      currentUrl = "ws://example/ws?uid=u_saved123&name=BriskOtter481";
+      currentUrl = "ws://example/ws?token=tok_abc";
       sockets[0].readyState = 3;
       sockets[0].onclose?.();
       vi.advanceTimersByTime(250);
 
       expect(urls).toEqual([
         "ws://example/ws",
-        "ws://example/ws?uid=u_saved123&name=BriskOtter481",
+        "ws://example/ws?token=tok_abc",
       ]);
     } finally {
       vi.useRealTimers();

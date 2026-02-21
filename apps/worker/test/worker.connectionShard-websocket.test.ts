@@ -72,12 +72,13 @@ function createHarness() {
 async function connectClient(
   shard: ConnectionShardDO,
   socketPairFactory: MockSocketPairFactory,
-  params: { uid: string; name: string; shard: string }
+  params: { uid: string; name: string; token?: string; shard: string }
 ): Promise<MockSocket> {
+  const token = params.token ?? "test-token";
   const request = new Request(
     `https://connection-shard.internal/ws?uid=${encodeURIComponent(params.uid)}&name=${encodeURIComponent(
       params.name
-    )}&shard=${encodeURIComponent(params.shard)}`,
+    )}&token=${encodeURIComponent(token)}&shard=${encodeURIComponent(params.shard)}`,
     {
       method: "GET",
       headers: {
@@ -113,6 +114,7 @@ describe("ConnectionShardDO websocket handling", () => {
       t: "hello",
       uid: "u_a",
       name: "Alice",
+      token: "test-token",
     });
     expect(harness.upgradeResponseFactory.clientSockets.length).toBe(1);
   });

@@ -51,9 +51,9 @@ describe("transport config", () => {
       resolveWebSocketUrl(
         { protocol: "https:", host: "example.com" },
         {},
-        { uid: "u_saved123", name: "BriskOtter481" }
+        { uid: "u_saved123", name: "BriskOtter481", token: "tok_abc" }
       )
-    ).toBe("wss://example.com/ws?uid=u_saved123&name=BriskOtter481");
+    ).toBe("wss://example.com/ws?token=tok_abc");
   });
 
   it("ignores invalid identity when building websocket url", () => {

@@ -36,6 +36,7 @@ export interface Env {
   CONNECTION_SHARD: DurableObjectNamespaceLike;
   TILE_OWNER: DurableObjectNamespaceLike;
   TILE_SNAPSHOTS?: R2BucketLike;
+  IDENTITY_SIGNING_SECRET?: string;
 }
 
 export interface TileWatchRequest {

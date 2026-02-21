@@ -48,10 +48,10 @@ export class ConnectionShard implements TileWatcher {
     this.#nowMs = options.nowMs ?? (() => Date.now());
   }
 
-  connectClient(uid: string, name: string, sink: ClientSink): void {
+  connectClient(uid: string, name: string, sink: ClientSink, token = "local-dev-token"): void {
     const record = createClientRecord(uid, name, sink);
     this.#clients.set(uid, record);
-    sendServerMessage(record, { t: "hello", uid, name });
+    sendServerMessage(record, { t: "hello", uid, name, token });
   }
 
   /** @deprecated Prefer `connectClient` with binary `ClientSink` payloads. */

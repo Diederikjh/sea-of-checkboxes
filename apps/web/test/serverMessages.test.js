@@ -61,12 +61,13 @@ describe("server message handling", () => {
   it("handles hello by setting identity and self uid", () => {
     const harness = createHarness();
 
-    harness.handler({ t: "hello", uid: "u_self", name: "Alice" });
+    harness.handler({ t: "hello", uid: "u_self", name: "Alice", token: "tok_abc" });
 
     expect(harness.selfIdentity.uid).toBe("u_self");
     expect(harness.onIdentityReceived).toHaveBeenCalledWith({
       uid: "u_self",
       name: "Alice",
+      token: "tok_abc",
     });
     expect(harness.identityEl.textContent).toContain("u_self");
     expect(harness.onVisualStateChanged).toHaveBeenCalledTimes(1);

@@ -49,6 +49,7 @@ export class MockTransport {
       t: "hello",
       uid: this.#clientId,
       name: this.#name,
+      token: "mock-dev-token",
     });
 
     this.#startBotCursorFeed();

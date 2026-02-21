@@ -50,7 +50,7 @@ describe("binary protocol codec", () => {
     bits[1023] = 1;
 
     const messages: ServerMessage[] = [
-      { t: "hello", uid: "u_abc", name: "Alice" },
+      { t: "hello", uid: "u_abc", name: "Alice", token: "tok_abc" },
       {
         t: "tileSnap",
         tile: "-4:9",

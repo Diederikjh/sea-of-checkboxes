@@ -85,6 +85,7 @@ export type ClientMessage = z.infer<typeof clientMessageSchema>;
 export const helloMessageSchema = strictTaggedMessage("hello", {
   uid: z.string().min(1),
   name: z.string().min(1),
+  token: z.string().min(1),
 });
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */

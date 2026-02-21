@@ -1,7 +1,4 @@
-import {
-  isCellIndexValid,
-  normalizeIdentity,
-} from "@sea/domain";
+import { isCellIndexValid } from "@sea/domain";
 
 import {
   isWebSocketUpgrade,
@@ -9,6 +6,11 @@ import {
   jsonResponse,
   type Env,
 } from "./doCommon";
+import {
+  createIdentityToken,
+  resolveIdentitySigningSecret,
+  verifyIdentityToken,
+} from "./identityToken";
 import { shardNameForUid } from "./sharding";
 const NAME_ADJECTIVES = ["Brisk", "Quiet", "Amber", "Mint", "Rust", "Blue"];
 const NAME_NOUNS = ["Otter", "Falcon", "Badger", "Stoat", "Fox", "Heron"];
@@ -41,18 +43,30 @@ function generateName(): string {
   return `${adjective}${noun}${suffix}`;
 }
 
-function resolveIdentity(url: URL): { uid: string; name: string } {
-  const requestedIdentity = normalizeIdentity({
-    uid: url.searchParams.get("uid"),
-    name: url.searchParams.get("name"),
-  });
-  if (requestedIdentity) {
-    return requestedIdentity;
+async function resolveIdentity(url: URL, env: Env): Promise<{ uid: string; name: string; token: string }> {
+  const requestedToken = url.searchParams.get("token")?.trim() ?? "";
+  const signingSecret = resolveIdentitySigningSecret(env);
+
+  if (requestedToken.length > 0) {
+    const verifiedIdentity = await verifyIdentityToken({
+      token: requestedToken,
+      secret: signingSecret,
+    });
+    if (verifiedIdentity) {
+      return {
+        uid: verifiedIdentity.uid,
+        name: verifiedIdentity.name,
+        token: await createIdentityToken(verifiedIdentity.uid, verifiedIdentity.name, signingSecret),
+      };
+    }
   }
 
+  const uid = generateUid();
+  const name = generateName();
   return {
-    uid: generateUid(),
-    name: generateName(),
+    uid,
+    name,
+    token: await createIdentityToken(uid, name, signingSecret),
   };
 }
 
@@ -116,12 +130,13 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
     return new Response("Expected websocket upgrade", { status: 426 });
   }
 
-  const { uid, name } = resolveIdentity(url);
+  const { uid, name, token } = await resolveIdentity(url, env);
   const shardName = shardNameForUid(uid);
 
   const shardUrl = new URL("https://connection-shard.internal/ws");
   shardUrl.searchParams.set("uid", uid);
   shardUrl.searchParams.set("name", name);
+  shardUrl.searchParams.set("token", token);
   shardUrl.searchParams.set("shard", shardName);
 
   const headers = new Headers(request.headers);

@@ -5,7 +5,7 @@ import { parseServerMessage } from "../src";
 
 describe("server message schema matrix", () => {
   it("parses all server message variants", () => {
-    expect(parseServerMessage({ t: "hello", uid: "u_a", name: "Alice" }).t).toBe("hello");
+    expect(parseServerMessage({ t: "hello", uid: "u_a", name: "Alice", token: "tok_1" }).t).toBe("hello");
 
     expect(
       parseServerMessage({
@@ -55,7 +55,7 @@ describe("server message schema matrix", () => {
   });
 
   it("rejects extra fields due to strict schemas", () => {
-    expect(() => parseServerMessage({ t: "hello", uid: "u", name: "n", extra: true })).toThrow();
+    expect(() => parseServerMessage({ t: "hello", uid: "u", name: "n", token: "tok", extra: true })).toThrow();
     expect(() =>
       parseServerMessage({
         t: "tileSnap",
