@@ -8,6 +8,7 @@ import {
 import {
   isWebSocketUpgrade,
   readJson,
+  type ConnectionIdentity,
   type DurableObjectStateLike,
   type Env,
   type TileSetCellRequest,
@@ -104,18 +105,48 @@ export class ConnectionShardDO {
     return new Response("Not found", { status: 404 });
   }
 
-  async #handleWebSocketConnect(request: Request, url: URL): Promise<Response> {
-    if (!isWebSocketUpgrade(request)) {
-      return new Response("Expected websocket upgrade", { status: 426 });
-    }
-
+  #parseConnectParams(url: URL): { identity: ConnectionIdentity; shardName: string } | null {
     const uid = url.searchParams.get("uid");
     const name = url.searchParams.get("name");
     const token = url.searchParams.get("token");
     const shardName = url.searchParams.get("shard");
     if (!uid || !name || !token || !shardName) {
+      return null;
+    }
+
+    return {
+      identity: { uid, name, token },
+      shardName,
+    };
+  }
+
+  async #replaceExistingClient(identity: ConnectionIdentity, context: ConnectionShardDOOperationsContext): Promise<void> {
+    const existingClient = this.#clients.get(identity.uid);
+    if (!existingClient) {
+      return;
+    }
+
+    try {
+      const maybeClose = (existingClient.socket as unknown as { close?: () => void }).close;
+      if (typeof maybeClose === "function") {
+        maybeClose.call(existingClient.socket);
+      }
+    } catch {
+      // Ignore close errors from stale sockets.
+    }
+    await this.#disconnectClientIfCurrent(context, identity.uid, existingClient.socket);
+  }
+
+  async #handleWebSocketConnect(request: Request, url: URL): Promise<Response> {
+    if (!isWebSocketUpgrade(request)) {
+      return new Response("Expected websocket upgrade", { status: 426 });
+    }
+
+    const connectParams = this.#parseConnectParams(url);
+    if (!connectParams) {
       return new Response("Missing uid/name/token", { status: 400 });
     }
+    const { identity, shardName } = connectParams;
 
     this.#shardName = shardName;
 
@@ -125,22 +156,11 @@ export class ConnectionShardDO {
 
     serverSocket.accept();
     const context = this.#operationsContext();
-    const existingClient = this.#clients.get(uid);
-    if (existingClient) {
-      try {
-        const maybeClose = (existingClient.socket as unknown as { close?: () => void }).close;
-        if (typeof maybeClose === "function") {
-          maybeClose.call(existingClient.socket);
-        }
-      } catch {
-        // Ignore close errors from stale sockets.
-      }
-      await this.#disconnectClientIfCurrent(context, uid, existingClient.socket);
-    }
+    await this.#replaceExistingClient(identity, context);
 
     const client: ConnectedClient = {
-      uid,
-      name,
+      uid: identity.uid,
+      name: identity.name,
       socket: serverSocket,
       subscribed: new Set(),
       lastCursorX: null,
@@ -148,8 +168,8 @@ export class ConnectionShardDO {
       cursorSubscriptions: new Set(),
     };
 
-    this.#clients.set(uid, client);
-    this.#sendServerMessage(client, { t: "hello", uid, name, token });
+    this.#clients.set(identity.uid, client);
+    this.#sendServerMessage(client, { t: "hello", ...identity });
     this.#cursorCoordinator.onClientConnected(client);
 
     serverSocket.addEventListener("message", (event: unknown) => {
@@ -159,13 +179,14 @@ export class ConnectionShardDO {
         return;
       }
 
-      void this.#receiveClientPayload(uid, serverSocket, payload).catch(() => {
+      const currentUid = client.uid;
+      void this.#receiveClientPayload(currentUid, serverSocket, payload).catch(() => {
         this.#sendError(client, "internal", "Failed to process client payload");
       });
     });
 
     const onClose = () => {
-      void this.#disconnectClientIfCurrent(context, uid, serverSocket);
+      void this.#disconnectClientIfCurrent(context, client.uid, serverSocket);
     };
 
     serverSocket.addEventListener("close", onClose);

@@ -85,23 +85,6 @@ function fromBase64Url(value: string): Uint8Array | null {
   }
 }
 
-function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-
-  let diff = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    const left = a[index];
-    const right = b[index];
-    if (left === undefined || right === undefined) {
-      return false;
-    }
-    diff |= left ^ right;
-  }
-  return diff === 0;
-}
-
 function parseToken(token: string): TokenParts | null {
   const parts = token.split(TOKEN_SEPARATOR);
   if (parts.length !== 3) {
@@ -126,8 +109,8 @@ function parseToken(token: string): TokenParts | null {
   };
 }
 
-async function hmacSha256(secret: string, message: string): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey(
+async function importHmacKey(secret: string, usages: KeyUsage[]): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
     "raw",
     textEncoder.encode(secret),
     {
@@ -135,10 +118,21 @@ async function hmacSha256(secret: string, message: string): Promise<Uint8Array> 
       hash: "SHA-256",
     },
     false,
-    ["sign"]
+    usages
   );
+}
+
+async function signMessage(secret: string, message: string): Promise<Uint8Array> {
+  const key = await importHmacKey(secret, ["sign"]);
   const signature = await crypto.subtle.sign("HMAC", key, textEncoder.encode(message));
   return new Uint8Array(signature);
+}
+
+async function verifySignature(secret: string, message: string, signature: Uint8Array): Promise<boolean> {
+  const key = await importHmacKey(secret, ["verify"]);
+  const signatureCopy = new Uint8Array(signature.length);
+  signatureCopy.set(signature);
+  return crypto.subtle.verify("HMAC", key, signatureCopy, textEncoder.encode(message));
 }
 
 function buildPayload(uid: string, name: string, exp: number): string {
@@ -162,7 +156,7 @@ export async function createIdentityToken(
 ): Promise<string> {
   const exp = Math.floor(nowMs / 1_000) + TOKEN_TTL_SECONDS;
   const payloadEncoded = toBase64Url(textEncoder.encode(buildPayload(uid, name, exp)));
-  const signature = await hmacSha256(secret, payloadEncoded);
+  const signature = await signMessage(secret, payloadEncoded);
   return `${TOKEN_VERSION}.${payloadEncoded}.${toBase64Url(signature)}`;
 }
 
@@ -202,9 +196,13 @@ export async function verifyIdentityToken(params: {
     return null;
   }
 
-  const expected = await hmacSha256(params.secret, parsed.payload);
-  const expectedRaw = toBase64Url(expected);
-  if (!timingSafeEqual(textEncoder.encode(parsed.signature), textEncoder.encode(expectedRaw))) {
+  const signatureBytes = fromBase64Url(parsed.signature);
+  if (!signatureBytes) {
+    return null;
+  }
+
+  const isValidSignature = await verifySignature(params.secret, parsed.payload, signatureBytes);
+  if (!isValidSignature) {
     return null;
   }
 

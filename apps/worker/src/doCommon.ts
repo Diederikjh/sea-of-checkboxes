@@ -39,6 +39,12 @@ export interface Env {
   IDENTITY_SIGNING_SECRET?: string;
 }
 
+export interface ConnectionIdentity {
+  uid: string;
+  name: string;
+  token: string;
+}
+
 export interface TileWatchRequest {
   tile: string;
   shard: string;

@@ -4,6 +4,7 @@ import {
   isWebSocketUpgrade,
   isValidTileKey,
   jsonResponse,
+  type ConnectionIdentity,
   type Env,
 } from "./doCommon";
 import {
@@ -43,7 +44,16 @@ function generateName(): string {
   return `${adjective}${noun}${suffix}`;
 }
 
-async function resolveIdentity(url: URL, env: Env): Promise<{ uid: string; name: string; token: string }> {
+function buildShardUrl(identity: ConnectionIdentity, shardName: string): URL {
+  const shardUrl = new URL("https://connection-shard.internal/ws");
+  shardUrl.searchParams.set("uid", identity.uid);
+  shardUrl.searchParams.set("name", identity.name);
+  shardUrl.searchParams.set("token", identity.token);
+  shardUrl.searchParams.set("shard", shardName);
+  return shardUrl;
+}
+
+async function resolveIdentity(url: URL, env: Env): Promise<ConnectionIdentity> {
   const requestedToken = url.searchParams.get("token")?.trim() ?? "";
   const signingSecret = resolveIdentitySigningSecret(env);
 
@@ -53,10 +63,11 @@ async function resolveIdentity(url: URL, env: Env): Promise<{ uid: string; name:
       secret: signingSecret,
     });
     if (verifiedIdentity) {
+      const token = await createIdentityToken(verifiedIdentity.uid, verifiedIdentity.name, signingSecret);
       return {
         uid: verifiedIdentity.uid,
         name: verifiedIdentity.name,
-        token: await createIdentityToken(verifiedIdentity.uid, verifiedIdentity.name, signingSecret),
+        token,
       };
     }
   }
@@ -130,14 +141,9 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
     return new Response("Expected websocket upgrade", { status: 426 });
   }
 
-  const { uid, name, token } = await resolveIdentity(url, env);
-  const shardName = shardNameForUid(uid);
-
-  const shardUrl = new URL("https://connection-shard.internal/ws");
-  shardUrl.searchParams.set("uid", uid);
-  shardUrl.searchParams.set("name", name);
-  shardUrl.searchParams.set("token", token);
-  shardUrl.searchParams.set("shard", shardName);
+  const identity = await resolveIdentity(url, env);
+  const shardName = shardNameForUid(identity.uid);
+  const shardUrl = buildShardUrl(identity, shardName);
 
   const headers = new Headers(request.headers);
   const shardRequest = new Request(shardUrl.toString(), {
