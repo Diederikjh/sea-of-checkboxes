@@ -18,6 +18,12 @@ function jsonSize(value: unknown): number {
 }
 
 describe("binary protocol codec", () => {
+  it("roundtrips hello token payloads", () => {
+    const message: ServerMessage = { t: "hello", uid: "u_abc", name: "Alice", token: "tok_abc" };
+    const decoded = decodeServerMessageBinary(encodeServerMessageBinary(message));
+    expect(decoded).toEqual(message);
+  });
+
   it("roundtrips all client message variants", () => {
     const messages: ClientMessage[] = [
       { t: "sub", tiles: ["0:0", "-4:9"] },

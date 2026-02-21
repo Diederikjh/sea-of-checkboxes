@@ -90,10 +90,11 @@ describe("wire transport selection", () => {
       }),
     });
 
-    expect(mocks.createWebSocketTransport).toHaveBeenCalledWith(
-      "wss://example.com/ws?token=tok_abc",
-      expect.any(Object)
-    );
+    const wsUrl = mocks.createWebSocketTransport.mock.calls[0]?.[0];
+    expect(wsUrl).toBe("wss://example.com/ws?token=tok_abc");
+    const parsed = new URL(wsUrl);
+    expect(parsed.searchParams.has("uid")).toBe(false);
+    expect(parsed.searchParams.has("name")).toBe(false);
   });
 
   it("re-resolves websocket url from identity provider", () => {

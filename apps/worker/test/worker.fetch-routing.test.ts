@@ -11,6 +11,18 @@ function workerRequest(path: string, init?: RequestInit): Request {
   return new Request(`https://worker.local${path}`, init);
 }
 
+function forwardedWebSocketUrlForShard(
+  connectionShard: StubNamespace<RecordingDurableObjectStub>,
+  shardName: string
+): URL {
+  const stub = connectionShard.stubs.get(shardName);
+  const forwarded = stub?.requests[0]?.request;
+  if (!forwarded) {
+    throw new Error("Missing forwarded request");
+  }
+  return new URL(forwarded.url);
+}
+
 function createEnv() {
   const identitySigningSecret = "test-worker-fetch-secret";
   const connectionShard = new StubNamespace((name) => new RecordingDurableObjectStub(name));
@@ -126,16 +138,7 @@ describe("top-level worker fetch routing", () => {
     }
     expect(shardName).toMatch(/^shard-\d+$/);
 
-    const stub = connectionShard.stubs.get(shardName);
-    expect(stub).toBeDefined();
-    expect(stub?.requests.length).toBe(1);
-
-    const forwarded = stub?.requests[0]?.request;
-    if (!forwarded) {
-      throw new Error("Missing forwarded request");
-    }
-
-    const forwardedUrl = new URL(forwarded.url);
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
     expect(forwardedUrl.pathname).toBe("/ws");
 
     const uid = forwardedUrl.searchParams.get("uid");
@@ -149,9 +152,11 @@ describe("top-level worker fetch routing", () => {
     expect(token?.length).toBeGreaterThan(0);
     expect(forwardedShard).toBe(shardName);
 
-    expect(forwarded.method).toBe("GET");
-    expect(forwarded.headers.get("upgrade")).toBe("websocket");
-    expect(forwarded.headers.get("x-trace-id")).toBe("trace_123");
+    const stub = connectionShard.stubs.get(shardName);
+    const forwarded = stub?.requests[0]?.request;
+    expect(forwarded?.method).toBe("GET");
+    expect(forwarded?.headers.get("upgrade")).toBe("websocket");
+    expect(forwarded?.headers.get("x-trace-id")).toBe("trace_123");
   });
 
   it("reuses identity from a valid signed token", async () => {
@@ -174,13 +179,7 @@ describe("top-level worker fetch routing", () => {
       throw new Error("Expected shard name");
     }
 
-    const stub = connectionShard.stubs.get(shardName);
-    const forwarded = stub?.requests[0]?.request;
-    if (!forwarded) {
-      throw new Error("Missing forwarded request");
-    }
-
-    const forwardedUrl = new URL(forwarded.url);
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
     expect(forwardedUrl.searchParams.get("uid")).toBe("u_saved123");
     expect(forwardedUrl.searchParams.get("name")).toBe("BriskOtter481");
     expect(forwardedUrl.searchParams.get("token")).toMatch(/^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
@@ -205,15 +204,32 @@ describe("top-level worker fetch routing", () => {
       throw new Error("Expected shard name");
     }
 
-    const stub = connectionShard.stubs.get(shardName);
-    const forwarded = stub?.requests[0]?.request;
-    if (!forwarded) {
-      throw new Error("Missing forwarded request");
-    }
-
-    const forwardedUrl = new URL(forwarded.url);
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
     expect(forwardedUrl.searchParams.get("uid")).toBe("u_saved123");
     expect(forwardedUrl.searchParams.get("name")).toBe("BriskOtter481");
+  });
+
+  it("issues a new identity when token query is blank", async () => {
+    const { env, connectionShard } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/ws?token=", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    const shardName = connectionShard.requestedNames[0];
+    if (!shardName) {
+      throw new Error("Expected shard name");
+    }
+
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
+    expect(forwardedUrl.searchParams.get("uid")).toMatch(/^u_[0-9a-f]{8}$/);
+    expect(forwardedUrl.searchParams.get("name")).toMatch(/^[A-Za-z]+\d{3}$/);
+    expect(forwardedUrl.searchParams.get("token")).toMatch(/^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   });
 
   it("falls back to generated uid/name when token is malformed", async () => {
@@ -234,13 +250,7 @@ describe("top-level worker fetch routing", () => {
       throw new Error("Expected shard name");
     }
 
-    const stub = connectionShard.stubs.get(shardName);
-    const forwarded = stub?.requests[0]?.request;
-    if (!forwarded) {
-      throw new Error("Missing forwarded request");
-    }
-
-    const forwardedUrl = new URL(forwarded.url);
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
     expect(forwardedUrl.searchParams.get("uid")).toMatch(/^u_[0-9a-f]{8}$/);
     expect(forwardedUrl.searchParams.get("name")).toMatch(/^[A-Za-z]+\d{3}$/);
     expect(forwardedUrl.searchParams.get("token")).toMatch(/^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
@@ -264,13 +274,7 @@ describe("top-level worker fetch routing", () => {
       throw new Error("Expected shard name");
     }
 
-    const stub = connectionShard.stubs.get(shardName);
-    const forwarded = stub?.requests[0]?.request;
-    if (!forwarded) {
-      throw new Error("Missing forwarded request");
-    }
-
-    const forwardedUrl = new URL(forwarded.url);
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
     expect(forwardedUrl.searchParams.get("uid")).not.toBe("u_saved123");
     expect(forwardedUrl.searchParams.get("name")).not.toBe("BriskOtter481");
   });

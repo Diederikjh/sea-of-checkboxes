@@ -47,13 +47,24 @@ describe("transport config", () => {
   });
 
   it("appends persisted identity to websocket url", () => {
-    expect(
-      resolveWebSocketUrl(
-        { protocol: "https:", host: "example.com" },
-        {},
-        { uid: "u_saved123", name: "BriskOtter481", token: "tok_abc" }
-      )
-    ).toBe("wss://example.com/ws?token=tok_abc");
+    const resolved = resolveWebSocketUrl(
+      { protocol: "https:", host: "example.com" },
+      {},
+      { uid: "u_saved123", name: "BriskOtter481", token: "tok_abc" }
+    );
+    expect(resolved).toBe("wss://example.com/ws?token=tok_abc");
+    const parsed = new URL(resolved);
+    expect(parsed.searchParams.has("uid")).toBe(false);
+    expect(parsed.searchParams.has("name")).toBe(false);
+  });
+
+  it("appends token when websocket url comes from env override", () => {
+    const resolved = resolveWebSocketUrl(
+      { protocol: "https:", host: "example.com" },
+      { VITE_WS_URL: "wss://worker.example/ws" },
+      { uid: "u_saved123", name: "BriskOtter481", token: "tok_env" }
+    );
+    expect(resolved).toBe("wss://worker.example/ws?token=tok_env");
   });
 
   it("ignores invalid identity when building websocket url", () => {

@@ -36,6 +36,12 @@ describe("identity storage", () => {
 
     expect(writeStoredIdentity({ uid: "u_saved123", name: "bad name", token: "tok" }, { storage })).toBe(false);
     expect(writeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481" }, { storage })).toBe(false);
+    expect(
+      writeStoredIdentity(
+        { uid: "u_saved123", name: "BriskOtter481", token: "x".repeat(2_049) },
+        { storage }
+      )
+    ).toBe(false);
     expect(readStoredIdentity({ storage })).toBeNull();
   });
 
@@ -47,12 +53,15 @@ describe("identity storage", () => {
   });
 
   it("normalizes identity payloads", () => {
-    expect(normalizeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481", token: " tok_abc " })).toEqual({
+    expect(
+      normalizeStoredIdentity({ uid: " u_saved123 ", name: " BriskOtter481 ", token: " tok_abc " })
+    ).toEqual({
       uid: "u_saved123",
       name: "BriskOtter481",
       token: "tok_abc",
     });
     expect(normalizeStoredIdentity({ uid: "u_saved123", name: "bad name", token: "tok_abc" })).toBeNull();
     expect(normalizeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481" })).toBeNull();
+    expect(normalizeStoredIdentity({ uid: "u_saved123", name: "BriskOtter481", token: "x".repeat(2_049) })).toBeNull();
   });
 });

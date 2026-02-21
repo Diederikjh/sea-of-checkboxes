@@ -54,6 +54,10 @@ describe("server message schema matrix", () => {
     expect(() => parseServerMessage({ t: "nope" })).toThrow();
   });
 
+  it("rejects hello payloads without token", () => {
+    expect(() => parseServerMessage({ t: "hello", uid: "u_a", name: "Alice" })).toThrow();
+  });
+
   it("rejects extra fields due to strict schemas", () => {
     expect(() => parseServerMessage({ t: "hello", uid: "u", name: "n", token: "tok", extra: true })).toThrow();
     expect(() =>
