@@ -21,12 +21,14 @@ import {
   LazyMigratingR2TileOwnerPersistence,
   type TileOwnerPersistence,
 } from "./tileOwnerPersistence";
+import { logStructuredEvent } from "./observability";
 
 const TILE_READONLY_WATCHER_THRESHOLD = 8;
 const TILE_DENY_WATCHER_THRESHOLD = 12;
 
 export class TileOwnerDO {
   #env: Env;
+  #doId: string;
   #tileOwner: TileOwner;
   #tileKey: string | null;
   #subscriberShards: Set<string>;
@@ -41,6 +43,7 @@ export class TileOwnerDO {
     } = {}
   ) {
     this.#env = env;
+    this.#doId = state.id.toString();
     this.#tileOwner = new TileOwner("0:0");
     this.#tileKey = null;
     this.#subscriberShards = new Set();
@@ -56,8 +59,12 @@ export class TileOwnerDO {
     const url = new URL(request.url);
 
     if (url.pathname === "/watch" && request.method === "POST") {
+      const startMs = Date.now();
       const payload = await readJson<TileWatchRequest>(request);
       if (!payload || !isValidTileKey(payload.tile)) {
+        this.#logEvent("watch_invalid", {
+          duration_ms: Date.now() - startMs,
+        });
         return new Response("Invalid watch payload", { status: 400 });
       }
 
@@ -65,6 +72,14 @@ export class TileOwnerDO {
       if (payload.action === "sub") {
         const alreadySubscribed = this.#subscriberShards.has(payload.shard);
         if (!alreadySubscribed && this.#subscriberShards.size >= TILE_DENY_WATCHER_THRESHOLD) {
+          this.#logEvent("sub", {
+            tile: payload.tile,
+            accepted: false,
+            reason: "tile_sub_denied",
+            watcher_count: this.#subscriberShards.size,
+            clamped: true,
+            duration_ms: Date.now() - startMs,
+          });
           return jsonResponse(
             {
               code: "tile_sub_denied",
@@ -78,6 +93,13 @@ export class TileOwnerDO {
         this.#subscriberShards.delete(payload.shard);
       }
       await this.#persistSubscribers();
+      this.#logEvent(payload.action, {
+        tile: payload.tile,
+        accepted: true,
+        watcher_count: this.#subscriberShards.size,
+        clamped: false,
+        duration_ms: Date.now() - startMs,
+      });
 
       return new Response(null, { status: 204 });
     }
@@ -93,14 +115,31 @@ export class TileOwnerDO {
     }
 
     if (url.pathname === "/setCell" && request.method === "POST") {
+      const startMs = Date.now();
       const payload = await readJson<TileSetCellRequest>(request);
       if (!payload || !isValidTileKey(payload.tile)) {
+        this.#logEvent("setCell", {
+          accepted: false,
+          changed: false,
+          reason: "bad_setCell_payload",
+          duration_ms: Date.now() - startMs,
+        });
         return new Response("Invalid setCell payload", { status: 400 });
       }
 
       await this.#ensureLoaded(payload.tile);
 
       if (this.#subscriberShards.size >= TILE_READONLY_WATCHER_THRESHOLD) {
+        this.#logEvent("setCell", {
+          tile: payload.tile,
+          i: payload.i,
+          v: payload.v,
+          accepted: false,
+          changed: false,
+          reason: "tile_readonly_hot",
+          watcher_count: this.#subscriberShards.size,
+          duration_ms: Date.now() - startMs,
+        });
         return jsonResponse({
           accepted: false,
           changed: false,
@@ -128,11 +167,13 @@ export class TileOwnerDO {
           toVer: result.ver,
           ops: [[payload.i, payload.v]],
         };
+        const subscribers = Array.from(this.#subscriberShards);
+        const fanoutStartMs = Date.now();
 
         // Do not await fanout here to avoid circular waits:
         // shard -> tile owner -> shard (same shard may be in subscribers).
-        void Promise.all(
-          Array.from(this.#subscriberShards).map(async (shardId) => {
+        void Promise.allSettled(
+          subscribers.map(async (shardId) => {
             const stub = this.#env.CONNECTION_SHARD.getByName(shardId);
             await stub.fetch("https://connection-shard.internal/tile-batch", {
               method: "POST",
@@ -142,8 +183,15 @@ export class TileOwnerDO {
               body: JSON.stringify(batch),
             });
           })
-        ).catch(() => {
-          // Best-effort fanout; requester still gets a successful setCell response.
+        ).then((results) => {
+          const failedCount = results.filter((entry) => entry.status === "rejected").length;
+          this.#logEvent("broadcast", {
+            tile: payload.tile,
+            batch_size: batch.ops.length,
+            watcher_count: subscribers.length,
+            failed_count: failedCount,
+            duration_ms: Date.now() - fanoutStartMs,
+          });
         });
       }
 
@@ -160,6 +208,17 @@ export class TileOwnerDO {
             ver: result.ver,
           };
 
+      this.#logEvent("setCell", {
+        tile: payload.tile,
+        i: payload.i,
+        v: payload.v,
+        accepted: body.accepted,
+        changed: body.changed,
+        ...(body.reason ? { reason: body.reason } : {}),
+        ver: body.ver,
+        watcher_count: this.#subscriberShards.size,
+        duration_ms: Date.now() - startMs,
+      });
       return jsonResponse(body);
     }
 
@@ -235,5 +294,13 @@ export class TileOwnerDO {
       throw new Error("TileOwnerDO tile key was not initialized");
     }
     return this.#tileKey;
+  }
+
+  #logEvent(event: string, fields: Record<string, unknown>): void {
+    logStructuredEvent("tile_owner_do", event, {
+      do_id: this.#doId,
+      tile: this.#tileKey ?? undefined,
+      ...fields,
+    });
   }
 }

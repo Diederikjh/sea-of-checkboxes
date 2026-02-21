@@ -35,6 +35,27 @@ export interface ConnectionShardDOOperationsContext {
   sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void>;
 }
 
+export interface SubscriptionMessageResult {
+  requestedCount: number;
+  changedCount: number;
+  invalidCount: number;
+  rejectedCount: number;
+  clamped: boolean;
+  subscribedCount: number;
+}
+
+export interface UnsubscriptionMessageResult {
+  requestedCount: number;
+  changedCount: number;
+  subscribedCount: number;
+}
+
+export interface SetCellMessageResult {
+  accepted: boolean;
+  changed: boolean;
+  reason?: string;
+}
+
 async function removeClientFromTile(
   context: ConnectionShardDOOperationsContext,
   uid: string,
@@ -58,7 +79,16 @@ export async function handleSubMessage(
   context: ConnectionShardDOOperationsContext,
   client: ConnectedClient,
   tiles: string[]
-): Promise<void> {
+): Promise<SubscriptionMessageResult> {
+  const result: SubscriptionMessageResult = {
+    requestedCount: tiles.length,
+    changedCount: 0,
+    invalidCount: 0,
+    rejectedCount: 0,
+    clamped: false,
+    subscribedCount: client.subscribed.size,
+  };
+
   for (const tileKey of tiles) {
     if (client.subscribed.has(tileKey)) {
       continue;
@@ -66,11 +96,14 @@ export async function handleSubMessage(
 
     if (client.subscribed.size >= MAX_TILES_SUBSCRIBED) {
       context.sendError(client, "sub_limit", `Max ${MAX_TILES_SUBSCRIBED} tiles subscribed`);
-      return;
+      result.clamped = true;
+      result.subscribedCount = client.subscribed.size;
+      return result;
     }
 
     if (!isValidTileKey(tileKey)) {
       context.sendBadTile(client, tileKey);
+      result.invalidCount += 1;
       continue;
     }
 
@@ -94,19 +127,30 @@ export async function handleSubMessage(
           context.tileToClients.delete(tileKey);
         }
         context.sendError(client, watchResult.code ?? "watch_rejected", watchResult.msg ?? "Tile unavailable");
+        result.rejectedCount += 1;
         continue;
       }
     }
 
     await context.sendSnapshotToClient(client, tileKey);
+    result.changedCount += 1;
   }
+
+  result.subscribedCount = client.subscribed.size;
+  return result;
 }
 
 export async function handleUnsubMessage(
   context: ConnectionShardDOOperationsContext,
   client: ConnectedClient,
   tiles: string[]
-): Promise<void> {
+): Promise<UnsubscriptionMessageResult> {
+  const result: UnsubscriptionMessageResult = {
+    requestedCount: tiles.length,
+    changedCount: 0,
+    subscribedCount: client.subscribed.size,
+  };
+
   for (const tileKey of tiles) {
     if (!client.subscribed.has(tileKey)) {
       continue;
@@ -114,23 +158,27 @@ export async function handleUnsubMessage(
 
     client.subscribed.delete(tileKey);
     await removeClientFromTile(context, client.uid, tileKey);
+    result.changedCount += 1;
   }
+
+  result.subscribedCount = client.subscribed.size;
+  return result;
 }
 
 export async function handleSetCellMessage(
   context: ConnectionShardDOOperationsContext,
   client: ConnectedClient,
   message: Extract<ClientMessage, { t: "setCell" }>
-): Promise<void> {
+): Promise<SetCellMessageResult> {
   if (!isValidTileKey(message.tile)) {
     context.sendBadTile(client, message.tile);
-    return;
+    return { accepted: false, changed: false, reason: "bad_tile" };
   }
 
   if (!client.subscribed.has(message.tile)) {
     context.sendError(client, "not_subscribed", `Tile ${message.tile} is not currently subscribed`);
     await context.sendSnapshotToClient(client, message.tile);
-    return;
+    return { accepted: false, changed: false, reason: "not_subscribed" };
   }
 
   // Re-assert watch before writes. This self-heals TileOwnerDO watcher sets
@@ -138,7 +186,7 @@ export async function handleSetCellMessage(
   const watchResult = await context.watchTile(message.tile, "sub");
   if (!watchResult.ok) {
     context.sendError(client, watchResult.code ?? "watch_rejected", watchResult.msg ?? "Tile unavailable");
-    return;
+    return { accepted: false, changed: false, reason: watchResult.code ?? "watch_rejected" };
   }
 
   const result = await context.setTileCell({
@@ -153,7 +201,11 @@ export async function handleSetCellMessage(
 
   if (!result?.accepted) {
     context.sendError(client, "setcell_rejected", result?.reason ?? "Rejected");
-    return;
+    return {
+      accepted: false,
+      changed: false,
+      ...(result?.reason ? { reason: result.reason } : {}),
+    };
   }
 
   if (!result.changed) {
@@ -161,6 +213,11 @@ export async function handleSetCellMessage(
     // Send a fresh snapshot so local cache can converge.
     await context.sendSnapshotToClient(client, message.tile);
   }
+
+  return {
+    accepted: true,
+    changed: result.changed,
+  };
 }
 
 export async function handleResyncMessage(

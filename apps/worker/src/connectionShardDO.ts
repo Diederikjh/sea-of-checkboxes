@@ -35,6 +35,7 @@ import {
 } from "./socketPair";
 import { readBinaryMessageEventPayload } from "./socketMessagePayload";
 import { fanoutTileBatchToSubscribers } from "./tileBatchFanout";
+import { logStructuredEvent } from "./observability";
 
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
@@ -169,6 +170,11 @@ export class ConnectionShardDO {
     };
 
     this.#clients.set(identity.uid, client);
+    this.#logEvent("ws_connect", {
+      uid: identity.uid,
+      shard: this.#currentShardName(),
+      clients_connected: this.#clients.size,
+    });
     this.#sendServerMessage(client, { t: "hello", ...identity });
     this.#cursorCoordinator.onClientConnected(client);
 
@@ -185,12 +191,35 @@ export class ConnectionShardDO {
       });
     });
 
-    const onClose = () => {
+    let closed = false;
+    const closeAndCleanup = (fields: Record<string, unknown>) => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      this.#logEvent("ws_close", {
+        uid: client.uid,
+        shard: this.#currentShardName(),
+        clients_connected: Math.max(0, this.#clients.size - 1),
+        ...fields,
+      });
       void this.#disconnectClientIfCurrent(context, client.uid, serverSocket);
     };
 
-    serverSocket.addEventListener("close", onClose);
-    serverSocket.addEventListener("error", onClose);
+    serverSocket.addEventListener("close", (event: unknown) => {
+      const closeCode =
+        typeof event === "object" && event !== null && "code" in event
+          ? (event as { code?: unknown }).code
+          : undefined;
+      closeAndCleanup({
+        code: typeof closeCode === "number" ? closeCode : undefined,
+      });
+    });
+    serverSocket.addEventListener("error", () => {
+      closeAndCleanup({
+        code: "socket_error",
+      });
+    });
 
     return this.#upgradeResponseFactory.createResponse(clientSocket);
   }
@@ -207,25 +236,61 @@ export class ConnectionShardDO {
       message = decodeClientMessageBinary(payload);
     } catch {
       this.#sendError(client, "bad_message", "Invalid message payload");
+      this.#logEvent("bad_message", {
+        uid,
+      });
       return;
     }
 
     try {
       switch (message.t) {
-        case "sub":
-          await handleSubMessage(context, client, message.tiles);
+        case "sub": {
+          const subResult = await handleSubMessage(context, client, message.tiles);
+          this.#logEvent("sub", {
+            uid,
+            requested_count: subResult.requestedCount,
+            changed_count: subResult.changedCount,
+            invalid_count: subResult.invalidCount,
+            rejected_count: subResult.rejectedCount,
+            subscribed_count: subResult.subscribedCount,
+            clamped: subResult.clamped,
+          });
           this.#cursorCoordinator.onSubscriptionsChanged(true);
           return;
-        case "unsub":
-          await handleUnsubMessage(context, client, message.tiles);
+        }
+        case "unsub": {
+          const unsubResult = await handleUnsubMessage(context, client, message.tiles);
+          this.#logEvent("unsub", {
+            uid,
+            requested_count: unsubResult.requestedCount,
+            changed_count: unsubResult.changedCount,
+            subscribed_count: unsubResult.subscribedCount,
+          });
           this.#cursorCoordinator.onSubscriptionsChanged(true);
           return;
-        case "setCell":
-          await handleSetCellMessage(context, client, message);
+        }
+        case "setCell": {
+          const startMs = Date.now();
+          const setCellResult = await handleSetCellMessage(context, client, message);
+          this.#logEvent("setCell", {
+            uid,
+            tile: message.tile,
+            i: message.i,
+            v: message.v,
+            accepted: setCellResult.accepted,
+            changed: setCellResult.changed,
+            ...(setCellResult.reason ? { reason: setCellResult.reason } : {}),
+            duration_ms: Date.now() - startMs,
+          });
           this.#cursorCoordinator.onActivity();
           return;
+        }
         case "resyncTile":
           await handleResyncMessage(context, client, message.tile);
+          this.#logEvent("resyncTile", {
+            uid,
+            tile: message.tile,
+          });
           return;
         case "cur":
           this.#cursorCoordinator.onLocalCursor(client, message.x, message.y);
@@ -234,6 +299,9 @@ export class ConnectionShardDO {
           return;
       }
     } catch {
+      this.#logEvent("internal_error", {
+        uid,
+      });
       this.#sendError(client, "internal", "Failed to process message");
     }
   }
@@ -337,5 +405,12 @@ export class ConnectionShardDO {
       setTileCell: (payload) => this.#setTileCell(payload),
       sendSnapshotToClient: (client, tileKey) => this.#sendSnapshotToClient(client, tileKey),
     };
+  }
+
+  #logEvent(event: string, fields: Record<string, unknown>): void {
+    logStructuredEvent("connection_shard_do", event, {
+      shard: this.#currentShardName(),
+      ...fields,
+    });
   }
 }

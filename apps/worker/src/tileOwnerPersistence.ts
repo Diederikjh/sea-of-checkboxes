@@ -3,6 +3,7 @@ import type {
   DurableObjectStateLike,
   R2BucketLike,
 } from "./doCommon";
+import { logStructuredEvent } from "./observability";
 
 export interface TileSnapshotRecord {
   bits: string;
@@ -77,17 +78,46 @@ function isValidLastEditRecord(value: unknown): value is CellLastEditRecord {
 
 export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersistence {
   #state: DurableObjectStateLike;
+  #doId: string;
 
   constructor(state: DurableObjectStateLike) {
     this.#state = state;
+    this.#doId = state.id.toString();
   }
 
-  async load(_tileKey: string): Promise<TileOwnerPersistedState> {
-    const snapshot = await this.#state.storage.get<TileSnapshotRecord>(SNAPSHOT_KEY);
-    const rawSubscribers = await this.#state.storage.get<string[]>(SUBSCRIBERS_KEY);
-    const subscribers = Array.isArray(rawSubscribers)
-      ? rawSubscribers.filter((value) => typeof value === "string" && value.length > 0)
-      : [];
+  async load(tileKey: string): Promise<TileOwnerPersistedState> {
+    const startMs = Date.now();
+    let snapshot: TileSnapshotRecord | undefined;
+    let subscribers: string[] = [];
+
+    try {
+      snapshot = await this.#state.storage.get<TileSnapshotRecord>(SNAPSHOT_KEY);
+      const rawSubscribers = await this.#state.storage.get<string[]>(SUBSCRIBERS_KEY);
+      subscribers = Array.isArray(rawSubscribers)
+        ? rawSubscribers.filter((value) => typeof value === "string" && value.length > 0)
+        : [];
+
+      logStructuredEvent("tile_owner_persistence", "snapshot_read", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "do_storage",
+        found: Boolean(snapshot),
+        bytes: snapshot ? JSON.stringify(snapshot).length : 0,
+        subscriber_count: subscribers.length,
+        duration_ms: Date.now() - startMs,
+      });
+    } catch (error) {
+      logStructuredEvent("tile_owner_persistence", "snapshot_read", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "do_storage",
+        found: false,
+        error: true,
+        error_message: error instanceof Error ? error.message : "unknown_error",
+        duration_ms: Date.now() - startMs,
+      });
+      throw error;
+    }
 
     if (snapshot) {
       return {
@@ -99,8 +129,30 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
     return { subscribers };
   }
 
-  async saveSnapshot(_tileKey: string, snapshot: TileSnapshotRecord): Promise<void> {
-    await this.#state.storage.put(SNAPSHOT_KEY, snapshot);
+  async saveSnapshot(tileKey: string, snapshot: TileSnapshotRecord): Promise<void> {
+    const startMs = Date.now();
+    const bytes = JSON.stringify(snapshot).length;
+    try {
+      await this.#state.storage.put(SNAPSHOT_KEY, snapshot);
+      logStructuredEvent("tile_owner_persistence", "snapshot_write", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "do_storage",
+        bytes,
+        duration_ms: Date.now() - startMs,
+      });
+    } catch (error) {
+      logStructuredEvent("tile_owner_persistence", "snapshot_write", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "do_storage",
+        bytes,
+        error: true,
+        error_message: error instanceof Error ? error.message : "unknown_error",
+        duration_ms: Date.now() - startMs,
+      });
+      throw error;
+    }
   }
 
   async saveSubscribers(_tileKey: string, subscribers: string[]): Promise<void> {
@@ -112,6 +164,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
   #legacy: DurableObjectStorageTileOwnerPersistence;
   #bucket: R2BucketLike;
   #dualWriteLegacy: boolean;
+  #doId: string;
 
   constructor(
     state: DurableObjectStateLike,
@@ -123,6 +176,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
     this.#legacy = new DurableObjectStorageTileOwnerPersistence(state);
     this.#bucket = bucket;
     this.#dualWriteLegacy = options.dualWriteLegacy ?? true;
+    this.#doId = state.id.toString();
   }
 
   async load(tileKey: string): Promise<TileOwnerPersistedState> {
@@ -136,7 +190,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
     }
 
     if (legacy.snapshot) {
-      await this.#saveSnapshotToR2(tileKey, legacy.snapshot);
+      await this.#saveSnapshotToR2(tileKey, legacy.snapshot, "migration");
       return legacy;
     }
 
@@ -144,7 +198,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
   }
 
   async saveSnapshot(tileKey: string, snapshot: TileSnapshotRecord): Promise<void> {
-    await this.#saveSnapshotToR2(tileKey, snapshot);
+    await this.#saveSnapshotToR2(tileKey, snapshot, "normal");
     if (this.#dualWriteLegacy) {
       await this.#legacy.saveSnapshot(tileKey, snapshot);
     }
@@ -155,20 +209,82 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
   }
 
   async #loadSnapshotFromR2(tileKey: string): Promise<TileSnapshotRecord | null> {
-    const object = await this.#bucket.get(snapshotObjectKey(tileKey));
-    if (!object) {
-      return null;
-    }
+    const startMs = Date.now();
+    const key = snapshotObjectKey(tileKey);
 
     try {
+      const object = await this.#bucket.get(key);
+      if (!object) {
+        logStructuredEvent("tile_owner_persistence", "snapshot_read", {
+          do_id: this.#doId,
+          tile: tileKey,
+          source: "r2",
+          found: false,
+          key,
+          duration_ms: Date.now() - startMs,
+        });
+        return null;
+      }
+
       const payload = JSON.parse(await object.text()) as unknown;
-      return isValidSnapshotRecord(payload) ? payload : null;
-    } catch {
+      const snapshot = isValidSnapshotRecord(payload) ? payload : null;
+      logStructuredEvent("tile_owner_persistence", "snapshot_read", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "r2",
+        found: Boolean(snapshot),
+        key,
+        bytes: snapshot ? JSON.stringify(snapshot).length : 0,
+        duration_ms: Date.now() - startMs,
+      });
+      return snapshot;
+    } catch (error) {
+      logStructuredEvent("tile_owner_persistence", "snapshot_read", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "r2",
+        found: false,
+        key,
+        error: true,
+        error_message: error instanceof Error ? error.message : "unknown_error",
+        duration_ms: Date.now() - startMs,
+      });
       return null;
     }
   }
 
-  async #saveSnapshotToR2(tileKey: string, snapshot: TileSnapshotRecord): Promise<void> {
-    await this.#bucket.put(snapshotObjectKey(tileKey), JSON.stringify(snapshot));
+  async #saveSnapshotToR2(
+    tileKey: string,
+    snapshot: TileSnapshotRecord,
+    mode: "normal" | "migration"
+  ): Promise<void> {
+    const startMs = Date.now();
+    const key = snapshotObjectKey(tileKey);
+    const payload = JSON.stringify(snapshot);
+    try {
+      await this.#bucket.put(key, payload);
+      logStructuredEvent("tile_owner_persistence", "snapshot_write", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "r2",
+        mode,
+        key,
+        bytes: payload.length,
+        duration_ms: Date.now() - startMs,
+      });
+    } catch (error) {
+      logStructuredEvent("tile_owner_persistence", "snapshot_write", {
+        do_id: this.#doId,
+        tile: tileKey,
+        source: "r2",
+        mode,
+        key,
+        bytes: payload.length,
+        error: true,
+        error_message: error instanceof Error ? error.message : "unknown_error",
+        duration_ms: Date.now() - startMs,
+      });
+      throw error;
+    }
   }
 }

@@ -12,6 +12,7 @@ import {
   resolveIdentitySigningSecret,
   verifyIdentityToken,
 } from "./identityToken";
+import { logStructuredEvent } from "./observability";
 import { shardNameForUid } from "./sharding";
 const NAME_ADJECTIVES = ["Brisk", "Quiet", "Amber", "Mint", "Rust", "Blue"];
 const NAME_NOUNS = ["Otter", "Falcon", "Badger", "Stoat", "Fox", "Heron"];
@@ -144,6 +145,10 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
   const identity = await resolveIdentity(url, env);
   const shardName = shardNameForUid(identity.uid);
   const shardUrl = buildShardUrl(identity, shardName);
+  logStructuredEvent("worker", "ws_connect", {
+    shard: shardName,
+    uid: identity.uid,
+  });
 
   const headers = new Headers(request.headers);
   const shardRequest = new Request(shardUrl.toString(), {
