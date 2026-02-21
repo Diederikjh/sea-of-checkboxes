@@ -28,3 +28,7 @@ export function logStructuredEvent(
     );
   }
 }
+
+export function elapsedMs(startMs: number): number {
+  return Date.now() - startMs;
+}

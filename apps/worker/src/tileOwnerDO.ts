@@ -21,7 +21,10 @@ import {
   LazyMigratingR2TileOwnerPersistence,
   type TileOwnerPersistence,
 } from "./tileOwnerPersistence";
-import { logStructuredEvent } from "./observability";
+import {
+  elapsedMs,
+  logStructuredEvent,
+} from "./observability";
 
 const TILE_READONLY_WATCHER_THRESHOLD = 8;
 const TILE_DENY_WATCHER_THRESHOLD = 12;
@@ -62,9 +65,6 @@ export class TileOwnerDO {
       const startMs = Date.now();
       const payload = await readJson<TileWatchRequest>(request);
       if (!payload || !isValidTileKey(payload.tile)) {
-        this.#logEvent("watch_invalid", {
-          duration_ms: Date.now() - startMs,
-        });
         return new Response("Invalid watch payload", { status: 400 });
       }
 
@@ -78,7 +78,7 @@ export class TileOwnerDO {
             reason: "tile_sub_denied",
             watcher_count: this.#subscriberShards.size,
             clamped: true,
-            duration_ms: Date.now() - startMs,
+            duration_ms: elapsedMs(startMs),
           });
           return jsonResponse(
             {
@@ -98,7 +98,7 @@ export class TileOwnerDO {
         accepted: true,
         watcher_count: this.#subscriberShards.size,
         clamped: false,
-        duration_ms: Date.now() - startMs,
+        duration_ms: elapsedMs(startMs),
       });
 
       return new Response(null, { status: 204 });
@@ -122,7 +122,7 @@ export class TileOwnerDO {
           accepted: false,
           changed: false,
           reason: "bad_setCell_payload",
-          duration_ms: Date.now() - startMs,
+          duration_ms: elapsedMs(startMs),
         });
         return new Response("Invalid setCell payload", { status: 400 });
       }
@@ -138,7 +138,7 @@ export class TileOwnerDO {
           changed: false,
           reason: "tile_readonly_hot",
           watcher_count: this.#subscriberShards.size,
-          duration_ms: Date.now() - startMs,
+          duration_ms: elapsedMs(startMs),
         });
         return jsonResponse({
           accepted: false,
@@ -190,7 +190,7 @@ export class TileOwnerDO {
             batch_size: batch.ops.length,
             watcher_count: subscribers.length,
             failed_count: failedCount,
-            duration_ms: Date.now() - fanoutStartMs,
+            duration_ms: elapsedMs(fanoutStartMs),
           });
         });
       }
@@ -217,7 +217,7 @@ export class TileOwnerDO {
         ...(body.reason ? { reason: body.reason } : {}),
         ver: body.ver,
         watcher_count: this.#subscriberShards.size,
-        duration_ms: Date.now() - startMs,
+        duration_ms: elapsedMs(startMs),
       });
       return jsonResponse(body);
     }

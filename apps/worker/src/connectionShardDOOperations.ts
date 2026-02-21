@@ -35,26 +35,26 @@ export interface ConnectionShardDOOperationsContext {
   sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void>;
 }
 
-export interface SubscriptionMessageResult {
+type SubscriptionMessageResult = {
   requestedCount: number;
   changedCount: number;
   invalidCount: number;
   rejectedCount: number;
   clamped: boolean;
   subscribedCount: number;
-}
+};
 
-export interface UnsubscriptionMessageResult {
+type UnsubscriptionMessageResult = {
   requestedCount: number;
   changedCount: number;
   subscribedCount: number;
-}
+};
 
-export interface SetCellMessageResult {
+type SetCellMessageResult = {
   accepted: boolean;
   changed: boolean;
   reason?: string;
-}
+};
 
 async function removeClientFromTile(
   context: ConnectionShardDOOperationsContext,

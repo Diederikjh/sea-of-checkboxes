@@ -35,7 +35,10 @@ import {
 } from "./socketPair";
 import { readBinaryMessageEventPayload } from "./socketMessagePayload";
 import { fanoutTileBatchToSubscribers } from "./tileBatchFanout";
-import { logStructuredEvent } from "./observability";
+import {
+  elapsedMs,
+  logStructuredEvent,
+} from "./observability";
 
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
@@ -172,7 +175,6 @@ export class ConnectionShardDO {
     this.#clients.set(identity.uid, client);
     this.#logEvent("ws_connect", {
       uid: identity.uid,
-      shard: this.#currentShardName(),
       clients_connected: this.#clients.size,
     });
     this.#sendServerMessage(client, { t: "hello", ...identity });
@@ -199,7 +201,6 @@ export class ConnectionShardDO {
       closed = true;
       this.#logEvent("ws_close", {
         uid: client.uid,
-        shard: this.#currentShardName(),
         clients_connected: Math.max(0, this.#clients.size - 1),
         ...fields,
       });
@@ -280,7 +281,7 @@ export class ConnectionShardDO {
             accepted: setCellResult.accepted,
             changed: setCellResult.changed,
             ...(setCellResult.reason ? { reason: setCellResult.reason } : {}),
-            duration_ms: Date.now() - startMs,
+            duration_ms: elapsedMs(startMs),
           });
           this.#cursorCoordinator.onActivity();
           return;
