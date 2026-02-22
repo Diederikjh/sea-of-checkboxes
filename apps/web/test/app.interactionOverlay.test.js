@@ -3,9 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   requiredElements: null,
   inboundMessageHandler: null,
+  transportLifecycleHandlers: null,
+  outboundMessages: [],
+  inputHandlerArgs: null,
   teardownInputHandlers: vi.fn(),
   windowAddEventListener: vi.fn(),
   windowRemoveEventListener: vi.fn(),
+  markTransportReconnected: vi.fn(),
 }));
 
 vi.mock("pixi.js", () => ({
@@ -31,7 +35,7 @@ vi.mock("pixi.js", () => ({
 
 vi.mock("@sea/protocol", () => ({
   decodeServerMessageBinary: (payload) => payload,
-  encodeClientMessageBinary: () => new Uint8Array([1]),
+  encodeClientMessageBinary: (message) => message,
 }));
 
 vi.mock("../src/dom", () => ({
@@ -63,7 +67,10 @@ vi.mock("../src/heatmap", () => ({
 }));
 
 vi.mock("../src/inputHandlers", () => ({
-  setupInputHandlers: () => mocks.teardownInputHandlers,
+  setupInputHandlers: (args) => {
+    mocks.inputHandlerArgs = args;
+    return mocks.teardownInputHandlers;
+  },
 }));
 
 vi.mock("../src/logger", () => ({
@@ -102,10 +109,11 @@ vi.mock("../src/perfProbe", () => ({
 
 vi.mock("../src/renderLoop", () => ({
   createRenderLoop: () => ({
-    markVisualDirty() {},
-    markTileCellsDirty() {},
-    handleResize() {},
-    dispose() {},
+    markVisualDirty: vi.fn(),
+    markTileCellsDirty: vi.fn(),
+    markTransportReconnected: mocks.markTransportReconnected,
+    handleResize: vi.fn(),
+    dispose: vi.fn(),
   }),
 }));
 
@@ -127,10 +135,13 @@ vi.mock("../src/transportConfig", () => ({
 
 vi.mock("../src/wireTransport", () => ({
   createWireTransport: () => ({
-    connect(handler) {
+    connect(handler, lifecycleHandlers) {
       mocks.inboundMessageHandler = handler;
+      mocks.transportLifecycleHandlers = lifecycleHandlers ?? {};
     },
-    send() {},
+    send(message) {
+      mocks.outboundMessages.push(message);
+    },
     dispose() {},
   }),
 }));
@@ -156,6 +167,7 @@ function createRequiredElements() {
     inspectToggleEl: {},
     inspectLabelEl: { textContent: "" },
     editInfoPopupEl: {},
+    offlineBannerEl: { hidden: true, textContent: "" },
   };
 }
 
@@ -166,6 +178,10 @@ describe("app interaction overlays", () => {
     vi.useFakeTimers();
     mocks.requiredElements = createRequiredElements();
     mocks.inboundMessageHandler = null;
+    mocks.transportLifecycleHandlers = null;
+    mocks.outboundMessages.length = 0;
+    mocks.inputHandlerArgs = null;
+    mocks.markTransportReconnected.mockReset();
 
     globalThis.window = {
       setTimeout: globalThis.setTimeout.bind(globalThis),
@@ -222,5 +238,70 @@ describe("app interaction overlays", () => {
 
     teardown();
     expect(mocks.windowRemoveEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
+  });
+
+  it("shows offline banner with unsynced count after 30s disconnected and hides on reconnect", async () => {
+    const teardown = await startApp();
+    const lifecycle = mocks.transportLifecycleHandlers;
+    const inputArgs = mocks.inputHandlerArgs;
+    if (!lifecycle) {
+      throw new Error("Expected transport lifecycle handlers");
+    }
+    if (!inputArgs) {
+      throw new Error("Expected input handler args");
+    }
+
+    const { offlineBannerEl } = mocks.requiredElements;
+    expect(offlineBannerEl.hidden).toBe(true);
+
+    lifecycle.onOpen?.({ reconnected: false });
+    inputArgs.transport.send({ t: "setCell", tile: "0:0", i: 1, v: 1, op: "op_1" });
+    inputArgs.transport.send({ t: "setCell", tile: "0:0", i: 2, v: 1, op: "op_2" });
+    inputArgs.transport.send({ t: "setCell", tile: "0:0", i: 3, v: 1, op: "op_3" });
+    inputArgs.transport.send({ t: "setCell", tile: "0:0", i: 4, v: 1, op: "op_4" });
+
+    lifecycle.onClose?.({ disposed: false });
+    vi.advanceTimersByTime(29_999);
+    expect(offlineBannerEl.hidden).toBe(true);
+
+    vi.advanceTimersByTime(1);
+    expect(offlineBannerEl.hidden).toBe(false);
+    expect(offlineBannerEl.textContent).toBe("You are offline. 4 unsynced events.");
+
+    lifecycle.onOpen?.({ reconnected: true });
+    expect(offlineBannerEl.hidden).toBe(true);
+    expect(mocks.markTransportReconnected).toHaveBeenCalledTimes(1);
+
+    teardown();
+  });
+
+  it("replays queued setCell intents after reconnect", async () => {
+    const teardown = await startApp();
+    const lifecycle = mocks.transportLifecycleHandlers;
+    const inputArgs = mocks.inputHandlerArgs;
+    if (!lifecycle || !inputArgs) {
+      throw new Error("Expected transport lifecycle handlers and input handler args");
+    }
+
+    lifecycle.onOpen?.({ reconnected: false });
+    inputArgs.transport.send({
+      t: "setCell",
+      tile: "0:0",
+      i: 1,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(mocks.outboundMessages).toHaveLength(1);
+    expect(mocks.outboundMessages[0]).toMatchObject({ t: "setCell", tile: "0:0", i: 1, v: 1 });
+
+    lifecycle.onClose?.({ disposed: false });
+    lifecycle.onOpen?.({ reconnected: true });
+
+    vi.advanceTimersByTime(1_000);
+    expect(mocks.outboundMessages).toHaveLength(2);
+    expect(mocks.outboundMessages[1]).toMatchObject({ t: "setCell", tile: "0:0", i: 1, v: 1 });
+
+    teardown();
   });
 });

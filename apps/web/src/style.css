@@ -23,6 +23,27 @@ body,
   display: block;
 }
 
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 179, 179, 0.55);
+  background: rgba(114, 16, 16, 0.9);
+  color: #ffe7e7;
+  font-size: 0.85rem;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.offline-banner[hidden] {
+  display: none;
+}
+
 .interaction-overlay {
   position: fixed;
   inset: 0;
