@@ -1,4 +1,10 @@
-import { MAX_TILES_SUBSCRIBED } from "@sea/domain";
+import {
+  MAX_TILES_SUBSCRIBED,
+  MAX_TILE_CHURN_PER_MIN,
+  SETCELL_BURST_PER_SEC,
+  SETCELL_SUSTAINED_PER_SEC,
+  SETCELL_SUSTAINED_WINDOW_MS,
+} from "@sea/domain";
 import type {
   ClientMessage,
   ServerMessage,
@@ -16,6 +22,9 @@ export interface ConnectedClient {
   name: string;
   socket: SocketLike;
   subscribed: Set<string>;
+  churnTimestamps?: number[];
+  setCellBurstTimestamps?: number[];
+  setCellSustainedTimestamps?: number[];
   lastCursorX?: number | null;
   lastCursorY?: number | null;
   cursorSubscriptions?: Set<string>;
@@ -33,6 +42,7 @@ export interface ConnectionShardDOOperationsContext {
   ): Promise<{ ok: boolean; code?: string; msg?: string }>;
   setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null>;
   sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void>;
+  nowMs(): number;
 }
 
 type SubscriptionMessageResult = {
@@ -55,6 +65,84 @@ type SetCellMessageResult = {
   changed: boolean;
   reason?: string;
 };
+
+function recordWithinLimit(
+  timestamps: number[],
+  nowMs: number,
+  windowMs: number,
+  limit: number
+): boolean {
+  const cutoff = nowMs - windowMs;
+  let writeIndex = 0;
+  for (const timestamp of timestamps) {
+    if (timestamp > cutoff) {
+      timestamps[writeIndex] = timestamp;
+      writeIndex += 1;
+    }
+  }
+  timestamps.length = writeIndex;
+
+  if (timestamps.length >= limit) {
+    return false;
+  }
+
+  timestamps.push(nowMs);
+  return true;
+}
+
+function consumeChurnOrError(
+  context: ConnectionShardDOOperationsContext,
+  client: ConnectedClient
+): boolean {
+  const timestamps = client.churnTimestamps ?? [];
+  client.churnTimestamps = timestamps;
+  const allowed = recordWithinLimit(
+    timestamps,
+    context.nowMs(),
+    60_000,
+    MAX_TILE_CHURN_PER_MIN
+  );
+
+  if (!allowed) {
+    context.sendError(client, "churn_limit", "Tile churn limit exceeded");
+    return false;
+  }
+
+  return true;
+}
+
+function consumeSetCellRateOrError(
+  context: ConnectionShardDOOperationsContext,
+  client: ConnectedClient
+): boolean {
+  const nowMs = context.nowMs();
+  const burstTimestamps = client.setCellBurstTimestamps ?? [];
+  const sustainedTimestamps = client.setCellSustainedTimestamps ?? [];
+  client.setCellBurstTimestamps = burstTimestamps;
+  client.setCellSustainedTimestamps = sustainedTimestamps;
+
+  const burstAllowed = recordWithinLimit(
+    burstTimestamps,
+    nowMs,
+    1_000,
+    SETCELL_BURST_PER_SEC
+  );
+
+  const sustainedLimit = Math.floor((SETCELL_SUSTAINED_PER_SEC * SETCELL_SUSTAINED_WINDOW_MS) / 1_000);
+  const sustainedAllowed = recordWithinLimit(
+    sustainedTimestamps,
+    nowMs,
+    SETCELL_SUSTAINED_WINDOW_MS,
+    sustainedLimit
+  );
+
+  if (!burstAllowed || !sustainedAllowed) {
+    context.sendError(client, "setcell_limit", "setCell rate limit exceeded");
+    return false;
+  }
+
+  return true;
+}
 
 async function removeClientFromTile(
   context: ConnectionShardDOOperationsContext,
@@ -96,6 +184,12 @@ export async function handleSubMessage(
 
     if (client.subscribed.size >= MAX_TILES_SUBSCRIBED) {
       context.sendError(client, "sub_limit", `Max ${MAX_TILES_SUBSCRIBED} tiles subscribed`);
+      result.clamped = true;
+      result.subscribedCount = client.subscribed.size;
+      return result;
+    }
+
+    if (!consumeChurnOrError(context, client)) {
       result.clamped = true;
       result.subscribedCount = client.subscribed.size;
       return result;
@@ -156,6 +250,11 @@ export async function handleUnsubMessage(
       continue;
     }
 
+    if (!consumeChurnOrError(context, client)) {
+      result.subscribedCount = client.subscribed.size;
+      return result;
+    }
+
     client.subscribed.delete(tileKey);
     await removeClientFromTile(context, client.uid, tileKey);
     result.changedCount += 1;
@@ -170,6 +269,10 @@ export async function handleSetCellMessage(
   client: ConnectedClient,
   message: Extract<ClientMessage, { t: "setCell" }>
 ): Promise<SetCellMessageResult> {
+  if (!consumeSetCellRateOrError(context, client)) {
+    return { accepted: false, changed: false, reason: "setcell_limit" };
+  }
+
   if (!isValidTileKey(message.tile)) {
     context.sendBadTile(client, message.tile);
     return { accepted: false, changed: false, reason: "bad_tile" };
@@ -196,7 +299,7 @@ export async function handleSetCellMessage(
     op: message.op,
     uid: client.uid,
     name: client.name,
-    atMs: Date.now(),
+    atMs: context.nowMs(),
   });
 
   if (!result?.accepted) {

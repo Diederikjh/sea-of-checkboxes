@@ -167,6 +167,9 @@ export class ConnectionShardDO {
       name: identity.name,
       socket: serverSocket,
       subscribed: new Set(),
+      churnTimestamps: [],
+      setCellBurstTimestamps: [],
+      setCellSustainedTimestamps: [],
       lastCursorX: null,
       lastCursorY: null,
       cursorSubscriptions: new Set(),
@@ -405,6 +408,7 @@ export class ConnectionShardDO {
       watchTile: (tileKey, action) => this.#watchTile(tileKey, action),
       setTileCell: (payload) => this.#setTileCell(payload),
       sendSnapshotToClient: (client, tileKey) => this.#sendSnapshotToClient(client, tileKey),
+      nowMs: () => Date.now(),
     };
   }
 

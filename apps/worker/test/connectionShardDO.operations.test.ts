@@ -1,3 +1,9 @@
+import {
+  MAX_TILE_CHURN_PER_MIN,
+  SETCELL_BURST_PER_SEC,
+  SETCELL_SUSTAINED_PER_SEC,
+  SETCELL_SUSTAINED_WINDOW_MS,
+} from "@sea/domain";
 import type { ServerMessage } from "@sea/protocol";
 import { describe, expect, it } from "vitest";
 
@@ -31,6 +37,7 @@ function createContext() {
   const tileToClients = new Map<string, Set<string>>();
   const watched: Array<{ tile: string; action: "sub" | "unsub" }> = [];
   let watchResult: { ok: boolean; code?: string; msg?: string } = { ok: true };
+  let currentNowMs = 1_000;
   const snapshots: Array<{ uid: string; tile: string }> = [];
   const sent: Array<{ uid: string; message: ServerMessage }> = [];
   const errors: Array<{ uid: string; code: string; msg: string }> = [];
@@ -65,6 +72,9 @@ function createContext() {
     async sendSnapshotToClient(client, tileKey) {
       snapshots.push({ uid: client.uid, tile: tileKey });
     },
+    nowMs() {
+      return currentNowMs;
+    },
   };
 
   return {
@@ -82,6 +92,9 @@ function createContext() {
     },
     setWatchResult(value: { ok: boolean; code?: string; msg?: string }) {
       watchResult = value;
+    },
+    setNowMs(value: number) {
+      currentNowMs = value;
     },
   };
 }
@@ -115,6 +128,24 @@ describe("connection shard DO operations", () => {
     expect(harness.errors[0]?.code).toBe("sub_limit");
     expect(harness.watched.length).toBe(0);
     expect(harness.snapshots.length).toBe(0);
+  });
+
+  it("returns churn_limit when tile churn exceeds max per minute", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+    harness.clients.set(client.uid, client);
+
+    for (let index = 0; index < MAX_TILE_CHURN_PER_MIN; index += 1) {
+      client.churnTimestamps = client.churnTimestamps ?? [];
+      client.churnTimestamps.push(1_000);
+    }
+
+    harness.setNowMs(1_000);
+    await handleSubMessage(harness.context, client, ["999:0"]);
+
+    expect(harness.errors.length).toBe(1);
+    expect(harness.errors[0]?.code).toBe("churn_limit");
+    expect(client.subscribed.has("999:0")).toBe(false);
   });
 
   it("rejects setCell when tile is not subscribed and sends snapshot", async () => {
@@ -162,6 +193,55 @@ describe("connection shard DO operations", () => {
     });
     expect(harness.errors.length).toBe(1);
     expect(harness.errors[0]?.code).toBe("setcell_rejected");
+  });
+
+  it("returns setcell_limit when burst limit is exceeded", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+    client.subscribed.add("0:0");
+
+    for (let index = 0; index < SETCELL_BURST_PER_SEC; index += 1) {
+      client.setCellBurstTimestamps = client.setCellBurstTimestamps ?? [];
+      client.setCellBurstTimestamps.push(1_000);
+    }
+
+    harness.setNowMs(1_000);
+    await handleSetCellMessage(harness.context, client, {
+      t: "setCell",
+      tile: "0:0",
+      i: 9,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(harness.errors.length).toBe(1);
+    expect(harness.errors[0]?.code).toBe("setcell_limit");
+    expect(harness.setCellRequests.length).toBe(0);
+  });
+
+  it("returns setcell_limit when sustained limit is exceeded", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+    client.subscribed.add("0:0");
+
+    const sustainedLimit = Math.floor((SETCELL_SUSTAINED_PER_SEC * SETCELL_SUSTAINED_WINDOW_MS) / 1_000);
+    for (let index = 0; index < sustainedLimit; index += 1) {
+      client.setCellSustainedTimestamps = client.setCellSustainedTimestamps ?? [];
+      client.setCellSustainedTimestamps.push(1_000);
+    }
+
+    harness.setNowMs(1_000);
+    await handleSetCellMessage(harness.context, client, {
+      t: "setCell",
+      tile: "0:0",
+      i: 9,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(harness.errors.length).toBe(1);
+    expect(harness.errors[0]?.code).toBe("setcell_limit");
+    expect(harness.setCellRequests.length).toBe(0);
   });
 
   it("denies subscribe when tile owner rejects watch registration", async () => {
