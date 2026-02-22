@@ -28,6 +28,10 @@ import {
 
 const TILE_READONLY_WATCHER_THRESHOLD = 8;
 const TILE_DENY_WATCHER_THRESHOLD = 12;
+const TILE_SNAPSHOT_MAX_AGE_MS = 5_000;
+const TILE_SNAPSHOT_MAX_OPS = 500;
+const TILE_WAL_FLUSH_MS = 50;
+const TILE_WAL_MAX_BATCH_OPS = 128;
 
 export class TileOwnerDO {
   #env: Env;
@@ -37,6 +41,15 @@ export class TileOwnerDO {
   #subscriberShards: Set<string>;
   #loaded: boolean;
   #persistence: TileOwnerPersistence;
+  #pendingBatchOps: Array<[number, 0 | 1]>;
+  #pendingBatchFromVer: number | null;
+  #pendingBatchToVer: number | null;
+  #walFlushTimer: ReturnType<typeof setTimeout> | null;
+  #opsSinceSnapshot: number;
+  #lastSnapshotAtMs: number;
+  #snapshotFlushTimer: ReturnType<typeof setTimeout> | null;
+  #snapshotPersistInFlight: boolean;
+  #snapshotDirty: boolean;
 
   constructor(
     state: DurableObjectStateLike,
@@ -51,6 +64,15 @@ export class TileOwnerDO {
     this.#tileKey = null;
     this.#subscriberShards = new Set();
     this.#loaded = false;
+    this.#pendingBatchOps = [];
+    this.#pendingBatchFromVer = null;
+    this.#pendingBatchToVer = null;
+    this.#walFlushTimer = null;
+    this.#opsSinceSnapshot = 0;
+    this.#lastSnapshotAtMs = 0;
+    this.#snapshotFlushTimer = null;
+    this.#snapshotPersistInFlight = false;
+    this.#snapshotDirty = false;
     this.#persistence =
       options.persistence ??
       (env.TILE_SNAPSHOTS
@@ -158,41 +180,8 @@ export class TileOwnerDO {
       });
 
       if (result.changed) {
-        await this.#persistSnapshot();
-
-        const batch: Extract<ServerMessage, { t: "cellUpBatch" }> = {
-          t: "cellUpBatch",
-          tile: payload.tile,
-          fromVer: result.ver,
-          toVer: result.ver,
-          ops: [[payload.i, payload.v]],
-        };
-        const subscribers = Array.from(this.#subscriberShards);
-        const fanoutStartMs = Date.now();
-
-        // Do not await fanout here to avoid circular waits:
-        // shard -> tile owner -> shard (same shard may be in subscribers).
-        void Promise.allSettled(
-          subscribers.map(async (shardId) => {
-            const stub = this.#env.CONNECTION_SHARD.getByName(shardId);
-            await stub.fetch("https://connection-shard.internal/tile-batch", {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-              },
-              body: JSON.stringify(batch),
-            });
-          })
-        ).then((results) => {
-          const failedCount = results.filter((entry) => entry.status === "rejected").length;
-          this.#logEvent("broadcast", {
-            tile: payload.tile,
-            batch_size: batch.ops.length,
-            watcher_count: subscribers.length,
-            failed_count: failedCount,
-            duration_ms: elapsedMs(fanoutStartMs),
-          });
-        });
+        this.#enqueueWalOperation(payload.i, payload.v, result.ver);
+        await this.#recordSnapshotOperation();
       }
 
       const body: TileSetCellResponse = result.reason
@@ -251,10 +240,19 @@ export class TileOwnerDO {
       return;
     }
 
+    this.#clearWalFlushTimer();
+    this.#clearSnapshotFlushTimer();
     this.#tileKey = tileKey;
     this.#tileOwner = new TileOwner(tileKey);
     this.#subscriberShards.clear();
     this.#loaded = false;
+    this.#pendingBatchOps = [];
+    this.#pendingBatchFromVer = null;
+    this.#pendingBatchToVer = null;
+    this.#opsSinceSnapshot = 0;
+    this.#lastSnapshotAtMs = 0;
+    this.#snapshotPersistInFlight = false;
+    this.#snapshotDirty = false;
   }
 
   async #ensureLoaded(tileKey: string): Promise<void> {
@@ -287,6 +285,184 @@ export class TileOwnerDO {
 
   async #persistSubscribers(): Promise<void> {
     await this.#persistence.saveSubscribers(this.#activeTileKey(), Array.from(this.#subscriberShards));
+  }
+
+  #enqueueWalOperation(index: number, value: 0 | 1, ver: number): void {
+    if (this.#pendingBatchOps.length === 0) {
+      this.#pendingBatchFromVer = ver;
+    }
+
+    this.#pendingBatchToVer = ver;
+    this.#pendingBatchOps.push([index, value]);
+
+    if (this.#pendingBatchOps.length >= TILE_WAL_MAX_BATCH_OPS) {
+      this.#flushWalBatch();
+      return;
+    }
+
+    this.#scheduleWalFlush();
+  }
+
+  #scheduleWalFlush(): void {
+    if (this.#walFlushTimer) {
+      return;
+    }
+
+    this.#walFlushTimer = setTimeout(() => {
+      this.#walFlushTimer = null;
+      this.#flushWalBatch();
+    }, TILE_WAL_FLUSH_MS);
+    this.#maybeUnrefTimer(this.#walFlushTimer);
+  }
+
+  #clearWalFlushTimer(): void {
+    if (!this.#walFlushTimer) {
+      return;
+    }
+
+    clearTimeout(this.#walFlushTimer);
+    this.#walFlushTimer = null;
+  }
+
+  #flushWalBatch(): void {
+    if (
+      this.#pendingBatchOps.length === 0 ||
+      this.#pendingBatchFromVer === null ||
+      this.#pendingBatchToVer === null
+    ) {
+      return;
+    }
+
+    this.#clearWalFlushTimer();
+
+    const tile = this.#activeTileKey();
+    const batch: Extract<ServerMessage, { t: "cellUpBatch" }> = {
+      t: "cellUpBatch",
+      tile,
+      fromVer: this.#pendingBatchFromVer,
+      toVer: this.#pendingBatchToVer,
+      ops: this.#pendingBatchOps,
+    };
+
+    this.#pendingBatchOps = [];
+    this.#pendingBatchFromVer = null;
+    this.#pendingBatchToVer = null;
+
+    const subscribers = Array.from(this.#subscriberShards);
+    const fanoutStartMs = Date.now();
+    if (subscribers.length === 0) {
+      this.#logEvent("broadcast", {
+        tile,
+        batch_size: batch.ops.length,
+        watcher_count: 0,
+        failed_count: 0,
+        duration_ms: elapsedMs(fanoutStartMs),
+      });
+      return;
+    }
+
+    // Do not await fanout here to avoid circular waits:
+    // shard -> tile owner -> shard (same shard may be in subscribers).
+    void Promise.allSettled(
+      subscribers.map(async (shardId) => {
+        const stub = this.#env.CONNECTION_SHARD.getByName(shardId);
+        await stub.fetch("https://connection-shard.internal/tile-batch", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(batch),
+        });
+      })
+    ).then((results) => {
+      const failedCount = results.filter((entry) => entry.status === "rejected").length;
+      this.#logEvent("broadcast", {
+        tile,
+        batch_size: batch.ops.length,
+        watcher_count: subscribers.length,
+        failed_count: failedCount,
+        duration_ms: elapsedMs(fanoutStartMs),
+      });
+    });
+  }
+
+  async #recordSnapshotOperation(): Promise<void> {
+    this.#opsSinceSnapshot += 1;
+    const nowMs = Date.now();
+    const dueByOps = this.#opsSinceSnapshot >= TILE_SNAPSHOT_MAX_OPS;
+    const dueByTime = nowMs - this.#lastSnapshotAtMs >= TILE_SNAPSHOT_MAX_AGE_MS;
+
+    if (dueByOps || dueByTime) {
+      this.#clearSnapshotFlushTimer();
+      await this.#persistSnapshotManaged();
+      return;
+    }
+
+    this.#scheduleSnapshotFlush(nowMs);
+  }
+
+  #scheduleSnapshotFlush(nowMs: number): void {
+    if (this.#snapshotFlushTimer) {
+      return;
+    }
+
+    const elapsedSinceLastSnapshot = nowMs - this.#lastSnapshotAtMs;
+    const delayMs = Math.max(1, TILE_SNAPSHOT_MAX_AGE_MS - elapsedSinceLastSnapshot);
+    this.#snapshotFlushTimer = setTimeout(() => {
+      this.#snapshotFlushTimer = null;
+      void this.#persistSnapshotManaged().catch(() => {
+        // Persistence layer already logs failures.
+      });
+    }, delayMs);
+    this.#maybeUnrefTimer(this.#snapshotFlushTimer);
+  }
+
+  #clearSnapshotFlushTimer(): void {
+    if (!this.#snapshotFlushTimer) {
+      return;
+    }
+
+    clearTimeout(this.#snapshotFlushTimer);
+    this.#snapshotFlushTimer = null;
+  }
+
+  async #persistSnapshotManaged(): Promise<void> {
+    if (this.#snapshotPersistInFlight) {
+      this.#snapshotDirty = true;
+      return;
+    }
+
+    this.#snapshotPersistInFlight = true;
+    const opsAtPersistStart = this.#opsSinceSnapshot;
+    try {
+      await this.#persistSnapshot();
+      this.#lastSnapshotAtMs = Date.now();
+      this.#opsSinceSnapshot = Math.max(0, this.#opsSinceSnapshot - opsAtPersistStart);
+    } finally {
+      this.#snapshotPersistInFlight = false;
+    }
+
+    if (!this.#snapshotDirty && this.#opsSinceSnapshot === 0) {
+      return;
+    }
+
+    this.#snapshotDirty = false;
+    const nowMs = Date.now();
+    const dueByOps = this.#opsSinceSnapshot >= TILE_SNAPSHOT_MAX_OPS;
+    const dueByTime = nowMs - this.#lastSnapshotAtMs >= TILE_SNAPSHOT_MAX_AGE_MS;
+    if (dueByOps || dueByTime) {
+      await this.#persistSnapshotManaged();
+      return;
+    }
+
+    this.#scheduleSnapshotFlush(nowMs);
+  }
+
+  #maybeUnrefTimer(timer: ReturnType<typeof setTimeout>): void {
+    const unref = (timer as unknown as { unref?: () => void }).unref;
+    if (typeof unref === "function") {
+      unref.call(timer);
+    }
   }
 
   #activeTileKey(): string {
