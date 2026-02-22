@@ -178,7 +178,7 @@ export async function startApp() {
     identityProvider: readStoredIdentity,
   });
   const transport = {
-    connect(onServerMessage) {
+    connect(onServerMessage, lifecycleHandlers) {
       wireTransport.connect((payload) => {
         perfProbe.increment(PERF_COUNTER.WS_RX_COUNT);
         perfProbe.increment(PERF_COUNTER.WS_RX_BYTES, payload.length);
@@ -193,7 +193,7 @@ export async function startApp() {
           });
         }
         onServerMessage(message);
-      });
+      }, lifecycleHandlers);
     },
     send(message) {
       const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
@@ -272,7 +272,16 @@ export async function startApp() {
       onIdentityReceived: ({ uid, name, token }) => {
         writeStoredIdentity({ uid, name, token });
       },
-    })
+    }),
+    {
+      onOpen: ({ reconnected }) => {
+        if (!reconnected) {
+          return;
+        }
+        renderLoop.markTransportReconnected();
+        setStatus("Connection restored; resyncing visible tiles...");
+      },
+    }
   );
 
   const teardownInputHandlers = setupInputHandlers({

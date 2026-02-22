@@ -23,10 +23,13 @@ export class WebSocketTransport {
   #wsFactory;
   #socket;
   #onServerPayload;
+  #onOpen;
+  #onClose;
   #pendingSends;
   #disposed;
   #reconnectDelayMs;
   #reconnectTimer;
+  #hasOpened;
 
   constructor(url, options = {}) {
     this.#url = url;
@@ -34,15 +37,21 @@ export class WebSocketTransport {
     this.#wsFactory = options.wsFactory ?? ((wsUrl) => new WebSocket(wsUrl));
     this.#socket = null;
     this.#onServerPayload = () => {};
+    this.#onOpen = () => {};
+    this.#onClose = () => {};
     this.#pendingSends = [];
     this.#disposed = false;
     this.#reconnectDelayMs = MIN_RECONNECT_MS;
     this.#reconnectTimer = null;
+    this.#hasOpened = false;
   }
 
-  connect(onServerPayload) {
+  connect(onServerPayload, lifecycleHandlers = {}) {
     this.#disposed = false;
     this.#onServerPayload = onServerPayload;
+    this.#onOpen = lifecycleHandlers.onOpen ?? (() => {});
+    this.#onClose = lifecycleHandlers.onClose ?? (() => {});
+    this.#hasOpened = false;
     this.#openSocket();
   }
 
@@ -108,8 +117,11 @@ export class WebSocketTransport {
         return;
       }
 
+      const reconnected = this.#hasOpened;
+      this.#hasOpened = true;
       this.#reconnectDelayMs = MIN_RECONNECT_MS;
       logger.other("ws open", { url: wsUrl });
+      this.#onOpen({ url: wsUrl, reconnected });
       this.#flushPending();
     };
     socket.onclose = () => {
@@ -120,6 +132,11 @@ export class WebSocketTransport {
       logger.other("ws close", {
         url: wsUrl,
         pending: this.#pendingSends.length,
+        disposed: this.#disposed,
+      });
+
+      this.#onClose({
+        url: wsUrl,
         disposed: this.#disposed,
       });
 

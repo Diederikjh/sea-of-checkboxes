@@ -249,6 +249,12 @@ export function createRenderLoop({
     markViewportDirty: markNeedsFullRefresh,
     markVisualDirty,
     markTileCellsDirty,
+    markTransportReconnected() {
+      // Rebuild shard-side subscriptions after WS reconnect or worker upgrade.
+      subscribedTiles = new Set();
+      needsSubscriptionRefresh = true;
+      needsRender = true;
+    },
     handleResize: markNeedsFullRefresh,
     dispose() {
       app.ticker.remove(onTick);

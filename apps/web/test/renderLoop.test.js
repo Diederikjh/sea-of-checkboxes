@@ -190,4 +190,39 @@ describe("render loop cursor dirty patching", () => {
     expect(dirtyIndices).toBeInstanceOf(Set);
     expect(dirtyIndices.has(cellIndex)).toBe(true);
   });
+
+  it("rebuilds subscriptions from an empty baseline after transport reconnect", () => {
+    const { app, tick } = createAppHarness();
+    const camera = { x: 0, y: 0, cellPixelSize: 16 };
+    const observedSubscribedSizes = [];
+
+    mocks.reconcileSubscriptions.mockImplementation(({ subscribedTiles }) => {
+      observedSubscribedSizes.push(subscribedTiles.size);
+      return {
+        visibleTiles: [{ tileKey: "0:0", tx: 0, ty: 0 }],
+        subscribedTiles: new Set(["0:0"]),
+      };
+    });
+
+    const loop = createRenderLoop({
+      app,
+      graphics: {},
+      camera,
+      tileStore: {},
+      heatStore: {
+        decay: () => false,
+      },
+      cursors: new Map(),
+      cursorLabels: { update: vi.fn() },
+      transport: {},
+      setStatus: () => {},
+    });
+
+    expect(observedSubscribedSizes).toEqual([0]);
+
+    loop.markTransportReconnected();
+    tick();
+
+    expect(observedSubscribedSizes).toEqual([0, 0]);
+  });
 });

@@ -171,4 +171,48 @@ describe("websocket transport", () => {
       vi.useRealTimers();
     }
   });
+
+  it("notifies lifecycle handlers when reconnecting", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [];
+      const onOpen = vi.fn();
+      const onClose = vi.fn();
+      const transport = createWebSocketTransport("ws://example/ws", {
+        wsFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.connect(() => {}, { onOpen, onClose });
+      expect(sockets).toHaveLength(1);
+
+      sockets[0].readyState = 1;
+      sockets[0].onopen?.();
+      expect(onOpen).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ reconnected: false, url: "ws://example/ws" })
+      );
+
+      sockets[0].readyState = 3;
+      sockets[0].onclose?.();
+      expect(onClose).toHaveBeenCalledWith(
+        expect.objectContaining({ disposed: false, url: "ws://example/ws" })
+      );
+
+      vi.advanceTimersByTime(250);
+      expect(sockets).toHaveLength(2);
+
+      sockets[1].readyState = 1;
+      sockets[1].onopen?.();
+      expect(onOpen).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ reconnected: true, url: "ws://example/ws" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
