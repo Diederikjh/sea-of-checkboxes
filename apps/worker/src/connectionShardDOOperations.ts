@@ -33,6 +33,7 @@ export interface ConnectedClient {
 export interface ConnectionShardDOOperationsContext {
   clients: Map<string, ConnectedClient>;
   tileToClients: Map<string, Set<string>>;
+  shardName(): string;
   sendServerMessage(client: ConnectedClient, message: ServerMessage): void;
   sendError(client: ConnectedClient, code: string, msg: string): void;
   sendBadTile(client: ConnectedClient, tileKey: string): void;
@@ -63,6 +64,8 @@ type UnsubscriptionMessageResult = {
 type SetCellMessageResult = {
   accepted: boolean;
   changed: boolean;
+  ver?: number;
+  watcherCount?: number;
   reason?: string;
 };
 
@@ -289,6 +292,7 @@ export async function handleSetCellMessage(
     i: message.i,
     v: message.v,
     op: message.op,
+    shard: context.shardName(),
     uid: client.uid,
     name: client.name,
     atMs: context.nowMs(),
@@ -312,6 +316,8 @@ export async function handleSetCellMessage(
   return {
     accepted: true,
     changed: result.changed,
+    ver: result.ver,
+    ...(typeof result.watcherCount === "number" ? { watcherCount: result.watcherCount } : {}),
   };
 }
 

@@ -253,7 +253,7 @@ describe("TileOwnerDO propagation across restart", () => {
     );
 
     const second = harness.createInstance();
-    await second.fetch(
+    const setCellResponse = await second.fetch(
       postJson("/setCell", {
         tile: "0:0",
         i: 3,
@@ -261,11 +261,17 @@ describe("TileOwnerDO propagation across restart", () => {
         op: "op_1",
       })
     );
+    expect(setCellResponse.ok).toBe(true);
+    await expect(setCellResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      watcherCount: 1,
+    });
 
     const shardA = harness.shardNamespace.getByName("shard-a");
     const shardB = harness.shardNamespace.getByName("shard-b");
     await waitFor(() => {
-      expect(shardA.requests.length).toBe(1);
+      expect(shardA.requests.length).toBe(0);
       expect(shardB.requests.length).toBe(0);
     });
   });

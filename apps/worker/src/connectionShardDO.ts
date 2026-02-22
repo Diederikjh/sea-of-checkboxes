@@ -284,8 +284,27 @@ export class ConnectionShardDO {
             accepted: setCellResult.accepted,
             changed: setCellResult.changed,
             ...(setCellResult.reason ? { reason: setCellResult.reason } : {}),
+            ...(typeof setCellResult.ver === "number" ? { ver: setCellResult.ver } : {}),
+            ...(typeof setCellResult.watcherCount === "number"
+              ? { watcher_count: setCellResult.watcherCount }
+              : {}),
             duration_ms: elapsedMs(startMs),
           });
+          if (
+            setCellResult.accepted &&
+            setCellResult.changed &&
+            setCellResult.watcherCount === 1 &&
+            typeof setCellResult.ver === "number"
+          ) {
+            // For single-watcher tiles, avoid a DO->DO broadcast roundtrip and fan out locally.
+            this.#receiveTileBatch({
+              t: "cellUpBatch",
+              tile: message.tile,
+              fromVer: setCellResult.ver,
+              toVer: setCellResult.ver,
+              ops: [[message.i, message.v]],
+            });
+          }
           this.#cursorCoordinator.onActivity();
           return;
         }
@@ -396,6 +415,7 @@ export class ConnectionShardDO {
     return {
       clients: this.#clients,
       tileToClients: this.#tileToClients,
+      shardName: () => this.#currentShardName(),
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
       },

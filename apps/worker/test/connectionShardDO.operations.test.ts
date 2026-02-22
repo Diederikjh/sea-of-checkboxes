@@ -52,6 +52,9 @@ function createContext() {
   const context: ConnectionShardDOOperationsContext = {
     clients,
     tileToClients,
+    shardName() {
+      return "shard-test";
+    },
     sendServerMessage(client, message) {
       sent.push({ uid: client.uid, message });
     },

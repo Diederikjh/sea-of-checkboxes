@@ -56,6 +56,7 @@ export interface TileSetCellRequest {
   i: number;
   v: 0 | 1;
   op: string;
+  shard?: string;
   uid?: string;
   name?: string;
   atMs?: number;
@@ -66,6 +67,7 @@ export interface TileSetCellResponse {
   changed: boolean;
   ver: number;
   reason?: string;
+  watcherCount?: number;
 }
 
 export interface CellLastEditInfo {

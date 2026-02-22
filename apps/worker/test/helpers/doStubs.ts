@@ -104,6 +104,7 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
   readonly watchRequests: TileWatchRequest[];
   readonly setCellRequests: TileSetCellRequest[];
   #versions: Map<string, number>;
+  #watchersByTile: Map<string, Set<string>>;
   #encodedEmptyBits: string;
 
   constructor(name: string) {
@@ -111,6 +112,7 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
     this.watchRequests = [];
     this.setCellRequests = [];
     this.#versions = new Map();
+    this.#watchersByTile = new Map();
     this.#encodedEmptyBits = encodeRle64(createEmptyTileState().bits);
   }
 
@@ -120,7 +122,18 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
     const body = await request.text();
 
     if (url.pathname === "/watch" && request.method === "POST") {
-      this.watchRequests.push(JSON.parse(body) as TileWatchRequest);
+      const payload = JSON.parse(body) as TileWatchRequest;
+      this.watchRequests.push(payload);
+      let watchers = this.#watchersByTile.get(payload.tile);
+      if (!watchers) {
+        watchers = new Set();
+        this.#watchersByTile.set(payload.tile, watchers);
+      }
+      if (payload.action === "sub") {
+        watchers.add(payload.shard);
+      } else {
+        watchers.delete(payload.shard);
+      }
       return new Response(null, { status: 204 });
     }
 
@@ -152,12 +165,14 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
       const current = this.#versions.get(payload.tile) ?? 0;
       const next = current + 1;
       this.#versions.set(payload.tile, next);
+      const watcherCount = this.#watchersByTile.get(payload.tile)?.size ?? 0;
 
       return new Response(
         JSON.stringify({
           accepted: true,
           changed: true,
           ver: next,
+          watcherCount,
         }),
         {
           status: 200,

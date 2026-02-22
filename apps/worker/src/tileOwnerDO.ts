@@ -173,6 +173,7 @@ export class TileOwnerDO {
           changed: false,
           ver: this.#tileOwner.getVersion(),
           reason: "tile_readonly_hot",
+          watcherCount: this.#subscriberShards.size,
         } satisfies TileSetCellResponse);
       }
 
@@ -186,7 +187,9 @@ export class TileOwnerDO {
       });
 
       if (result.changed) {
-        this.#enqueueWalOperation(payload.i, payload.v, result.ver);
+        if (this.#subscriberShards.size > 1) {
+          this.#enqueueWalOperation(payload.i, payload.v, result.ver);
+        }
         await this.#recordSnapshotOperation();
       }
 
@@ -196,11 +199,13 @@ export class TileOwnerDO {
             changed: result.changed,
             ver: result.ver,
             reason: result.reason,
+            watcherCount: this.#subscriberShards.size,
           }
         : {
             accepted: result.accepted,
             changed: result.changed,
             ver: result.ver,
+            watcherCount: this.#subscriberShards.size,
           };
 
       this.#logEvent("setCell", {
