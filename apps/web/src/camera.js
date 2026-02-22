@@ -7,9 +7,10 @@ import {
 const MAX_CELL_PX = 64;
 
 export function createCamera(initial = {}) {
+  const clamped = clampCameraCenter(initial.x ?? 0, initial.y ?? 0);
   return {
-    x: initial.x ?? 0,
-    y: initial.y ?? 0,
+    x: clamped.x,
+    y: clamped.y,
     cellPixelSize: initial.cellPixelSize ?? 12,
   };
 }

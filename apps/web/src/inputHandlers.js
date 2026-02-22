@@ -3,7 +3,7 @@ import {
   tileKeyFromWorld,
 } from "@sea/domain";
 
-import { canEditAtZoom, zoomCamera } from "./camera";
+import { canEditAtZoom, panCamera, zoomCamera } from "./camera";
 import { toWorldCell } from "./coords";
 import { updateZoomReadout } from "./dom";
 import { logger } from "./logger";
@@ -192,8 +192,11 @@ export function setupInputHandlers({
         pendingSetCell = null;
       }
 
-      camera.x -= event.movementX / camera.cellPixelSize;
-      camera.y -= event.movementY / camera.cellPixelSize;
+      panCamera(
+        camera,
+        -event.movementX / camera.cellPixelSize,
+        -event.movementY / camera.cellPixelSize
+      );
       onViewportChanged();
     }
 
