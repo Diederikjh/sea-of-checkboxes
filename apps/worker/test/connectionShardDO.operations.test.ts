@@ -185,7 +185,7 @@ describe("connection shard DO operations", () => {
       op: "op_1",
     });
 
-    expect(harness.watched).toEqual([{ tile: "0:0", action: "sub" }]);
+    expect(harness.watched).toEqual([]);
     expect(harness.setCellRequests.length).toBe(1);
     expect(harness.setCellRequests[0]).toMatchObject({
       uid: "u_a",
@@ -262,11 +262,10 @@ describe("connection shard DO operations", () => {
     expect(harness.snapshots.length).toBe(0);
   });
 
-  it("returns watch rejection before setCell when watch reassert fails", async () => {
+  it("does not reassert watch on setCell for already-subscribed tiles", async () => {
     const harness = createContext();
     const client = createClient("u_a", "Alice");
     client.subscribed.add("0:0");
-    harness.setWatchResult({ ok: false, code: "tile_sub_denied", msg: "Tile unavailable" });
 
     await handleSetCellMessage(harness.context, client, {
       t: "setCell",
@@ -276,8 +275,9 @@ describe("connection shard DO operations", () => {
       op: "op_1",
     });
 
-    expect(harness.setCellRequests.length).toBe(0);
-    expect(harness.errors[0]?.code).toBe("tile_sub_denied");
+    expect(harness.watched.length).toBe(0);
+    expect(harness.setCellRequests.length).toBe(1);
+    expect(harness.errors.length).toBe(0);
   });
 
   it("disconnect removes subscriptions and unsubscribes last tile watcher", async () => {

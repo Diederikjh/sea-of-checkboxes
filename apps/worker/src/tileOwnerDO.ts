@@ -91,6 +91,7 @@ export class TileOwnerDO {
       }
 
       await this.#ensureLoaded(payload.tile);
+      let subscribersChanged = false;
       if (payload.action === "sub") {
         const alreadySubscribed = this.#subscriberShards.has(payload.shard);
         if (!alreadySubscribed && this.#subscriberShards.size >= TILE_DENY_WATCHER_THRESHOLD) {
@@ -110,11 +111,16 @@ export class TileOwnerDO {
             { status: 429 }
           );
         }
-        this.#subscriberShards.add(payload.shard);
+        if (!alreadySubscribed) {
+          this.#subscriberShards.add(payload.shard);
+          subscribersChanged = true;
+        }
       } else {
-        this.#subscriberShards.delete(payload.shard);
+        subscribersChanged = this.#subscriberShards.delete(payload.shard);
       }
-      await this.#persistSubscribers();
+      if (subscribersChanged) {
+        await this.#persistSubscribers();
+      }
       this.#logEvent(payload.action, {
         tile: payload.tile,
         accepted: true,

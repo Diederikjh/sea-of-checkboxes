@@ -284,14 +284,6 @@ export async function handleSetCellMessage(
     return { accepted: false, changed: false, reason: "not_subscribed" };
   }
 
-  // Re-assert watch before writes. This self-heals TileOwnerDO watcher sets
-  // if the tile DO was recycled and forgot in-memory shard subscriptions.
-  const watchResult = await context.watchTile(message.tile, "sub");
-  if (!watchResult.ok) {
-    context.sendError(client, watchResult.code ?? "watch_rejected", watchResult.msg ?? "Tile unavailable");
-    return { accepted: false, changed: false, reason: watchResult.code ?? "watch_rejected" };
-  }
-
   const result = await context.setTileCell({
     tile: message.tile,
     i: message.i,
