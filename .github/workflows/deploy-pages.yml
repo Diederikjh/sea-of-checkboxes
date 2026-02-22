@@ -1,0 +1,69 @@
+name: Deploy Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - apps/web/**
+      - packages/domain/**
+      - packages/protocol/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/deploy-pages.yml
+
+concurrency:
+  group: deploy-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      VITE_USE_MOCK: ${{ vars.VITE_USE_MOCK }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate frontend deployment env
+        run: |
+          if [ -z "${VITE_WS_URL}" ]; then
+            echo "Missing repo variable: VITE_WS_URL"
+            exit 1
+          fi
+          if [ -z "${VITE_API_BASE_URL}" ]; then
+            echo "Missing repo variable: VITE_API_BASE_URL"
+            exit 1
+          fi
+
+      - name: Build web app
+        run: VITE_USE_MOCK="${VITE_USE_MOCK:-0}" pnpm --filter sea-of-checkboxes build
+
+      - name: Deploy Pages
+        run: |
+          PROJECT_NAME="${CLOUDFLARE_PAGES_PROJECT:-sea-of-checkboxes-web}"
+          pnpm dlx wrangler pages deploy apps/web/dist --project-name "${PROJECT_NAME}" --branch "${GITHUB_REF_NAME}"

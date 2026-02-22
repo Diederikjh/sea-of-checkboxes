@@ -122,13 +122,51 @@ Required GitHub repository secrets:
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 
-Create `CLOUDFLARE_API_TOKEN` with Cloudflare's "Edit Cloudflare Workers" template for your account.
-If deployment fails with auth errors and R2 bindings are present, expand the token scopes to include R2 access for the target buckets.
+Create `CLOUDFLARE_API_TOKEN` as a User API token scoped to this account with permissions for:
+- Workers Scripts (Edit)
+- Workers R2 Storage (Edit)
+- Cloudflare Pages (Edit) (needed for Pages deploy workflow)
+- Account Settings (Read)
+- User Memberships (Read)
+- User Details (Read)
 
 The workflow deploy step runs:
 
 ```bash
 pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc
+```
+
+## 11. GitHub Actions Pages Deploy
+
+Repository workflow: `.github/workflows/deploy-pages.yml`
+
+Trigger behavior:
+- Manual run: `workflow_dispatch`
+- Auto-run on `main` push when frontend/runtime files change
+
+Required GitHub repository secrets:
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+Required GitHub repository variables:
+- `VITE_WS_URL` (example: `wss://sea-of-checkboxes-worker.<account-subdomain>.workers.dev/ws`)
+- `VITE_API_BASE_URL` (example: `https://sea-of-checkboxes-worker.<account-subdomain>.workers.dev`)
+
+Optional GitHub repository variables:
+- `CLOUDFLARE_PAGES_PROJECT` (defaults to `sea-of-checkboxes-web`)
+- `VITE_USE_MOCK` (defaults to `0`)
+
+The workflow runs:
+
+```bash
+VITE_USE_MOCK="${VITE_USE_MOCK:-0}" pnpm --filter sea-of-checkboxes build
+pnpm dlx wrangler pages deploy apps/web/dist --project-name "${CLOUDFLARE_PAGES_PROJECT:-sea-of-checkboxes-web}" --branch "${GITHUB_REF_NAME}"
+```
+
+Before first workflow run, create the Pages project once (dashboard or CLI):
+
+```bash
+pnpm dlx wrangler pages project create sea-of-checkboxes-web
 ```
 
 ## Notes
