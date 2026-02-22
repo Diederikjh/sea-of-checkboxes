@@ -310,7 +310,10 @@ export async function handleSetCellMessage(
   if (!result.changed) {
     // Client may be stale and repeatedly submit no-op writes.
     // Send a fresh snapshot so local cache can converge.
-    await context.sendSnapshotToClient(client, message.tile);
+    // Duplicate op-id replays are safe no-ops and do not need another snapshot.
+    if (result.reason !== "duplicate_op") {
+      await context.sendSnapshotToClient(client, message.tile);
+    }
   }
 
   return {

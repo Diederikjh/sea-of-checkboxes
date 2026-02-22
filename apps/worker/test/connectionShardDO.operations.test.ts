@@ -306,6 +306,30 @@ describe("connection shard DO operations", () => {
     expect(harness.errors.length).toBe(0);
   });
 
+  it("does not request snapshot for duplicate op-id no-op setCell responses", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+    client.subscribed.add("0:0");
+    harness.setSetCellResult({
+      accepted: true,
+      changed: false,
+      ver: 4,
+      reason: "duplicate_op",
+    });
+
+    await handleSetCellMessage(harness.context, client, {
+      t: "setCell",
+      tile: "0:0",
+      i: 9,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(harness.snapshots).toEqual([]);
+    expect(harness.errors).toEqual([]);
+    expect(harness.setCellRequests.length).toBe(1);
+  });
+
   it("disconnect removes subscriptions and unsubscribes last tile watcher", async () => {
     const harness = createContext();
     const clientA = createClient("u_a", "Alice");

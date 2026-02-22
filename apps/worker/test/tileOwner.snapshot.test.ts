@@ -24,5 +24,29 @@ describe("TileOwner snapshot loading", () => {
     expect(() => owner.loadSnapshot(new Uint8Array(TILE_CELL_COUNT - 1), 1)).toThrow();
     expect(() => owner.loadSnapshot(new Uint8Array(TILE_CELL_COUNT), -1)).toThrow();
   });
-});
 
+  it("dedupes duplicate op ids as no-op writes", () => {
+    const owner = new TileOwner("0:0");
+
+    const first = owner.applySetCell({
+      i: 5,
+      v: 1,
+      op: "op_dup",
+    });
+    const duplicate = owner.applySetCell({
+      i: 5,
+      v: 0,
+      op: "op_dup",
+    });
+    const snapshot = owner.getSnapshotMessage();
+
+    expect(first).toMatchObject({ accepted: true, changed: true, ver: 1 });
+    expect(duplicate).toMatchObject({
+      accepted: true,
+      changed: false,
+      ver: 1,
+      reason: "duplicate_op",
+    });
+    expect(snapshot.ver).toBe(1);
+  });
+});

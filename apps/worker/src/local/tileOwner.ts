@@ -20,6 +20,8 @@ export interface SetCellResult {
   reason?: string;
 }
 
+const RECENT_OP_ID_LIMIT = 4_096;
+
 export class TileOwner {
   readonly tileKey: string;
   readonly recentEdits: Array<{ index: number; atMs: number }>;
@@ -28,6 +30,7 @@ export class TileOwner {
   #ver: number;
   #watchers: Map<string, TileWatcher>;
   #cellLastEdits: Array<CellLastEditInfo | null>;
+  #recentOpIds: Map<string, true>;
 
   constructor(tileKey: string) {
     this.tileKey = tileKey;
@@ -35,6 +38,7 @@ export class TileOwner {
     this.#ver = 0;
     this.#watchers = new Map();
     this.#cellLastEdits = new Array<CellLastEditInfo | null>(this.#bits.length).fill(null);
+    this.#recentOpIds = new Map();
     this.recentEdits = [];
   }
 
@@ -72,6 +76,7 @@ export class TileOwner {
     this.#bits = bits.slice();
     this.#ver = ver;
     this.#cellLastEdits = new Array<CellLastEditInfo | null>(this.#bits.length).fill(null);
+    this.#recentOpIds.clear();
 
     for (const edit of edits) {
       if (!isCellIndexValid(edit.i)) {
@@ -133,6 +138,16 @@ export class TileOwner {
       };
     }
 
+    if (this.#recentOpIds.has(intent.op)) {
+      return {
+        accepted: true,
+        changed: false,
+        ver: this.#ver,
+        reason: "duplicate_op",
+      };
+    }
+    this.#recordRecentOpId(intent.op);
+
     const current = this.#bits[intent.i] as 0 | 1;
     if (current === intent.v) {
       return {
@@ -173,5 +188,22 @@ export class TileOwner {
       changed: true,
       ver: this.#ver,
     };
+  }
+
+  #recordRecentOpId(opId: string): void {
+    if (this.#recentOpIds.has(opId)) {
+      this.#recentOpIds.delete(opId);
+    }
+    this.#recentOpIds.set(opId, true);
+
+    if (this.#recentOpIds.size <= RECENT_OP_ID_LIMIT) {
+      return;
+    }
+
+    const oldest = this.#recentOpIds.keys().next().value as string | undefined;
+    if (!oldest) {
+      return;
+    }
+    this.#recentOpIds.delete(oldest);
   }
 }

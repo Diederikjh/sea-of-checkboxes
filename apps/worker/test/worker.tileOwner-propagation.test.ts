@@ -374,6 +374,64 @@ describe("TileOwnerDO propagation across restart", () => {
     expect(race).toBe("resolved");
   });
 
+  it("dedupes duplicate op ids and avoids duplicate shard fanout", async () => {
+    const harness = createTileOwnerHarness();
+    const owner = harness.createInstance();
+
+    await owner.fetch(
+      postJson("/watch", {
+        tile: "0:0",
+        shard: "shard-a",
+        action: "sub",
+      })
+    );
+    await owner.fetch(
+      postJson("/watch", {
+        tile: "0:0",
+        shard: "shard-b",
+        action: "sub",
+      })
+    );
+
+    const firstResponse = await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 12,
+        v: 1,
+        op: "op_dup",
+      })
+    );
+    expect(firstResponse.ok).toBe(true);
+    await expect(firstResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      ver: 1,
+    });
+
+    const duplicateResponse = await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 12,
+        v: 0,
+        op: "op_dup",
+      })
+    );
+    expect(duplicateResponse.ok).toBe(true);
+    await expect(duplicateResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: false,
+      ver: 1,
+      reason: "duplicate_op",
+    });
+
+    const shardA = harness.shardNamespace.getByName("shard-a");
+    const shardB = harness.shardNamespace.getByName("shard-b");
+    await waitFor(() => {
+      expect(shardA.requests.length).toBe(1);
+      expect(shardB.requests.length).toBe(1);
+    });
+  });
+
   it("supports injectable persistence adapters for testability", async () => {
     const snapshots = new Map<string, { bits: string; ver: number }>();
     const subscribersByTile = new Map<string, string[]>();
