@@ -4,13 +4,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createServerMessageHandler } from "../src/serverMessages";
 
-function createHarness() {
+function createHarness({
+  getPendingSetCellOpsForTile = () => [],
+} = {}) {
   const identityEl = { textContent: "" };
   const statuses = [];
   const restrictions = [];
 
   const tileStore = {
     setSnapshot: vi.fn(),
+    applyOptimistic: vi.fn(),
     applySingle: vi.fn(),
     applyBatch: vi.fn(),
   };
@@ -40,6 +43,7 @@ function createHarness() {
     selfIdentity,
     onVisualStateChanged,
     onIdentityReceived,
+    getPendingSetCellOpsForTile,
   });
 
   return {
@@ -93,6 +97,31 @@ describe("server message handling", () => {
     expect(decodedBits[7]).toBe(1);
     expect(decodedBits.length).toBe(TILE_CELL_COUNT);
     expect(harness.heatStore.ensureTile).toHaveBeenCalledWith("0:0");
+  });
+
+  it("reapplies pending setCell outbox ops after tile snapshot", () => {
+    const harness = createHarness({
+      getPendingSetCellOpsForTile: (tileKey) =>
+        tileKey === "0:0"
+          ? [
+              { i: 7, v: 1 },
+              { i: 8, v: 0 },
+            ]
+          : [],
+    });
+    const bits = new Uint8Array(TILE_CELL_COUNT);
+
+    harness.handler({
+      t: "tileSnap",
+      tile: "0:0",
+      ver: 4,
+      enc: "rle64",
+      bits: encodeRle64(bits),
+    });
+
+    expect(harness.tileStore.setSnapshot).toHaveBeenCalledTimes(1);
+    expect(harness.tileStore.applyOptimistic).toHaveBeenNthCalledWith(1, "0:0", 7, 1);
+    expect(harness.tileStore.applyOptimistic).toHaveBeenNthCalledWith(2, "0:0", 8, 0);
   });
 
   it("resyncs on cellUp/cellUpBatch version gap", () => {

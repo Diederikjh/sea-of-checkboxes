@@ -41,6 +41,24 @@ function upsertRemoteCursor(cursors, message, seenAt) {
   });
 }
 
+function reapplyPendingSetCellOps({
+  tile,
+  tileStore,
+  getPendingSetCellOpsForTile,
+}) {
+  const pendingOps = getPendingSetCellOpsForTile(tile);
+  if (!Array.isArray(pendingOps) || pendingOps.length === 0) {
+    return;
+  }
+
+  for (const pending of pendingOps) {
+    if (!pending || typeof pending.i !== "number" || (pending.v !== 0 && pending.v !== 1)) {
+      continue;
+    }
+    tileStore.applyOptimistic(tile, pending.i, pending.v);
+  }
+}
+
 export function createServerMessageHandler({
   identityEl,
   setStatus,
@@ -53,6 +71,7 @@ export function createServerMessageHandler({
   onTileCellsChanged = () => {},
   setInteractionRestriction = () => {},
   onIdentityReceived = () => {},
+  getPendingSetCellOpsForTile = () => [],
 }) {
   return (message) => {
     switch (message.t) {
@@ -66,6 +85,11 @@ export function createServerMessageHandler({
       case "tileSnap": {
         const bits = decodeRle64(message.bits);
         tileStore.setSnapshot(message.tile, bits, message.ver);
+        reapplyPendingSetCellOps({
+          tile: message.tile,
+          tileStore,
+          getPendingSetCellOpsForTile,
+        });
         heatStore.ensureTile(message.tile);
         onTileCellsChanged(message.tile, null);
         break;

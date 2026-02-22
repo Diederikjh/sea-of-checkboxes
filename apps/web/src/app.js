@@ -304,6 +304,21 @@ export async function startApp() {
     }
   };
 
+  const getPendingSetCellOpsForTile = (tileKey) => {
+    pruneSetCellOutbox(Date.now());
+    const pending = [];
+    for (const entry of setCellOutbox.values()) {
+      if (entry.message.tile !== tileKey) {
+        continue;
+      }
+      pending.push({
+        i: entry.message.i,
+        v: entry.message.v,
+      });
+    }
+    return pending;
+  };
+
   const sendToWireTransport = (message) => {
     const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
       encodeClientMessageBinary(message)
@@ -476,6 +491,7 @@ export async function startApp() {
       onIdentityReceived: ({ uid, name, token }) => {
         writeStoredIdentity({ uid, name, token });
       },
+      getPendingSetCellOpsForTile,
     }),
     {
       onOpen: ({ reconnected }) => {
