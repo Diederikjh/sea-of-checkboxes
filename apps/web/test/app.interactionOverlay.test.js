@@ -182,6 +182,8 @@ describe("app interaction overlays", () => {
     mocks.outboundMessages.length = 0;
     mocks.inputHandlerArgs = null;
     mocks.markTransportReconnected.mockReset();
+    mocks.windowAddEventListener.mockClear();
+    mocks.windowRemoveEventListener.mockClear();
 
     globalThis.window = {
       setTimeout: globalThis.setTimeout.bind(globalThis),
@@ -301,6 +303,27 @@ describe("app interaction overlays", () => {
     vi.advanceTimersByTime(1_000);
     expect(mocks.outboundMessages).toHaveLength(2);
     expect(mocks.outboundMessages[1]).toMatchObject({ t: "setCell", tile: "0:0", i: 1, v: 1 });
+
+    teardown();
+  });
+
+  it("shows offline banner from browser offline event even before websocket close", async () => {
+    const teardown = await startApp();
+    const { offlineBannerEl } = mocks.requiredElements;
+
+    const offlineHandler = mocks.windowAddEventListener.mock.calls.find(
+      ([eventName]) => eventName === "offline"
+    )?.[1];
+    if (typeof offlineHandler !== "function") {
+      throw new Error("Expected offline event handler registration");
+    }
+
+    offlineHandler();
+    vi.advanceTimersByTime(29_999);
+    expect(offlineBannerEl.hidden).toBe(true);
+
+    vi.advanceTimersByTime(1);
+    expect(offlineBannerEl.hidden).toBe(false);
 
     teardown();
   });

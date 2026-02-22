@@ -417,6 +417,13 @@ export async function startApp() {
     statusEl.textContent = value;
   };
 
+  const handleConnectionLost = () => {
+    transportOnline = false;
+    clearOutboxReplayTimer();
+    setStatus("Connection lost; retrying...");
+    scheduleOfflineBanner();
+  };
+
   let interactionTimerId = null;
   const clearInteractionTimer = () => {
     if (interactionTimerId !== null) {
@@ -483,8 +490,7 @@ export async function startApp() {
         if (disposed) {
           return;
         }
-        setStatus("Connection lost; retrying...");
-        scheduleOfflineBanner();
+        handleConnectionLost();
       },
     }
   );
@@ -512,10 +518,22 @@ export async function startApp() {
   const onResize = () => {
     renderLoop.handleResize();
   };
+  const onBrowserOffline = () => {
+    handleConnectionLost();
+  };
+  const onBrowserOnline = () => {
+    if (!transportOnline) {
+      setStatus("Network restored; reconnecting...");
+    }
+  };
   window.addEventListener("resize", onResize);
+  window.addEventListener("offline", onBrowserOffline);
+  window.addEventListener("online", onBrowserOnline);
 
   return () => {
     window.removeEventListener("resize", onResize);
+    window.removeEventListener("offline", onBrowserOffline);
+    window.removeEventListener("online", onBrowserOnline);
     if (perfProbe.enabled) {
       canvas.removeEventListener("webglcontextlost", onWebGlContextLost);
       canvas.removeEventListener("webglcontextrestored", onWebGlContextRestored);
