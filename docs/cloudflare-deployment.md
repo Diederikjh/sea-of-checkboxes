@@ -110,6 +110,27 @@ For each release:
 3. Deploy `apps/web` to Pages (dashboard or CLI)
 4. Run post-deploy verification checks
 
+## 10. GitHub Actions Worker Deploy
+
+Repository workflow: `.github/workflows/deploy-worker.yml`
+
+Trigger behavior:
+- Manual run: `workflow_dispatch`
+- Auto-run on `main` push when worker/runtime files change
+
+Required GitHub repository secrets:
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+Create `CLOUDFLARE_API_TOKEN` with Cloudflare's "Edit Cloudflare Workers" template for your account.
+If deployment fails with auth errors and R2 bindings are present, expand the token scopes to include R2 access for the target buckets.
+
+The workflow deploy step runs:
+
+```bash
+pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc
+```
+
 ## Notes
 
 - Durable Object migrations are declared in `apps/worker/wrangler.jsonc`. When adding/changing DO classes, add a new migration tag before deploying.

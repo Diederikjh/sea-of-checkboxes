@@ -1,34 +1,37 @@
 {
-  "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "sea-of-checkboxes-worker",
-  "main": "src/worker.ts",
-  "compatibility_date": "2026-02-16",
-  "observability": {
-    "enabled": true
-  },
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "CONNECTION_SHARD",
-        "class_name": "ConnectionShardDO"
-      },
-      {
-        "name": "TILE_OWNER",
-        "class_name": "TileOwnerDO"
-      }
-    ]
-  },
-  "r2_buckets": [
-    {
-      "binding": "TILE_SNAPSHOTS",
-      "bucket_name": "sea-of-checkboxes-tiles",
-      "preview_bucket_name": "sea-of-checkboxes-tiles-preview"
-    }
-  ],
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["ConnectionShardDO", "TileOwnerDO"]
-    }
-  ]
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "sea-of-checkboxes-worker",
+	"main": "src/worker.ts",
+	"compatibility_date": "2026-02-16",
+	"observability": {
+		"enabled": true
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "CONNECTION_SHARD",
+				"class_name": "ConnectionShardDO"
+			},
+			{
+				"name": "TILE_OWNER",
+				"class_name": "TileOwnerDO"
+			}
+		]
+	},
+	"r2_buckets": [
+		{
+			"binding": "TILE_SNAPSHOTS",
+			"bucket_name": "sea-of-checkboxes-tiles",
+			"preview_bucket_name": "sea-of-checkboxes-tiles-preview"
+		}
+	],
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"ConnectionShardDO",
+				"TileOwnerDO"
+			]
+		}
+	]
 }
