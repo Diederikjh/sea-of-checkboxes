@@ -4,6 +4,8 @@ const SOCKET_OPEN = 1;
 const MIN_RECONNECT_MS = 250;
 const MAX_RECONNECT_MS = 4_000;
 const MAX_PENDING_SENDS = 512;
+const RECONNECT_DRAIN_BATCH_SIZE = 2;
+const RECONNECT_DRAIN_INTERVAL_MS = 500;
 
 function toUint8Array(messageData) {
   if (messageData instanceof Uint8Array) {
@@ -30,6 +32,8 @@ export class WebSocketTransport {
   #reconnectDelayMs;
   #reconnectTimer;
   #hasOpened;
+  #pacedDrainActive;
+  #pacedDrainTimer;
 
   constructor(url, options = {}) {
     this.#url = url;
@@ -44,6 +48,8 @@ export class WebSocketTransport {
     this.#reconnectDelayMs = MIN_RECONNECT_MS;
     this.#reconnectTimer = null;
     this.#hasOpened = false;
+    this.#pacedDrainActive = false;
+    this.#pacedDrainTimer = null;
   }
 
   connect(onServerPayload, lifecycleHandlers = {}) {
@@ -56,7 +62,7 @@ export class WebSocketTransport {
   }
 
   send(payload) {
-    if (this.#isSocketOpen()) {
+    if (this.#isSocketOpen() && !this.#pacedDrainActive && this.#pendingSends.length === 0) {
       this.#socket.send(payload);
       return;
     }
@@ -66,12 +72,25 @@ export class WebSocketTransport {
       logger.other("ws queue_drop_oldest", { max: MAX_PENDING_SENDS });
     }
     this.#pendingSends.push(payload);
+
+    if (!this.#isSocketOpen()) {
+      return;
+    }
+
+    if (!this.#pacedDrainActive) {
+      this.#flushPending();
+      return;
+    }
+
+    this.#schedulePacedDrain();
   }
 
   dispose() {
     this.#disposed = true;
     this.#pendingSends.length = 0;
     this.#clearReconnectTimer();
+    this.#clearPacedDrainTimer();
+    this.#pacedDrainActive = false;
 
     if (!this.#socket) {
       return;
@@ -87,13 +106,34 @@ export class WebSocketTransport {
       return;
     }
 
-    while (this.#pendingSends.length > 0) {
+    if (!this.#pacedDrainActive) {
+      while (this.#pendingSends.length > 0) {
+        const payload = this.#pendingSends.shift();
+        if (!payload) {
+          continue;
+        }
+        this.#socket.send(payload);
+      }
+      return;
+    }
+
+    let sent = 0;
+    while (this.#pendingSends.length > 0 && sent < RECONNECT_DRAIN_BATCH_SIZE) {
       const payload = this.#pendingSends.shift();
       if (!payload) {
         continue;
       }
       this.#socket.send(payload);
+      sent += 1;
     }
+
+    if (this.#pendingSends.length === 0) {
+      this.#pacedDrainActive = false;
+      this.#clearPacedDrainTimer();
+      return;
+    }
+
+    this.#schedulePacedDrain();
   }
 
   #openSocket() {
@@ -119,6 +159,7 @@ export class WebSocketTransport {
 
       const reconnected = this.#hasOpened;
       this.#hasOpened = true;
+      this.#pacedDrainActive = reconnected && this.#pendingSends.length > 0;
       this.#reconnectDelayMs = MIN_RECONNECT_MS;
       logger.other("ws open", { url: wsUrl });
       this.#onOpen({ url: wsUrl, reconnected });
@@ -139,6 +180,8 @@ export class WebSocketTransport {
         url: wsUrl,
         disposed: this.#disposed,
       });
+      this.#clearPacedDrainTimer();
+      this.#pacedDrainActive = false;
 
       if (!this.#disposed) {
         this.#scheduleReconnect();
@@ -166,6 +209,25 @@ export class WebSocketTransport {
       this.#reconnectTimer = null;
       this.#openSocket();
     }, delayMs);
+  }
+
+  #schedulePacedDrain() {
+    if (this.#pacedDrainTimer !== null || !this.#isSocketOpen() || !this.#pacedDrainActive) {
+      return;
+    }
+
+    this.#pacedDrainTimer = setTimeout(() => {
+      this.#pacedDrainTimer = null;
+      this.#flushPending();
+    }, RECONNECT_DRAIN_INTERVAL_MS);
+  }
+
+  #clearPacedDrainTimer() {
+    if (this.#pacedDrainTimer === null) {
+      return;
+    }
+    clearTimeout(this.#pacedDrainTimer);
+    this.#pacedDrainTimer = null;
   }
 
   #clearReconnectTimer() {

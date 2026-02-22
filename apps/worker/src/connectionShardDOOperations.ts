@@ -272,10 +272,6 @@ export async function handleSetCellMessage(
   client: ConnectedClient,
   message: Extract<ClientMessage, { t: "setCell" }>
 ): Promise<SetCellMessageResult> {
-  if (!consumeSetCellRateOrError(context, client)) {
-    return { accepted: false, changed: false, reason: "setcell_limit" };
-  }
-
   if (!isValidTileKey(message.tile)) {
     context.sendBadTile(client, message.tile);
     return { accepted: false, changed: false, reason: "bad_tile" };
@@ -285,6 +281,10 @@ export async function handleSetCellMessage(
     context.sendError(client, "not_subscribed", `Tile ${message.tile} is not currently subscribed`);
     await context.sendSnapshotToClient(client, message.tile);
     return { accepted: false, changed: false, reason: "not_subscribed" };
+  }
+
+  if (!consumeSetCellRateOrError(context, client)) {
+    return { accepted: false, changed: false, reason: "setcell_limit" };
   }
 
   const result = await context.setTileCell({

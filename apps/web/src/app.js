@@ -177,8 +177,14 @@ export async function startApp() {
   const wireTransport = createWireTransport({
     identityProvider: readStoredIdentity,
   });
+  let transportOnline = false;
   const transport = {
     connect(onServerMessage, lifecycleHandlers) {
+      const onOpen =
+        typeof lifecycleHandlers?.onOpen === "function" ? lifecycleHandlers.onOpen : () => {};
+      const onClose =
+        typeof lifecycleHandlers?.onClose === "function" ? lifecycleHandlers.onClose : () => {};
+
       wireTransport.connect((payload) => {
         perfProbe.increment(PERF_COUNTER.WS_RX_COUNT);
         perfProbe.increment(PERF_COUNTER.WS_RX_BYTES, payload.length);
@@ -193,9 +199,21 @@ export async function startApp() {
           });
         }
         onServerMessage(message);
-      }, lifecycleHandlers);
+      }, {
+        onOpen(info) {
+          transportOnline = true;
+          onOpen(info);
+        },
+        onClose(info) {
+          transportOnline = false;
+          onClose(info);
+        },
+      });
     },
     send(message) {
+      if (message.t === "cur" && !transportOnline) {
+        return;
+      }
       const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
         encodeClientMessageBinary(message)
       );
@@ -280,6 +298,12 @@ export async function startApp() {
         }
         renderLoop.markTransportReconnected();
         setStatus("Connection restored; resyncing visible tiles...");
+      },
+      onClose: ({ disposed }) => {
+        if (disposed) {
+          return;
+        }
+        setStatus("Connection lost; retrying...");
       },
     }
   );

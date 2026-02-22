@@ -222,6 +222,29 @@ describe("connection shard DO operations", () => {
     expect(harness.setCellRequests.length).toBe(0);
   });
 
+  it("does not consume setCell quota for not_subscribed writes", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+
+    for (let index = 0; index < SETCELL_BURST_PER_SEC; index += 1) {
+      client.setCellBurstTimestamps = client.setCellBurstTimestamps ?? [];
+      client.setCellBurstTimestamps.push(1_000);
+    }
+    harness.setNowMs(1_000);
+
+    await handleSetCellMessage(harness.context, client, {
+      t: "setCell",
+      tile: "0:0",
+      i: 9,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(harness.errors.length).toBe(1);
+    expect(harness.errors[0]?.code).toBe("not_subscribed");
+    expect(harness.setCellRequests.length).toBe(0);
+  });
+
   it("returns setcell_limit when sustained limit is exceeded", async () => {
     const harness = createContext();
     const client = createClient("u_a", "Alice");

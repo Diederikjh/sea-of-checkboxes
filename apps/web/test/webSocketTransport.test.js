@@ -119,6 +119,56 @@ describe("websocket transport", () => {
     }
   });
 
+  it("paces queued sends after reconnect to avoid burst replay", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [];
+      const transport = createWebSocketTransport("ws://example/ws", {
+        wsFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.connect(() => {});
+      const first = sockets[0];
+      expect(first).toBeDefined();
+      if (!first) {
+        return;
+      }
+
+      first.readyState = 1;
+      first.onopen?.();
+
+      first.readyState = 3;
+      first.onclose?.();
+      for (let index = 0; index < 6; index += 1) {
+        transport.send(Uint8Array.from([index]));
+      }
+
+      vi.advanceTimersByTime(250);
+      const second = sockets[1];
+      expect(second).toBeDefined();
+      if (!second) {
+        return;
+      }
+
+      second.readyState = 1;
+      second.onopen?.();
+
+      expect(second.sent.length).toBe(2);
+
+      vi.advanceTimersByTime(500);
+      expect(second.sent.length).toBe(4);
+
+      vi.advanceTimersByTime(500);
+      expect(second.sent.length).toBe(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds queued payloads during long disconnects", () => {
     const socket = new FakeSocket();
     const transport = createWebSocketTransport("ws://example/ws", {
