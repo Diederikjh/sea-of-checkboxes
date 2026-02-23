@@ -45,14 +45,19 @@ function reapplyPendingSetCellOps({
   tile,
   tileStore,
   getPendingSetCellOpsForTile,
+  onlyIndices = null,
 }) {
   const pendingOps = getPendingSetCellOpsForTile(tile);
   if (!Array.isArray(pendingOps) || pendingOps.length === 0) {
     return;
   }
 
+  const onlyIndexSet = Array.isArray(onlyIndices) ? new Set(onlyIndices) : null;
   for (const pending of pendingOps) {
     if (!pending || typeof pending.i !== "number" || (pending.v !== 0 && pending.v !== 1)) {
+      continue;
+    }
+    if (onlyIndexSet && !onlyIndexSet.has(pending.i)) {
       continue;
     }
     tileStore.applyOptimistic(tile, pending.i, pending.v);
@@ -103,6 +108,12 @@ export function createServerMessageHandler({
           transport,
           heatStore,
         });
+        reapplyPendingSetCellOps({
+          tile: message.tile,
+          tileStore,
+          getPendingSetCellOpsForTile,
+          onlyIndices: [message.i],
+        });
         onTileCellsChanged(message.tile, [message.i]);
         break;
       }
@@ -115,6 +126,12 @@ export function createServerMessageHandler({
           changedIndices,
           transport,
           heatStore,
+        });
+        reapplyPendingSetCellOps({
+          tile: message.tile,
+          tileStore,
+          getPendingSetCellOpsForTile,
+          onlyIndices: changedIndices,
         });
         onTileCellsChanged(message.tile, changedIndices);
         break;

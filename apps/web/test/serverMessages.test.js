@@ -124,6 +124,64 @@ describe("server message handling", () => {
     expect(harness.tileStore.applyOptimistic).toHaveBeenNthCalledWith(2, "0:0", 8, 0);
   });
 
+  it("reapplies pending outbox value after single-cell update for same index", () => {
+    const harness = createHarness({
+      getPendingSetCellOpsForTile: (tileKey) =>
+        tileKey === "0:0"
+          ? [
+              { i: 5, v: 1 },
+              { i: 8, v: 0 },
+            ]
+          : [],
+    });
+    harness.tileStore.applySingle.mockReturnValue({ gap: false, haveVer: 4 });
+
+    harness.handler({
+      t: "cellUp",
+      tile: "0:0",
+      i: 5,
+      v: 0,
+      ver: 4,
+    });
+
+    expect(harness.tileStore.applySingle).toHaveBeenCalledWith("0:0", 5, 0, 4);
+    expect(harness.tileStore.applyOptimistic).toHaveBeenCalledTimes(1);
+    expect(harness.tileStore.applyOptimistic).toHaveBeenCalledWith("0:0", 5, 1);
+  });
+
+  it("reapplies pending outbox values after batch update for matching indices only", () => {
+    const harness = createHarness({
+      getPendingSetCellOpsForTile: (tileKey) =>
+        tileKey === "0:0"
+          ? [
+              { i: 7, v: 1 },
+              { i: 9, v: 1 },
+              { i: 55, v: 0 },
+            ]
+          : [],
+    });
+    harness.tileStore.applyBatch.mockReturnValue({ gap: false, haveVer: 6 });
+
+    harness.handler({
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 5,
+      toVer: 6,
+      ops: [
+        [7, 0],
+        [9, 0],
+      ],
+    });
+
+    expect(harness.tileStore.applyBatch).toHaveBeenCalledWith("0:0", 5, 6, [
+      [7, 0],
+      [9, 0],
+    ]);
+    expect(harness.tileStore.applyOptimistic).toHaveBeenCalledTimes(2);
+    expect(harness.tileStore.applyOptimistic).toHaveBeenNthCalledWith(1, "0:0", 7, 1);
+    expect(harness.tileStore.applyOptimistic).toHaveBeenNthCalledWith(2, "0:0", 9, 1);
+  });
+
   it("resyncs on cellUp/cellUpBatch version gap", () => {
     const harness = createHarness();
     harness.tileStore.applySingle.mockReturnValue({ gap: true, haveVer: 8 });
