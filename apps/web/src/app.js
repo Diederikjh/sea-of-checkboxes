@@ -21,6 +21,7 @@ import { logger } from "./logger";
 import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
 import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
 import { createServerMessageHandler } from "./serverMessages";
+import { createSetCellOutboxSync } from "./setCellOutboxSync";
 import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
 import { resolveApiBaseUrl } from "./transportConfig";
@@ -49,20 +50,6 @@ function describePayload(payload) {
 
 function round2(value) {
   return Number(value.toFixed(2));
-}
-
-const OFFLINE_BANNER_DELAY_MS = 30_000;
-const SETCELL_OUTBOX_MAX_ENTRIES = 100;
-const SETCELL_OUTBOX_TTL_MS = 90_000;
-const SETCELL_REPLAY_BATCH_SIZE = 2;
-const SETCELL_REPLAY_INTERVAL_MS = 500;
-const SETCELL_MAX_REPLAY_ATTEMPTS = 6;
-
-function offlineBannerMessage(unsyncedCount) {
-  if (unsyncedCount <= 0) {
-    return "You are offline. 0 unsynced events.";
-  }
-  return `You are offline. ${unsyncedCount} unsynced event${unsyncedCount === 1 ? "" : "s"}.`;
 }
 
 function summarizeCursor(message) {
@@ -193,131 +180,7 @@ export async function startApp() {
     identityProvider: readStoredIdentity,
   });
   let transportOnline = false;
-  let offlineBannerTimerId = null;
-  let outboxReplayTimerId = null;
-  const setCellOutbox = new Map();
-  const refreshOfflineBannerText = () => {
-    offlineBannerEl.textContent = offlineBannerMessage(setCellOutbox.size);
-  };
-
-  const outboxKeyForSetCell = (tile, index) => `${tile}:${index}`;
-  const clearOutboxReplayTimer = () => {
-    if (outboxReplayTimerId === null) {
-      return;
-    }
-    window.clearTimeout(outboxReplayTimerId);
-    outboxReplayTimerId = null;
-  };
-  const clearOfflineBannerTimer = () => {
-    if (offlineBannerTimerId === null) {
-      return;
-    }
-    window.clearTimeout(offlineBannerTimerId);
-    offlineBannerTimerId = null;
-  };
-  const hideOfflineBanner = () => {
-    clearOfflineBannerTimer();
-    offlineBannerEl.hidden = true;
-  };
-  const scheduleOfflineBanner = () => {
-    clearOfflineBannerTimer();
-    offlineBannerTimerId = window.setTimeout(() => {
-      offlineBannerTimerId = null;
-      if (!transportOnline) {
-        refreshOfflineBannerText();
-        offlineBannerEl.hidden = false;
-      }
-    }, OFFLINE_BANNER_DELAY_MS);
-  };
-
-  const pruneSetCellOutbox = (nowMs) => {
-    let changed = false;
-    for (const [key, entry] of setCellOutbox.entries()) {
-      const staleByAge = nowMs - entry.updatedAtMs > SETCELL_OUTBOX_TTL_MS;
-      const staleByAttempts = entry.replayAttempts >= SETCELL_MAX_REPLAY_ATTEMPTS;
-      if (staleByAge || staleByAttempts) {
-        setCellOutbox.delete(key);
-        changed = true;
-      }
-    }
-    if (changed && !offlineBannerEl.hidden) {
-      refreshOfflineBannerText();
-    }
-  };
-
-  const recordSetCellOutboxEntry = (message) => {
-    const nowMs = Date.now();
-    pruneSetCellOutbox(nowMs);
-    const key = outboxKeyForSetCell(message.tile, message.i);
-    const existing = setCellOutbox.get(key);
-    setCellOutbox.set(key, {
-      message: { ...message },
-      updatedAtMs: nowMs,
-      replayAttempts: existing?.replayAttempts ?? 0,
-    });
-
-    if (setCellOutbox.size > SETCELL_OUTBOX_MAX_ENTRIES) {
-      let oldestKey = null;
-      let oldestUpdatedAt = Number.POSITIVE_INFINITY;
-      for (const [entryKey, entry] of setCellOutbox.entries()) {
-        if (entry.updatedAtMs < oldestUpdatedAt) {
-          oldestUpdatedAt = entry.updatedAtMs;
-          oldestKey = entryKey;
-        }
-      }
-      if (oldestKey !== null) {
-        setCellOutbox.delete(oldestKey);
-      }
-    }
-
-    if (!offlineBannerEl.hidden) {
-      refreshOfflineBannerText();
-    }
-  };
-
-  const clearSetCellOutboxFromServerMessage = (message) => {
-    if (message.t === "cellUp") {
-      const key = outboxKeyForSetCell(message.tile, message.i);
-      const entry = setCellOutbox.get(key);
-      if (entry?.message.v === message.v) {
-        setCellOutbox.delete(key);
-        if (!offlineBannerEl.hidden) {
-          refreshOfflineBannerText();
-        }
-      }
-      return;
-    }
-
-    if (message.t !== "cellUpBatch") {
-      return;
-    }
-
-    for (const [index, value] of message.ops) {
-      const key = outboxKeyForSetCell(message.tile, index);
-      const entry = setCellOutbox.get(key);
-      if (entry?.message.v === value) {
-        setCellOutbox.delete(key);
-        if (!offlineBannerEl.hidden) {
-          refreshOfflineBannerText();
-        }
-      }
-    }
-  };
-
-  const getPendingSetCellOpsForTile = (tileKey) => {
-    pruneSetCellOutbox(Date.now());
-    const pending = [];
-    for (const entry of setCellOutbox.values()) {
-      if (entry.message.tile !== tileKey) {
-        continue;
-      }
-      pending.push({
-        i: entry.message.i,
-        v: entry.message.v,
-      });
-    }
-    return pending;
-  };
+  const isTransportOnline = () => transportOnline;
 
   const sendToWireTransport = (message) => {
     const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
@@ -333,51 +196,21 @@ export async function startApp() {
     }
     wireTransport.send(payload);
   };
-
-  const replaySetCellOutbox = () => {
-    outboxReplayTimerId = null;
-    if (!transportOnline) {
-      return;
-    }
-
-    const nowMs = Date.now();
-    pruneSetCellOutbox(nowMs);
-    if (setCellOutbox.size === 0) {
-      return;
-    }
-
-    const pending = Array.from(setCellOutbox.entries())
-      .sort(([, left], [, right]) => left.updatedAtMs - right.updatedAtMs)
-      .slice(0, SETCELL_REPLAY_BATCH_SIZE);
-
-    for (const [key, entry] of pending) {
-      if (entry.replayAttempts >= SETCELL_MAX_REPLAY_ATTEMPTS) {
-        setCellOutbox.delete(key);
-        continue;
-      }
-      entry.replayAttempts += 1;
-      sendToWireTransport(entry.message);
-    }
-
-    if (setCellOutbox.size > 0) {
-      outboxReplayTimerId = window.setTimeout(replaySetCellOutbox, SETCELL_REPLAY_INTERVAL_MS);
-    }
-  };
-
-  const scheduleSetCellOutboxReplay = (delayMs) => {
-    if (!transportOnline || setCellOutbox.size === 0 || outboxReplayTimerId !== null) {
-      return;
-    }
-    outboxReplayTimerId = window.setTimeout(replaySetCellOutbox, delayMs);
-  };
+  const setCellOutboxSync = createSetCellOutboxSync({
+    offlineBannerEl,
+    sendToWireTransport,
+    isTransportOnline,
+    setTimeoutFn: window.setTimeout.bind(window),
+    clearTimeoutFn: window.clearTimeout.bind(window),
+  });
 
   const sendMessage = (message, options = {}) => {
     const trackSetCell = options.trackSetCell ?? true;
     if (message.t === "cur" && !transportOnline) {
       return;
     }
-    if (trackSetCell && message.t === "setCell") {
-      recordSetCellOutboxEntry(message);
+    if (trackSetCell) {
+      setCellOutboxSync.trackOutgoingClientMessage(message);
     }
     sendToWireTransport(message);
   };
@@ -402,18 +235,16 @@ export async function startApp() {
             ...summarizeMessage(message),
           });
         }
-        clearSetCellOutboxFromServerMessage(message);
+        setCellOutboxSync.handleServerMessage(message);
         onServerMessage(message);
       }, {
         onOpen(info) {
           transportOnline = true;
-          hideOfflineBanner();
-          clearOutboxReplayTimer();
+          setCellOutboxSync.handleConnectionOpen();
           onOpen(info);
         },
         onClose(info) {
           transportOnline = false;
-          clearOutboxReplayTimer();
           onClose(info);
         },
       });
@@ -434,9 +265,8 @@ export async function startApp() {
 
   const handleConnectionLost = () => {
     transportOnline = false;
-    clearOutboxReplayTimer();
+    setCellOutboxSync.handleConnectionLost();
     setStatus("Connection lost; retrying...");
-    scheduleOfflineBanner();
   };
 
   let interactionTimerId = null;
@@ -491,7 +321,7 @@ export async function startApp() {
       onIdentityReceived: ({ uid, name, token }) => {
         writeStoredIdentity({ uid, name, token });
       },
-      getPendingSetCellOpsForTile,
+      getPendingSetCellOpsForTile: setCellOutboxSync.getPendingSetCellOpsForTile,
     }),
     {
       onOpen: ({ reconnected }) => {
@@ -500,7 +330,7 @@ export async function startApp() {
         }
         renderLoop.markTransportReconnected();
         setStatus("Connection restored; resyncing visible tiles...");
-        scheduleSetCellOutboxReplay(1_000);
+        setCellOutboxSync.scheduleReplay(1_000);
       },
       onClose: ({ disposed }) => {
         if (disposed) {
@@ -559,8 +389,7 @@ export async function startApp() {
     renderLoop.dispose();
     transport.dispose();
     clearInteractionTimer();
-    clearOutboxReplayTimer();
-    hideOfflineBanner();
+    setCellOutboxSync.dispose();
     app.destroy(true);
   };
 }
