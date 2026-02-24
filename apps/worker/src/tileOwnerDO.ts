@@ -156,12 +156,15 @@ export class TileOwnerDO {
       }
 
       await this.#ensureLoaded(payload.tile);
+      const beforeValue = this.#tileOwner.getCellValue(payload.i);
 
       if (this.#subscriberShards.size >= TILE_READONLY_WATCHER_THRESHOLD) {
         this.#logEvent("setCell", {
           tile: payload.tile,
           i: payload.i,
           v: payload.v,
+          op: payload.op,
+          prev_v: beforeValue,
           accepted: false,
           changed: false,
           reason: "tile_readonly_hot",
@@ -185,6 +188,7 @@ export class TileOwnerDO {
         ...(typeof payload.name === "string" ? { name: payload.name } : {}),
         ...(typeof payload.atMs === "number" ? { atMs: payload.atMs } : {}),
       });
+      const afterValue = this.#tileOwner.getCellValue(payload.i);
 
       if (result.changed) {
         if (this.#subscriberShards.size > 1) {
@@ -212,6 +216,9 @@ export class TileOwnerDO {
         tile: payload.tile,
         i: payload.i,
         v: payload.v,
+        op: payload.op,
+        prev_v: beforeValue,
+        next_v: afterValue,
         accepted: body.accepted,
         changed: body.changed,
         ...(body.reason ? { reason: body.reason } : {}),
@@ -365,6 +372,9 @@ export class TileOwnerDO {
       this.#logEvent("broadcast", {
         tile,
         batch_size: batch.ops.length,
+        from_ver: batch.fromVer,
+        to_ver: batch.toVer,
+        ops_preview: batch.ops.slice(0, 4),
         watcher_count: 0,
         failed_count: 0,
         duration_ms: elapsedMs(fanoutStartMs),
@@ -390,6 +400,9 @@ export class TileOwnerDO {
       this.#logEvent("broadcast", {
         tile,
         batch_size: batch.ops.length,
+        from_ver: batch.fromVer,
+        to_ver: batch.toVer,
+        ops_preview: batch.ops.slice(0, 4),
         watcher_count: subscribers.length,
         failed_count: failedCount,
         duration_ms: elapsedMs(fanoutStartMs),

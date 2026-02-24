@@ -281,6 +281,7 @@ export class ConnectionShardDO {
             tile: message.tile,
             i: message.i,
             v: message.v,
+            op: message.op,
             accepted: setCellResult.accepted,
             changed: setCellResult.changed,
             ...(setCellResult.reason ? { reason: setCellResult.reason } : {}),
@@ -372,8 +373,17 @@ export class ConnectionShardDO {
   async #sendSnapshotToClient(client: ConnectedClient, tileKey: string): Promise<void> {
     const snapshot = await this.#fetchTileSnapshot(tileKey);
     if (!snapshot) {
+      this.#logEvent("snapshot_send_failed", {
+        uid: client.uid,
+        tile: tileKey,
+      });
       return;
     }
+    this.#logEvent("snapshot_send", {
+      uid: client.uid,
+      tile: tileKey,
+      ver: snapshot.ver,
+    });
     this.#sendServerMessage(client, snapshot);
   }
 

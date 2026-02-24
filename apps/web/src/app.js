@@ -75,6 +75,7 @@ function summarizeMessage(message) {
         tile: message.tile,
         i: message.i,
         v: message.v,
+        op: message.op,
         ...deriveBoardCoordFromSetCell(message.tile, message.i),
       };
     case "resyncTile":
@@ -94,6 +95,7 @@ function summarizeMessage(message) {
         fromVer: message.fromVer,
         toVer: message.toVer,
         ops: message.ops.length,
+        opsPreview: message.ops.slice(0, 4),
       };
     case "curUp":
       return {

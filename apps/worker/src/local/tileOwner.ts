@@ -64,6 +64,13 @@ export class TileOwner {
     return this.#ver;
   }
 
+  getCellValue(index: number): 0 | 1 | null {
+    if (!isCellIndexValid(index)) {
+      return null;
+    }
+    return this.#bits[index] as 0 | 1;
+  }
+
   loadSnapshot(bits: Uint8Array, ver: number, edits: CellLastEditRecord[] = []): void {
     if (!Number.isInteger(ver) || ver < 0) {
       throw new Error(`Invalid tile version: ${ver}`);
