@@ -60,6 +60,53 @@ describe("websocket transport", () => {
     expect(Array.from(received[0])).toEqual([9, 8, 7]);
   });
 
+  it("ignores inbound messages from stale sockets after reconnect", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [];
+      const received = [];
+      const transport = createWebSocketTransport("ws://example/ws", {
+        wsFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.connect((payload) => {
+        received.push(payload);
+      });
+
+      expect(sockets).toHaveLength(1);
+      const first = sockets[0];
+      if (!first) {
+        return;
+      }
+      first.readyState = 1;
+      first.onopen?.();
+
+      first.readyState = 3;
+      first.onclose?.();
+      vi.advanceTimersByTime(250);
+
+      expect(sockets).toHaveLength(2);
+      const second = sockets[1];
+      if (!second) {
+        return;
+      }
+      second.readyState = 1;
+      second.onopen?.();
+
+      first.onmessage?.({ data: Uint8Array.from([1]).buffer });
+      second.onmessage?.({ data: Uint8Array.from([2]).buffer });
+
+      expect(received).toHaveLength(1);
+      expect(Array.from(received[0] ?? Uint8Array.from([]))).toEqual([2]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("closes socket on dispose", () => {
     const socket = new FakeSocket();
     const transport = createWebSocketTransport("ws://example/ws", {

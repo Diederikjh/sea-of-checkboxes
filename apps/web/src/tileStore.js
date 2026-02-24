@@ -37,6 +37,10 @@ export class TileStore {
       return { gap: true, haveVer: -1 };
     }
 
+    if (ver <= tile.ver) {
+      return { gap: false, stale: true, haveVer: tile.ver };
+    }
+
     if (ver !== tile.ver + 1) {
       return { gap: true, haveVer: tile.ver };
     }
@@ -50,6 +54,10 @@ export class TileStore {
     const tile = this.#cache.get(tileKey);
     if (!tile) {
       return { gap: true, haveVer: -1 };
+    }
+
+    if (toVer <= tile.ver) {
+      return { gap: false, stale: true, haveVer: tile.ver };
     }
 
     if (fromVer !== tile.ver + 1) {

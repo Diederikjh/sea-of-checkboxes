@@ -146,6 +146,9 @@ export class WebSocketTransport {
     const socket = this.#wsFactory(wsUrl);
     socket.binaryType = "arraybuffer";
     socket.onmessage = (event) => {
+      if (this.#socket !== socket || this.#disposed) {
+        return;
+      }
       const payload = toUint8Array(event.data);
       if (!payload) {
         return;

@@ -1,6 +1,6 @@
 import { TILE_CELL_COUNT } from "@sea/domain";
 import { encodeRle64 } from "@sea/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createServerMessageHandler } from "../src/serverMessages";
 import { TileStore } from "../src/tileStore";
@@ -79,5 +79,57 @@ describe("server message convergence", () => {
     expect(stateA?.bits).toEqual(expected);
     expect(stateB?.bits).toEqual(expected);
     expect(stateA?.bits).toEqual(stateB?.bits);
+  });
+
+  it("ignores stale duplicate batches without forcing resync", () => {
+    const tileStore = new TileStore(16);
+    const transport = { send: () => {} };
+    const sendSpy = vi.spyOn(transport, "send");
+    const handler = createServerMessageHandler({
+      identityEl: { textContent: "" },
+      setStatus() {},
+      tileStore,
+      heatStore: { ensureTile() {}, bump() {} },
+      transport,
+      cursors: new Map(),
+      selfIdentity: { uid: null },
+    });
+
+    handler({
+      t: "tileSnap",
+      tile: "0:0",
+      ver: 919,
+      enc: "rle64",
+      bits: encodeRle64(new Uint8Array(TILE_CELL_COUNT)),
+    });
+
+    handler({
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 920,
+      toVer: 920,
+      ops: [[1562, 1]],
+    });
+    handler({
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 921,
+      toVer: 921,
+      ops: [[1626, 1]],
+    });
+    handler({
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 920,
+      toVer: 920,
+      ops: [[1498, 1]],
+    });
+
+    const state = tileStore.get("0:0");
+    expect(state?.ver).toBe(921);
+    expect(state?.bits[1562]).toBe(1);
+    expect(state?.bits[1626]).toBe(1);
+    expect(state?.bits[1498]).toBe(0);
+    expect(sendSpy).not.toHaveBeenCalled();
   });
 });
