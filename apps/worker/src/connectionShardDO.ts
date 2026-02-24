@@ -1,4 +1,5 @@
 import {
+  CLIENT_BINARY_TAG,
   decodeClientMessageBinary,
   encodeServerMessageBinary,
   type ClientMessage,
@@ -41,13 +42,13 @@ import {
 } from "./observability";
 
 const TILE_BATCH_ORDER_TRACK_LIMIT = 8_192;
-const CLIENT_BINARY_TAG_SET_CELL = 3;
-
 type TileBatchOrderState = {
   fromVer: number;
   toVer: number;
   opsPreview: Array<[number, 0 | 1]>;
 };
+
+type TileBatchOrderAnomalyKind = "duplicate_or_replay" | "version_regression" | "gap_or_jump";
 
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
@@ -203,18 +204,7 @@ export class ConnectionShardDO {
         return;
       }
 
-      const currentUid = client.uid;
-      const isSetCellPayload = payload[0] === CLIENT_BINARY_TAG_SET_CELL;
-      if (isSetCellPayload) {
-        this.#enqueueSetCellPayload(currentUid, serverSocket, payload).catch(() => {
-          this.#sendError(client, "internal", "Failed to process client payload");
-        });
-        return;
-      }
-
-      void this.#receiveClientPayload(currentUid, serverSocket, payload).catch(() => {
-        this.#sendError(client, "internal", "Failed to process client payload");
-      });
+      this.#dispatchClientPayload(client.uid, serverSocket, payload, client);
     });
 
     let closed = false;
@@ -369,6 +359,25 @@ export class ConnectionShardDO {
     }
   }
 
+  #dispatchClientPayload(
+    uid: string,
+    socket: SocketLike,
+    payload: Uint8Array,
+    client: ConnectedClient
+  ): void {
+    const task = this.#isSetCellBinaryPayload(payload)
+      ? this.#enqueueSetCellPayload(uid, socket, payload)
+      : this.#receiveClientPayload(uid, socket, payload);
+
+    void task.catch(() => {
+      this.#sendError(client, "internal", "Failed to process client payload");
+    });
+  }
+
+  #isSetCellBinaryPayload(payload: Uint8Array): boolean {
+    return payload[0] === CLIENT_BINARY_TAG.setCell;
+  }
+
   #receiveTileBatch(message: Extract<ServerMessage, { t: "cellUpBatch" }>): void {
     this.#recordTileBatchOrdering(message);
     fanoutTileBatchToSubscribers({
@@ -387,27 +396,14 @@ export class ConnectionShardDO {
     const incomingOpsPreview = message.ops.slice(0, 4);
     if (previous) {
       if (message.toVer <= previous.toVer) {
-        this.#logEvent("tile_batch_order_anomaly", {
-          tile: message.tile,
-          kind: message.toVer === previous.toVer ? "duplicate_or_replay" : "version_regression",
-          prev_from_ver: previous.fromVer,
-          prev_to_ver: previous.toVer,
-          incoming_from_ver: message.fromVer,
-          incoming_to_ver: message.toVer,
-          prev_ops_preview: previous.opsPreview,
-          incoming_ops_preview: incomingOpsPreview,
-        });
+        this.#logTileBatchOrderAnomaly(
+          message,
+          previous,
+          incomingOpsPreview,
+          message.toVer === previous.toVer ? "duplicate_or_replay" : "version_regression"
+        );
       } else if (message.fromVer !== previous.toVer + 1) {
-        this.#logEvent("tile_batch_order_anomaly", {
-          tile: message.tile,
-          kind: "gap_or_jump",
-          prev_from_ver: previous.fromVer,
-          prev_to_ver: previous.toVer,
-          incoming_from_ver: message.fromVer,
-          incoming_to_ver: message.toVer,
-          prev_ops_preview: previous.opsPreview,
-          incoming_ops_preview: incomingOpsPreview,
-        });
+        this.#logTileBatchOrderAnomaly(message, previous, incomingOpsPreview, "gap_or_jump");
       }
     }
 
@@ -424,6 +420,24 @@ export class ConnectionShardDO {
       return;
     }
     this.#tileBatchOrderByTile.delete(oldestTile);
+  }
+
+  #logTileBatchOrderAnomaly(
+    message: Extract<ServerMessage, { t: "cellUpBatch" }>,
+    previous: TileBatchOrderState,
+    incomingOpsPreview: Array<[number, 0 | 1]>,
+    kind: TileBatchOrderAnomalyKind
+  ): void {
+    this.#logEvent("tile_batch_order_anomaly", {
+      tile: message.tile,
+      kind,
+      prev_from_ver: previous.fromVer,
+      prev_to_ver: previous.toVer,
+      incoming_from_ver: message.fromVer,
+      incoming_to_ver: message.toVer,
+      prev_ops_preview: previous.opsPreview,
+      incoming_ops_preview: incomingOpsPreview,
+    });
   }
 
   #sendServerMessage(client: ConnectedClient, message: ServerMessage): void {

@@ -15,13 +15,15 @@ import {
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-const CLIENT_TAG = {
+export const CLIENT_BINARY_TAG = {
   sub: 1,
   unsub: 2,
   setCell: 3,
   cur: 4,
   resyncTile: 5,
 } as const;
+
+const CLIENT_TAG = CLIENT_BINARY_TAG;
 
 const SERVER_TAG = {
   hello: 101,

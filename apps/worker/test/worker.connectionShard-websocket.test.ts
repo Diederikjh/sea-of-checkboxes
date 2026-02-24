@@ -115,6 +115,36 @@ async function connectClient(
   return pair.server;
 }
 
+async function postJson(
+  shard: ConnectionShardDO,
+  path: "/tile-batch" | "/cursor-batch",
+  body: unknown
+): Promise<Response> {
+  return shard.fetch(
+    new Request(`https://connection-shard.internal${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+async function postTileBatch(
+  shard: ConnectionShardDO,
+  body: Extract<ServerMessage, { t: "cellUpBatch" }>
+): Promise<Response> {
+  return postJson(shard, "/tile-batch", body);
+}
+
+async function postCursorBatch(
+  shard: ConnectionShardDO,
+  body: unknown
+): Promise<Response> {
+  return postJson(shard, "/cursor-batch", body);
+}
+
 describe("ConnectionShardDO websocket handling", () => {
   it("sends hello on connect via injected socket pair", async () => {
     const harness = createHarness();
@@ -315,21 +345,13 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(tileStub.watchRequests.length).toBe(1);
     });
 
-    const batchResponse = await harness.shard.fetch(
-      new Request("https://connection-shard.internal/tile-batch", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          t: "cellUpBatch",
-          tile: "0:0",
-          fromVer: 1,
-          toVer: 1,
-          ops: [[15, 1]],
-        }),
-      })
-    );
+    const batchResponse = await postTileBatch(harness.shard, {
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 1,
+      toVer: 1,
+      ops: [[15, 1]],
+    });
 
     expect(batchResponse.status).toBe(204);
 
@@ -345,21 +367,13 @@ describe("ConnectionShardDO websocket handling", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       const sendBatch = (fromVer: number, toVer: number, ops: Array<[number, 0 | 1]>) =>
-        harness.shard.fetch(
-          new Request("https://connection-shard.internal/tile-batch", {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              t: "cellUpBatch",
-              tile: "0:0",
-              fromVer,
-              toVer,
-              ops,
-            }),
-          })
-        );
+        postTileBatch(harness.shard, {
+          t: "cellUpBatch",
+          tile: "0:0",
+          fromVer,
+          toVer,
+          ops,
+        });
 
       expect((await sendBatch(920, 920, [[1562, 1]])).status).toBe(204);
       expect((await sendBatch(921, 921, [[1626, 1]])).status).toBe(204);
@@ -423,28 +437,20 @@ describe("ConnectionShardDO websocket handling", () => {
     socketA.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
     socketA.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
 
-    const response = await harness.shard.fetch(
-      new Request("https://connection-shard.internal/cursor-batch", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+    const response = await postCursorBatch(harness.shard, {
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.5,
+          y: 1.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
         },
-        body: JSON.stringify({
-          from: "shard-1",
-          updates: [
-            {
-              uid: "u_remote",
-              name: "Remote",
-              x: 1.5,
-              y: 1.5,
-              seenAt: Date.now(),
-              seq: 1,
-              tileKey: "0:0",
-            },
-          ],
-        }),
-      })
-    );
+      ],
+    });
 
     expect(response.status).toBe(204);
 
@@ -474,15 +480,7 @@ describe("ConnectionShardDO websocket handling", () => {
     ];
 
     for (const body of badBodies) {
-      const response = await harness.shard.fetch(
-        new Request("https://connection-shard.internal/cursor-batch", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(body),
-        })
-      );
+      const response = await postCursorBatch(harness.shard, body);
       expect(response.status).toBe(400);
     }
   });
@@ -508,18 +506,10 @@ describe("ConnectionShardDO websocket handling", () => {
       tileKey: "0:0",
     }));
 
-    const response = await harness.shard.fetch(
-      new Request("https://connection-shard.internal/cursor-batch", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          from: "shard-1",
-          updates,
-        }),
-      })
-    );
+    const response = await postCursorBatch(harness.shard, {
+      from: "shard-1",
+      updates,
+    });
     expect(response.status).toBe(204);
 
     await waitFor(() => {
