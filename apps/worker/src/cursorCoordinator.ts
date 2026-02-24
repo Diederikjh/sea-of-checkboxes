@@ -21,6 +21,7 @@ interface CursorCoordinatorOptions {
   clients: Map<string, ConnectedClient>;
   connectionShardNamespace: DurableObjectNamespaceLike;
   getCurrentShardName: () => string;
+  defer: (promise: Promise<unknown>) => void;
   sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 }
 
@@ -28,6 +29,7 @@ export class CursorCoordinator {
   #clients: Map<string, ConnectedClient>;
   #connectionShardNamespace: DurableObjectNamespaceLike;
   #getCurrentShardName: () => string;
+  #defer: (promise: Promise<unknown>) => void;
   #sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 
   #cursorByUid: Map<string, CursorPresence>;
@@ -43,6 +45,7 @@ export class CursorCoordinator {
     this.#clients = options.clients;
     this.#connectionShardNamespace = options.connectionShardNamespace;
     this.#getCurrentShardName = options.getCurrentShardName;
+    this.#defer = options.defer;
     this.#sendServerMessage = options.sendServerMessage;
 
     this.#cursorByUid = new Map();
@@ -140,7 +143,7 @@ export class CursorCoordinator {
     }, CURSOR_RELAY_FLUSH_MS);
   }
 
-  async #flushCursorRelays(): Promise<void> {
+  #flushCursorRelays(): void {
     if (this.#pendingCursorRelays.size === 0) {
       return;
     }
@@ -159,20 +162,22 @@ export class CursorCoordinator {
       updates,
     });
 
-    void Promise.all(
-      peers.map(async (peerShard) => {
-        const stub = this.#connectionShardNamespace.getByName(peerShard);
-        await stub.fetch("https://connection-shard.internal/cursor-batch", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-          },
-          body,
-        });
+    this.#defer(
+      Promise.all(
+        peers.map(async (peerShard) => {
+          const stub = this.#connectionShardNamespace.getByName(peerShard);
+          await stub.fetch("https://connection-shard.internal/cursor-batch", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+            },
+            body,
+          });
+        })
+      ).catch(() => {
+        // Cursor fanout is best-effort.
       })
-    ).catch(() => {
-      // Cursor fanout is best-effort.
-    });
+    );
   }
 
   #upsertCursor(state: CursorPresence): void {

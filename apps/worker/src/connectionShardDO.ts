@@ -76,6 +76,9 @@ export class ConnectionShardDO {
       clients: this.#clients,
       connectionShardNamespace: this.#env.CONNECTION_SHARD,
       getCurrentShardName: () => this.#currentShardName(),
+      defer: (promise) => {
+        this.#defer(promise);
+      },
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
       },
@@ -439,6 +442,16 @@ export class ConnectionShardDO {
 
   #currentShardName(): string {
     return this.#shardName ?? this.#state.id.toString();
+  }
+
+  #defer(promise: Promise<unknown>): void {
+    if (typeof this.#state.waitUntil === "function") {
+      this.#state.waitUntil(promise);
+      return;
+    }
+
+    // Test harness states may not implement waitUntil.
+    void promise.catch(() => {});
   }
 
   async #disconnectClientIfCurrent(

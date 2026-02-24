@@ -16,10 +16,12 @@ import {
 } from "./helpers/socketMocks";
 import {
   StubNamespace,
+  RecordingDurableObjectStub,
   TileOwnerDurableObjectStub,
 } from "./helpers/doStubs";
 import { NullStorage } from "./helpers/storageMocks";
 import { waitFor } from "./helpers/waitFor";
+import { SHARD_COUNT } from "../src/sharding";
 
 function decodeMessages(socket: MockSocket): ServerMessage[] {
   const messages: ServerMessage[] = [];
@@ -82,6 +84,39 @@ function createHarness() {
     socketPairFactory,
     upgradeResponseFactory,
     tileOwners,
+  };
+}
+
+function createWaitUntilRelayHarness() {
+  const socketPairFactory = new MockSocketPairFactory();
+  const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
+  const connectionShards = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+  const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
+  const deferred: Promise<unknown>[] = [];
+
+  const env = {
+    CONNECTION_SHARD: connectionShards,
+    TILE_OWNER: tileOwners,
+  };
+
+  const state = {
+    id: { toString: () => "shard:test" },
+    storage: new NullStorage(),
+    waitUntil: (promise: Promise<unknown>) => {
+      deferred.push(promise);
+    },
+  };
+
+  const shard = new ConnectionShardDO(state, env, {
+    socketPairFactory,
+    upgradeResponseFactory,
+  });
+
+  return {
+    shard,
+    socketPairFactory,
+    connectionShards,
+    deferred,
   };
 }
 
@@ -549,6 +584,39 @@ describe("ConnectionShardDO websocket handling", () => {
       const messagesB = decodeMessages(socketB);
       expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_a")).toBe(true);
     });
+  });
+
+  it("defers cross-shard cursor relay fanout via state.waitUntil", async () => {
+    const harness = createWaitUntilRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 0.5 }));
+
+    await waitFor(() => {
+      expect(harness.deferred.length).toBeGreaterThan(0);
+    });
+    await Promise.allSettled(harness.deferred);
+
+    const peerNames = new Set(
+      harness.connectionShards.requestedNames.filter((name) => name !== "shard-0")
+    );
+    expect(peerNames.size).toBe(SHARD_COUNT - 1);
+
+    for (const peerName of peerNames) {
+      const peer = harness.connectionShards.stubs.get(peerName);
+      expect(peer).toBeDefined();
+      const requests = peer?.requests ?? [];
+      expect(
+        requests.some((entry) => {
+          const url = new URL(entry.request.url);
+          return entry.request.method === "POST" && url.pathname === "/cursor-batch";
+        })
+      ).toBe(true);
+    }
   });
 
   it("unsubscribes watcher on socket close when last subscriber disconnects", async () => {

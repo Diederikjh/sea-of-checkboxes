@@ -17,6 +17,7 @@ export interface DurableObjectStateLike {
     get<T>(key: string): Promise<T | undefined>;
     put<T>(key: string, value: T): Promise<void>;
   };
+  waitUntil?(promise: Promise<unknown>): void;
 }
 
 export interface R2ObjectBodyLike {
