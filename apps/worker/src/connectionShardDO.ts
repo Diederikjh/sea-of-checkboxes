@@ -24,7 +24,9 @@ import {
   type ConnectedClient,
   type ConnectionShardDOOperationsContext,
 } from "./connectionShardDOOperations";
+import { ConnectionShardSetCellQueue } from "./connectionShardSetCellQueue";
 import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
+import { ConnectionShardTileBatchOrderTracker } from "./connectionShardTileBatchOrder";
 import { CursorCoordinator } from "./cursorCoordinator";
 import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import {
@@ -41,15 +43,6 @@ import {
   logStructuredEvent,
 } from "./observability";
 
-const TILE_BATCH_ORDER_TRACK_LIMIT = 8_192;
-type TileBatchOrderState = {
-  fromVer: number;
-  toVer: number;
-  opsPreview: Array<[number, 0 | 1]>;
-};
-
-type TileBatchOrderAnomalyKind = "duplicate_or_replay" | "version_regression" | "gap_or_jump";
-
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -60,8 +53,8 @@ export class ConnectionShardDO {
   #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
   #cursorCoordinator: CursorCoordinator;
   #tileGateway: ConnectionShardTileGateway;
-  #tileBatchOrderByTile: Map<string, TileBatchOrderState>;
-  #clientSetCellChains: Map<string, Promise<void>>;
+  #tileBatchOrderTracker: ConnectionShardTileBatchOrderTracker;
+  #setCellQueue: ConnectionShardSetCellQueue;
 
   constructor(
     state: DurableObjectStateLike,
@@ -91,8 +84,8 @@ export class ConnectionShardDO {
       tileOwnerNamespace: this.#env.TILE_OWNER,
       getCurrentShardName: () => this.#currentShardName(),
     });
-    this.#tileBatchOrderByTile = new Map();
-    this.#clientSetCellChains = new Map();
+    this.#tileBatchOrderTracker = new ConnectionShardTileBatchOrderTracker();
+    this.#setCellQueue = new ConnectionShardSetCellQueue();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -342,21 +335,7 @@ export class ConnectionShardDO {
   }
 
   async #enqueueSetCellPayload(uid: string, socket: SocketLike, payload: Uint8Array): Promise<void> {
-    const previous = this.#clientSetCellChains.get(uid) ?? Promise.resolve();
-    const next = previous
-      .catch(() => {
-        // Keep chain progressing after prior failure.
-      })
-      .then(() => this.#receiveClientPayload(uid, socket, payload));
-
-    this.#clientSetCellChains.set(uid, next);
-    try {
-      await next;
-    } finally {
-      if (this.#clientSetCellChains.get(uid) === next) {
-        this.#clientSetCellChains.delete(uid);
-      }
-    }
+    await this.#setCellQueue.enqueue(uid, () => this.#receiveClientPayload(uid, socket, payload));
   }
 
   #dispatchClientPayload(
@@ -392,51 +371,12 @@ export class ConnectionShardDO {
   }
 
   #recordTileBatchOrdering(message: Extract<ServerMessage, { t: "cellUpBatch" }>): void {
-    const previous = this.#tileBatchOrderByTile.get(message.tile);
-    const incomingOpsPreview = message.ops.slice(0, 4);
-    if (previous) {
-      if (message.toVer <= previous.toVer) {
-        this.#logTileBatchOrderAnomaly(
-          message,
-          previous,
-          incomingOpsPreview,
-          message.toVer === previous.toVer ? "duplicate_or_replay" : "version_regression"
-        );
-      } else if (message.fromVer !== previous.toVer + 1) {
-        this.#logTileBatchOrderAnomaly(message, previous, incomingOpsPreview, "gap_or_jump");
-      }
-    }
-
-    this.#tileBatchOrderByTile.set(message.tile, {
-      fromVer: message.fromVer,
-      toVer: message.toVer,
-      opsPreview: incomingOpsPreview,
-    });
-    if (this.#tileBatchOrderByTile.size <= TILE_BATCH_ORDER_TRACK_LIMIT) {
+    const anomaly = this.#tileBatchOrderTracker.record(message);
+    if (!anomaly) {
       return;
     }
-    const oldestTile = this.#tileBatchOrderByTile.keys().next().value as string | undefined;
-    if (!oldestTile) {
-      return;
-    }
-    this.#tileBatchOrderByTile.delete(oldestTile);
-  }
-
-  #logTileBatchOrderAnomaly(
-    message: Extract<ServerMessage, { t: "cellUpBatch" }>,
-    previous: TileBatchOrderState,
-    incomingOpsPreview: Array<[number, 0 | 1]>,
-    kind: TileBatchOrderAnomalyKind
-  ): void {
     this.#logEvent("tile_batch_order_anomaly", {
-      tile: message.tile,
-      kind,
-      prev_from_ver: previous.fromVer,
-      prev_to_ver: previous.toVer,
-      incoming_from_ver: message.fromVer,
-      incoming_to_ver: message.toVer,
-      prev_ops_preview: previous.opsPreview,
-      incoming_ops_preview: incomingOpsPreview,
+      ...anomaly,
     });
   }
 
@@ -512,7 +452,7 @@ export class ConnectionShardDO {
     }
 
     await disconnectClientFromShard(context, uid);
-    this.#clientSetCellChains.delete(uid);
+    this.#setCellQueue.clear(uid);
     this.#cursorCoordinator.onClientDisconnected(uid);
   }
 
