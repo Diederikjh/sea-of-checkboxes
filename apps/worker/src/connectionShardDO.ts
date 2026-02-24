@@ -40,6 +40,15 @@ import {
   logStructuredEvent,
 } from "./observability";
 
+const TILE_BATCH_ORDER_TRACK_LIMIT = 8_192;
+const CLIENT_BINARY_TAG_SET_CELL = 3;
+
+type TileBatchOrderState = {
+  fromVer: number;
+  toVer: number;
+  opsPreview: Array<[number, 0 | 1]>;
+};
+
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -50,6 +59,8 @@ export class ConnectionShardDO {
   #upgradeResponseFactory: WebSocketUpgradeResponseFactory;
   #cursorCoordinator: CursorCoordinator;
   #tileGateway: ConnectionShardTileGateway;
+  #tileBatchOrderByTile: Map<string, TileBatchOrderState>;
+  #clientSetCellChains: Map<string, Promise<void>>;
 
   constructor(
     state: DurableObjectStateLike,
@@ -79,6 +90,8 @@ export class ConnectionShardDO {
       tileOwnerNamespace: this.#env.TILE_OWNER,
       getCurrentShardName: () => this.#currentShardName(),
     });
+    this.#tileBatchOrderByTile = new Map();
+    this.#clientSetCellChains = new Map();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -191,6 +204,14 @@ export class ConnectionShardDO {
       }
 
       const currentUid = client.uid;
+      const isSetCellPayload = payload[0] === CLIENT_BINARY_TAG_SET_CELL;
+      if (isSetCellPayload) {
+        this.#enqueueSetCellPayload(currentUid, serverSocket, payload).catch(() => {
+          this.#sendError(client, "internal", "Failed to process client payload");
+        });
+        return;
+      }
+
       void this.#receiveClientPayload(currentUid, serverSocket, payload).catch(() => {
         this.#sendError(client, "internal", "Failed to process client payload");
       });
@@ -330,7 +351,26 @@ export class ConnectionShardDO {
     }
   }
 
+  async #enqueueSetCellPayload(uid: string, socket: SocketLike, payload: Uint8Array): Promise<void> {
+    const previous = this.#clientSetCellChains.get(uid) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {
+        // Keep chain progressing after prior failure.
+      })
+      .then(() => this.#receiveClientPayload(uid, socket, payload));
+
+    this.#clientSetCellChains.set(uid, next);
+    try {
+      await next;
+    } finally {
+      if (this.#clientSetCellChains.get(uid) === next) {
+        this.#clientSetCellChains.delete(uid);
+      }
+    }
+  }
+
   #receiveTileBatch(message: Extract<ServerMessage, { t: "cellUpBatch" }>): void {
+    this.#recordTileBatchOrdering(message);
     fanoutTileBatchToSubscribers({
       message,
       tileToClients: this.#tileToClients,
@@ -340,6 +380,50 @@ export class ConnectionShardDO {
       },
     });
     this.#cursorCoordinator.onActivity();
+  }
+
+  #recordTileBatchOrdering(message: Extract<ServerMessage, { t: "cellUpBatch" }>): void {
+    const previous = this.#tileBatchOrderByTile.get(message.tile);
+    const incomingOpsPreview = message.ops.slice(0, 4);
+    if (previous) {
+      if (message.toVer <= previous.toVer) {
+        this.#logEvent("tile_batch_order_anomaly", {
+          tile: message.tile,
+          kind: message.toVer === previous.toVer ? "duplicate_or_replay" : "version_regression",
+          prev_from_ver: previous.fromVer,
+          prev_to_ver: previous.toVer,
+          incoming_from_ver: message.fromVer,
+          incoming_to_ver: message.toVer,
+          prev_ops_preview: previous.opsPreview,
+          incoming_ops_preview: incomingOpsPreview,
+        });
+      } else if (message.fromVer !== previous.toVer + 1) {
+        this.#logEvent("tile_batch_order_anomaly", {
+          tile: message.tile,
+          kind: "gap_or_jump",
+          prev_from_ver: previous.fromVer,
+          prev_to_ver: previous.toVer,
+          incoming_from_ver: message.fromVer,
+          incoming_to_ver: message.toVer,
+          prev_ops_preview: previous.opsPreview,
+          incoming_ops_preview: incomingOpsPreview,
+        });
+      }
+    }
+
+    this.#tileBatchOrderByTile.set(message.tile, {
+      fromVer: message.fromVer,
+      toVer: message.toVer,
+      opsPreview: incomingOpsPreview,
+    });
+    if (this.#tileBatchOrderByTile.size <= TILE_BATCH_ORDER_TRACK_LIMIT) {
+      return;
+    }
+    const oldestTile = this.#tileBatchOrderByTile.keys().next().value as string | undefined;
+    if (!oldestTile) {
+      return;
+    }
+    this.#tileBatchOrderByTile.delete(oldestTile);
   }
 
   #sendServerMessage(client: ConnectedClient, message: ServerMessage): void {
@@ -414,6 +498,7 @@ export class ConnectionShardDO {
     }
 
     await disconnectClientFromShard(context, uid);
+    this.#clientSetCellChains.delete(uid);
     this.#cursorCoordinator.onClientDisconnected(uid);
   }
 
