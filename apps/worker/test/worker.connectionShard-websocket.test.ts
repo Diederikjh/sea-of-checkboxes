@@ -436,6 +436,17 @@ describe("ConnectionShardDO websocket handling", () => {
     const harness = createHarness();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-a",
+      });
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      await waitFor(() => {
+        const messages = decodeMessages(socket);
+        expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+      });
+
       const sendBatch = (fromVer: number, toVer: number, ops: Array<[number, 0 | 1]>) =>
         postTileBatch(harness.shard, {
           t: "cellUpBatch",
@@ -511,6 +522,43 @@ describe("ConnectionShardDO websocket handling", () => {
             && event.event === "tile_batch_loop_guard_drop"
             && event.trace_id === "trace-recursive"
             && event.trace_hop === 2
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("returns gone for tile-batch requests when shard has no local subscribers", async () => {
+    const harness = createHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const response = await postTileBatchWithHeaders(
+        harness.shard,
+        {
+          t: "cellUpBatch",
+          tile: "0:0",
+          fromVer: 12,
+          toVer: 12,
+          ops: [[1, 1]],
+        },
+        {
+          "x-sea-trace-id": "trace-no-subs",
+          "x-sea-trace-hop": "1",
+          "x-sea-trace-origin": "tile-owner:0:0",
+        }
+      );
+
+      expect(response.status).toBe(410);
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "tile_batch_no_local_subscribers"
+            && event.tile === "0:0"
+            && event.trace_id === "trace-no-subs"
         )
       ).toBe(true);
     } finally {

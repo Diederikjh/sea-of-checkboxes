@@ -1,6 +1,6 @@
 import { TILE_CELL_COUNT } from "@sea/domain";
 import { decodeRle64, encodeRle64 } from "@sea/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { TileOwnerDO } from "../src/worker";
 import {
@@ -10,6 +10,22 @@ import {
 import type { TileOwnerPersistence } from "../src/tileOwnerPersistence";
 import { MemoryStorage, NullStorage } from "./helpers/storageMocks";
 import { waitFor } from "./helpers/waitFor";
+
+function parseStructuredLogs(logSpy: ReturnType<typeof vi.spyOn>) {
+  return logSpy.mock.calls
+    .flatMap((call) => {
+      const payload = call[0];
+      if (typeof payload !== "string") {
+        return [];
+      }
+      try {
+        const parsed = JSON.parse(payload) as Record<string, unknown>;
+        return [parsed];
+      } catch {
+        return [];
+      }
+    });
+}
 
 function createTileOwnerHarness() {
   const storage = new MemoryStorage();
@@ -372,6 +388,76 @@ describe("TileOwnerDO propagation across restart", () => {
     ]);
 
     expect(race).toBe("resolved");
+  });
+
+  it("prunes stale shard watchers when shard reports no local subscribers", async () => {
+    const harness = createTileOwnerHarness();
+    const owner = harness.createInstance();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await owner.fetch(
+        postJson("/watch", {
+          tile: "0:0",
+          shard: "shard-active",
+          action: "sub",
+        })
+      );
+      await owner.fetch(
+        postJson("/watch", {
+          tile: "0:0",
+          shard: "shard-stale",
+          action: "sub",
+        })
+      );
+
+      harness.shardNamespace.getByName("shard-stale").setPathStatus("/tile-batch", 410);
+
+      const firstResponse = await owner.fetch(
+        postJson("/setCell", {
+          tile: "0:0",
+          i: 7,
+          v: 1,
+          op: "op_1",
+        })
+      );
+      expect(firstResponse.ok).toBe(true);
+
+      await waitFor(() => {
+        const events = parseStructuredLogs(logSpy);
+        expect(
+          events.some(
+            (event) =>
+              event.scope === "tile_owner_do"
+              && event.event === "stale_watchers_pruned"
+              && event.removed_count === 1
+          )
+        ).toBe(true);
+      });
+
+      const secondResponse = await owner.fetch(
+        postJson("/setCell", {
+          tile: "0:0",
+          i: 8,
+          v: 1,
+          op: "op_2",
+        })
+      );
+      expect(secondResponse.ok).toBe(true);
+      await expect(secondResponse.json()).resolves.toMatchObject({
+        accepted: true,
+        changed: true,
+        watcherCount: 1,
+      });
+
+      const activeShard = harness.shardNamespace.getByName("shard-active");
+      const staleShard = harness.shardNamespace.getByName("shard-stale");
+      await waitFor(() => {
+        expect(activeShard.requests.length).toBe(1);
+      });
+      expect(staleShard.requests.length).toBe(1);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it("dedupes duplicate op ids and avoids duplicate shard fanout", async () => {

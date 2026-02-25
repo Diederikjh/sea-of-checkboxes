@@ -393,22 +393,14 @@ export class TileOwnerDO {
 
     // Do not await fanout here to avoid circular waits:
     // shard -> tile owner -> shard (same shard may be in subscribers).
-    void Promise.allSettled(
-      subscribers.map(async (shardId) => {
-        const stub = this.#env.CONNECTION_SHARD.getByName(shardId);
-        await stub.fetch("https://connection-shard.internal/tile-batch", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            [TILE_BATCH_TRACE_ID_HEADER]: traceId,
-            [TILE_BATCH_TRACE_HOP_HEADER]: String(traceHop),
-            [TILE_BATCH_TRACE_ORIGIN_HEADER]: traceOrigin,
-          },
-          body: JSON.stringify(batch),
-        });
-      })
-    ).then((results) => {
-      const failedCount = results.filter((entry) => entry.status === "rejected").length;
+    void this.#fanoutWalBatch({
+      subscribers,
+      batch,
+      traceId,
+      traceHop,
+      traceOrigin,
+      fanoutStartMs,
+    }).catch(() => {
       this.#logEvent("broadcast", {
         tile,
         batch_size: batch.ops.length,
@@ -419,10 +411,112 @@ export class TileOwnerDO {
         trace_origin: traceOrigin,
         ops_preview: batch.ops.slice(0, 4),
         watcher_count: subscribers.length,
-        failed_count: failedCount,
+        failed_count: subscribers.length,
+        stale_count: 0,
         duration_ms: elapsedMs(fanoutStartMs),
       });
     });
+  }
+
+  async #fanoutWalBatch({
+    subscribers,
+    batch,
+    traceId,
+    traceHop,
+    traceOrigin,
+    fanoutStartMs,
+  }: {
+    subscribers: string[];
+    batch: Extract<ServerMessage, { t: "cellUpBatch" }>;
+    traceId: string;
+    traceHop: number;
+    traceOrigin: string;
+    fanoutStartMs: number;
+  }): Promise<void> {
+    const settled = await Promise.allSettled(
+      subscribers.map(async (shardId) => {
+        const stub = this.#env.CONNECTION_SHARD.getByName(shardId);
+        const response = await stub.fetch("https://connection-shard.internal/tile-batch", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [TILE_BATCH_TRACE_ID_HEADER]: traceId,
+            [TILE_BATCH_TRACE_HOP_HEADER]: String(traceHop),
+            [TILE_BATCH_TRACE_ORIGIN_HEADER]: traceOrigin,
+          },
+          body: JSON.stringify(batch),
+        });
+
+        if (response.status === 410) {
+          return {
+            shardId,
+            status: "stale" as const,
+          };
+        }
+
+        return {
+          shardId,
+          status: response.ok ? ("ok" as const) : ("failed" as const),
+        };
+      })
+    );
+
+    let failedCount = 0;
+    const staleShards: string[] = [];
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        failedCount += 1;
+        continue;
+      }
+
+      if (result.value.status === "stale") {
+        staleShards.push(result.value.shardId);
+        continue;
+      }
+
+      if (result.value.status === "failed") {
+        failedCount += 1;
+      }
+    }
+
+    if (staleShards.length > 0) {
+      const removed = this.#pruneStaleSubscribers(staleShards);
+      if (removed.length > 0) {
+        await this.#persistSubscribers();
+        this.#logEvent("stale_watchers_pruned", {
+          tile: this.#activeTileKey(),
+          removed_count: removed.length,
+          removed_preview: removed.slice(0, 4),
+          watcher_count: this.#subscriberShards.size,
+        });
+      }
+    }
+
+    this.#logEvent("broadcast", {
+      tile: batch.tile,
+      batch_size: batch.ops.length,
+      from_ver: batch.fromVer,
+      to_ver: batch.toVer,
+      trace_id: traceId,
+      trace_hop: traceHop,
+      trace_origin: traceOrigin,
+      ops_preview: batch.ops.slice(0, 4),
+      watcher_count: subscribers.length,
+      failed_count: failedCount,
+      stale_count: staleShards.length,
+      duration_ms: elapsedMs(fanoutStartMs),
+    });
+  }
+
+  #pruneStaleSubscribers(shardIds: string[]): string[] {
+    const removed: string[] = [];
+    for (const shardId of shardIds) {
+      if (!this.#subscriberShards.delete(shardId)) {
+        continue;
+      }
+      removed.push(shardId);
+    }
+    return removed;
   }
 
   async #recordSnapshotOperation(): Promise<void> {

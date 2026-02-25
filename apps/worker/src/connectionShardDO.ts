@@ -139,6 +139,19 @@ export class ConnectionShardDO {
       if (!batch || batch.t !== "cellUpBatch") {
         return new Response("Invalid tile batch payload", { status: 400 });
       }
+
+      const localSubscriberCount = this.#localTileSubscriberCount(batch.tile);
+      if (localSubscriberCount === 0) {
+        this.#logEvent("tile_batch_no_local_subscribers", {
+          tile: batch.tile,
+          trace_id: traceId ?? undefined,
+          trace_hop: traceHop ?? undefined,
+          trace_origin: traceOrigin ?? undefined,
+          path: "/tile-batch",
+        });
+        return new Response(null, { status: 410 });
+      }
+
       this.#receiveTileBatch(batch);
       return new Response(null, { status: 204 });
     }
@@ -365,9 +378,10 @@ export class ConnectionShardDO {
         default:
           return;
       }
-    } catch {
+    } catch (error) {
       this.#logEvent("internal_error", {
         uid,
+        ...this.#errorFields(error),
       });
       this.#sendError(client, "internal", "Failed to process message");
     }
@@ -547,6 +561,27 @@ export class ConnectionShardDO {
 
   #receiveCursorBatch(batch: CursorRelayBatch): void {
     this.#cursorCoordinator.onCursorBatch(batch);
+  }
+
+  #localTileSubscriberCount(tileKey: string): number {
+    return this.#tileToClients.get(tileKey)?.size ?? 0;
+  }
+
+  #errorFields(error: unknown): { error_name?: string; error_message?: string } {
+    if (typeof error !== "object" || error === null) {
+      return {};
+    }
+
+    const name = "name" in error && typeof error.name === "string" ? error.name : undefined;
+    const message =
+      "message" in error && typeof error.message === "string"
+        ? error.message.slice(0, 240)
+        : undefined;
+
+    return {
+      ...(name ? { error_name: name } : {}),
+      ...(message ? { error_message: message } : {}),
+    };
   }
 
   #operationsContext(): ConnectionShardDOOperationsContext {

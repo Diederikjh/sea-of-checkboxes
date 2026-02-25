@@ -49,12 +49,14 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
   readonly requests: RecordedRequest[];
   #defaultStatus: number;
   #neverResolvePaths: Set<string>;
+  #statusByPath: Map<string, number>;
 
   constructor(name: string, options: { defaultStatus?: number } = {}) {
     this.name = name;
     this.requests = [];
     this.#defaultStatus = options.defaultStatus ?? 204;
     this.#neverResolvePaths = new Set();
+    this.#statusByPath = new Map();
   }
 
   setNeverResolvePath(pathname: string, enabled: boolean): void {
@@ -63,6 +65,10 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
       return;
     }
     this.#neverResolvePaths.delete(pathname);
+  }
+
+  setPathStatus(pathname: string, status: number): void {
+    this.#statusByPath.set(pathname, status);
   }
 
   async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
@@ -87,7 +93,9 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
       return new Promise<Response>(() => {});
     }
 
-    return new Response(null, { status: this.#defaultStatus });
+    return new Response(null, {
+      status: this.#statusByPath.get(url.pathname) ?? this.#defaultStatus,
+    });
   }
 }
 
