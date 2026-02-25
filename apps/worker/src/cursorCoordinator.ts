@@ -4,31 +4,45 @@ import {
 } from "@sea/domain";
 import type { ServerMessage } from "@sea/protocol";
 
-import type { DurableObjectNamespaceLike } from "./doCommon";
 import type { ConnectedClient } from "./connectionShardDOOperations";
 import type {
   CursorPresence,
   CursorRelayBatch,
 } from "./cursorRelay";
 import { selectCursorSubscriptions } from "./cursorSelection";
-import { peerShardNames } from "./sharding";
 
 const CURSOR_TTL_MS = 5_000;
 const CURSOR_SELECTION_REFRESH_MS = 250;
 
+export interface Clock {
+  nowMs(): number;
+}
+
+export interface ShardTopology {
+  peerShardNames(currentShard: string): string[];
+}
+
+export interface CursorRelayTransport {
+  relayCursorBatch(peerShards: string[], body: string): Promise<void>;
+}
+
 interface CursorCoordinatorOptions {
   clients: Map<string, ConnectedClient>;
-  connectionShardNamespace: DurableObjectNamespaceLike;
   getCurrentShardName: () => string;
   defer: (promise: Promise<unknown>) => void;
+  clock: Clock;
+  shardTopology: ShardTopology;
+  cursorRelayTransport: CursorRelayTransport;
   sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 }
 
 export class CursorCoordinator {
   #clients: Map<string, ConnectedClient>;
-  #connectionShardNamespace: DurableObjectNamespaceLike;
   #getCurrentShardName: () => string;
   #defer: (promise: Promise<unknown>) => void;
+  #clock: Clock;
+  #shardTopology: ShardTopology;
+  #cursorRelayTransport: CursorRelayTransport;
   #sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 
   #cursorByUid: Map<string, CursorPresence>;
@@ -41,9 +55,11 @@ export class CursorCoordinator {
 
   constructor(options: CursorCoordinatorOptions) {
     this.#clients = options.clients;
-    this.#connectionShardNamespace = options.connectionShardNamespace;
     this.#getCurrentShardName = options.getCurrentShardName;
     this.#defer = options.defer;
+    this.#clock = options.clock;
+    this.#shardTopology = options.shardTopology;
+    this.#cursorRelayTransport = options.cursorRelayTransport;
     this.#sendServerMessage = options.sendServerMessage;
 
     this.#cursorByUid = new Map();
@@ -79,7 +95,7 @@ export class CursorCoordinator {
   }
 
   onLocalCursor(client: ConnectedClient, x: number, y: number): void {
-    const nowMs = Date.now();
+    const nowMs = this.#clock.nowMs();
     client.lastCursorX = x;
     client.lastCursorY = y;
 
@@ -138,7 +154,7 @@ export class CursorCoordinator {
     this.#pendingCursorRelays.clear();
 
     const currentShard = this.#getCurrentShardName();
-    const peers = peerShardNames(currentShard);
+    const peers = this.#shardTopology.peerShardNames(currentShard);
     if (peers.length === 0) {
       return;
     }
@@ -149,18 +165,7 @@ export class CursorCoordinator {
     });
 
     this.#defer(
-      Promise.all(
-        peers.map(async (peerShard) => {
-          const stub = this.#connectionShardNamespace.getByName(peerShard);
-          await stub.fetch("https://connection-shard.internal/cursor-batch", {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-            },
-            body,
-          });
-        })
-      ).catch(() => {
+      this.#cursorRelayTransport.relayCursorBatch(peers, body).catch(() => {
         // Cursor fanout is best-effort.
       })
     );
@@ -218,7 +223,7 @@ export class CursorCoordinator {
   }
 
   #refreshCursorSelections(force: boolean): void {
-    const nowMs = Date.now();
+    const nowMs = this.#clock.nowMs();
     if (!force && !this.#cursorSelectionDirty) {
       return;
     }

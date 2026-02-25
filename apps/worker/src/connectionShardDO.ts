@@ -29,6 +29,7 @@ import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
 import { ConnectionShardTileBatchOrderTracker } from "./connectionShardTileBatchOrder";
 import { CursorCoordinator } from "./cursorCoordinator";
 import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
+import { peerShardNames } from "./sharding";
 import {
   createCloudflareUpgradeResponseFactory,
   createRuntimeSocketPairFactory,
@@ -74,10 +75,18 @@ export class ConnectionShardDO {
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
-      connectionShardNamespace: this.#env.CONNECTION_SHARD,
       getCurrentShardName: () => this.#currentShardName(),
       defer: (promise) => {
         this.#defer(promise);
+      },
+      clock: {
+        nowMs: () => this.#nowMs(),
+      },
+      shardTopology: {
+        peerShardNames: (currentShard) => this.#peerShardNames(currentShard),
+      },
+      cursorRelayTransport: {
+        relayCursorBatch: (peerShards, body) => this.#relayCursorBatchToPeers(peerShards, body),
       },
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
@@ -444,6 +453,29 @@ export class ConnectionShardDO {
     return this.#shardName ?? this.#state.id.toString();
   }
 
+  #nowMs(): number {
+    return Date.now();
+  }
+
+  #peerShardNames(currentShard: string): string[] {
+    return peerShardNames(currentShard);
+  }
+
+  async #relayCursorBatchToPeers(peerShards: string[], body: string): Promise<void> {
+    await Promise.all(
+      peerShards.map(async (peerShard) => {
+        const stub = this.#env.CONNECTION_SHARD.getByName(peerShard);
+        await stub.fetch("https://connection-shard.internal/cursor-batch", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body,
+        });
+      })
+    );
+  }
+
   #defer(promise: Promise<unknown>): void {
     if (typeof this.#state.waitUntil === "function") {
       this.#state.waitUntil(promise);
@@ -490,7 +522,7 @@ export class ConnectionShardDO {
       watchTile: (tileKey, action) => this.#watchTile(tileKey, action),
       setTileCell: (payload) => this.#setTileCell(payload),
       sendSnapshotToClient: (client, tileKey) => this.#sendSnapshotToClient(client, tileKey),
-      nowMs: () => Date.now(),
+      nowMs: () => this.#nowMs(),
     };
   }
 
