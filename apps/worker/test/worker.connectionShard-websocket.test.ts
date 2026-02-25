@@ -649,6 +649,7 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
     });
 
+    await new Promise((resolve) => setTimeout(resolve, 70));
     await drainDeferred(harness);
     const beforeRelayCount = countCursorRelaySubrequests(harness);
 
@@ -674,6 +675,7 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(true);
     }, { attempts: 80, delayMs: 5 });
 
+    await new Promise((resolve) => setTimeout(resolve, 70));
     await drainDeferred(harness);
     const afterRelayCount = countCursorRelaySubrequests(harness);
     expect(afterRelayCount).toBe(beforeRelayCount);

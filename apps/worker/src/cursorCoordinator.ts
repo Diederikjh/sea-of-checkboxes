@@ -13,6 +13,7 @@ import { selectCursorSubscriptions } from "./cursorSelection";
 
 const CURSOR_TTL_MS = 5_000;
 const CURSOR_SELECTION_REFRESH_MS = 250;
+const CURSOR_RELAY_FLUSH_MS = 50;
 
 export interface Clock {
   nowMs(): number;
@@ -49,6 +50,8 @@ export class CursorCoordinator {
   #cursorTileIndex: Map<string, Set<string>>;
   #localCursorSeqByUid: Map<string, number>;
   #pendingCursorRelays: Map<string, CursorPresence>;
+  #cursorRelayFlushTimer: ReturnType<typeof setTimeout> | null;
+  #cursorRelayInFlight: boolean;
   #cursorSelectionDirty: boolean;
   #lastCursorSelectionRefreshMs: number;
   #cursorSelectionRefreshTimer: ReturnType<typeof setTimeout> | null;
@@ -66,6 +69,8 @@ export class CursorCoordinator {
     this.#cursorTileIndex = new Map();
     this.#localCursorSeqByUid = new Map();
     this.#pendingCursorRelays = new Map();
+    this.#cursorRelayFlushTimer = null;
+    this.#cursorRelayInFlight = false;
     this.#cursorSelectionDirty = false;
     this.#lastCursorSelectionRefreshMs = 0;
     this.#cursorSelectionRefreshTimer = null;
@@ -117,7 +122,7 @@ export class CursorCoordinator {
     this.#sendCursorToSubscribedClients(state);
 
     this.#pendingCursorRelays.set(state.uid, state);
-    this.#flushCursorRelays();
+    this.#scheduleCursorRelayFlush();
   }
 
   onCursorBatch(batch: CursorRelayBatch): void {
@@ -145,7 +150,22 @@ export class CursorCoordinator {
     this.#refreshCursorSelections(false);
   }
 
+  #scheduleCursorRelayFlush(delayMs: number = CURSOR_RELAY_FLUSH_MS): void {
+    if (this.#cursorRelayFlushTimer) {
+      return;
+    }
+
+    this.#cursorRelayFlushTimer = setTimeout(() => {
+      this.#cursorRelayFlushTimer = null;
+      this.#flushCursorRelays();
+    }, Math.max(0, delayMs));
+  }
+
   #flushCursorRelays(): void {
+    if (this.#cursorRelayInFlight) {
+      return;
+    }
+
     if (this.#pendingCursorRelays.size === 0) {
       return;
     }
@@ -164,10 +184,19 @@ export class CursorCoordinator {
       updates,
     });
 
+    this.#cursorRelayInFlight = true;
     this.#defer(
-      this.#cursorRelayTransport.relayCursorBatch(peers, body).catch(() => {
-        // Cursor fanout is best-effort.
-      })
+      this.#cursorRelayTransport
+        .relayCursorBatch(peers, body)
+        .catch(() => {
+          // Cursor fanout is best-effort.
+        })
+        .finally(() => {
+          this.#cursorRelayInFlight = false;
+          if (this.#pendingCursorRelays.size > 0) {
+            this.#scheduleCursorRelayFlush(0);
+          }
+        })
     );
   }
 

@@ -519,8 +519,12 @@ export class ConnectionShardDO {
 
   #defer(promise: Promise<unknown>): void {
     if (typeof this.#state.waitUntil === "function") {
-      this.#state.waitUntil(promise);
-      return;
+      try {
+        this.#state.waitUntil(promise);
+        return;
+      } catch {
+        // Fall through to detached best-effort execution when waitUntil rejects.
+      }
     }
 
     // Test harness states may not implement waitUntil.
