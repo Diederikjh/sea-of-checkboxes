@@ -424,6 +424,70 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "cellUpBatch")).toBe(false);
   });
 
+  it("defers re-entrant setCell messages emitted during tile-batch fanout", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const tileStub = harness.tileOwners.getByName("0:0");
+      expect(tileStub.watchRequests.length).toBe(1);
+    });
+
+    const originalSend = socket.send.bind(socket);
+    let reflectedSetCell = false;
+    socket.send = (payload) => {
+      originalSend(payload);
+      if (reflectedSetCell || typeof payload === "string") {
+        return;
+      }
+
+      const message = decodeServerMessageBinary(toUint8Array(payload));
+      if (message.t !== "cellUpBatch" || message.tile !== "0:0") {
+        return;
+      }
+
+      reflectedSetCell = true;
+      socket.emitMessage(
+        encodeClientMessageBinary({
+          t: "setCell",
+          tile: "0:0",
+          i: 11,
+          v: 1,
+          op: "op_reentrant",
+        })
+      );
+    };
+
+    const response = await postTileBatch(harness.shard, {
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 1,
+      toVer: 1,
+      ops: [[10, 1]],
+    });
+    expect(response.status).toBe(204);
+
+    const tileStub = harness.tileOwners.getByName("0:0");
+    expect(tileStub.setCellRequests.length).toBe(0);
+
+    await waitFor(() => {
+      expect(
+        tileStub.setCellRequests.some(
+          (request) =>
+            request.op === "op_reentrant" &&
+            request.tile === "0:0" &&
+            request.i === 11 &&
+            request.v === 1
+        )
+      ).toBe(true);
+    });
+  });
+
   it("logs non-monotonic tile-batch version ordering anomalies", async () => {
     const harness = createHarness();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

@@ -397,11 +397,18 @@ export class ConnectionShardDO {
     payload: Uint8Array,
     client: ConnectedClient
   ): void {
-    const task = this.#isSetCellBinaryPayload(payload)
-      ? this.#enqueueSetCellPayload(uid, socket, payload)
-      : this.#receiveClientPayload(uid, socket, payload);
+    if (this.#isSetCellBinaryPayload(payload)) {
+      this.#deferClientSetCellTask(async () => {
+        try {
+          await this.#enqueueSetCellPayload(uid, socket, payload);
+        } catch {
+          this.#sendError(client, "internal", "Failed to process client payload");
+        }
+      });
+      return;
+    }
 
-    void task.catch(() => {
+    void this.#receiveClientPayload(uid, socket, payload).catch(() => {
       this.#sendError(client, "internal", "Failed to process client payload");
     });
   }
@@ -518,8 +525,16 @@ export class ConnectionShardDO {
   }
 
   #deferCursorRelayTask(task: () => Promise<unknown>): void {
-    // Cursor fanout is best-effort and intentionally detached from the current
-    // request chain to avoid deep recursive service-binding ancestry.
+    this.#deferDetachedTask(task);
+  }
+
+  #deferClientSetCellTask(task: () => Promise<unknown>): void {
+    this.#deferDetachedTask(task);
+  }
+
+  #deferDetachedTask(task: () => Promise<unknown>): void {
+    // Best-effort work is intentionally detached from the current request chain
+    // to avoid deep recursive service-binding ancestry.
     const timer = setTimeout(() => {
       void task().catch(() => {});
     }, 0);
