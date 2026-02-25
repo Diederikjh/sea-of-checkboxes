@@ -44,6 +44,10 @@ import {
   logStructuredEvent,
 } from "./observability";
 
+const TILE_BATCH_TRACE_ID_HEADER = "x-sea-trace-id";
+const TILE_BATCH_TRACE_HOP_HEADER = "x-sea-trace-hop";
+const TILE_BATCH_TRACE_ORIGIN_HEADER = "x-sea-trace-origin";
+
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -108,6 +112,29 @@ export class ConnectionShardDO {
     }
 
     if (url.pathname === "/tile-batch" && request.method === "POST") {
+      const traceId = this.#tileBatchTraceIdFromRequest(request);
+      const traceHop = this.#tileBatchTraceHopFromRequest(request);
+      const traceOrigin = request.headers.get(TILE_BATCH_TRACE_ORIGIN_HEADER);
+
+      if (traceHop !== null && traceHop > 1) {
+        this.#logEvent("tile_batch_loop_guard_drop", {
+          trace_id: traceId ?? undefined,
+          trace_hop: traceHop,
+          trace_origin: traceOrigin ?? undefined,
+          path: "/tile-batch",
+        });
+        return new Response(null, { status: 204 });
+      }
+
+      if (traceId || traceHop !== null) {
+        this.#logEvent("tile_batch_ingress", {
+          trace_id: traceId ?? undefined,
+          trace_hop: traceHop ?? undefined,
+          trace_origin: traceOrigin ?? undefined,
+          path: "/tile-batch",
+        });
+      }
+
       const batch = await readJson<Extract<ServerMessage, { t: "cellUpBatch" }>>(request);
       if (!batch || batch.t !== "cellUpBatch") {
         return new Response("Invalid tile batch payload", { status: 400 });
@@ -484,6 +511,23 @@ export class ConnectionShardDO {
 
     // Test harness states may not implement waitUntil.
     void promise.catch(() => {});
+  }
+
+  #tileBatchTraceIdFromRequest(request: Request): string | null {
+    const traceId = request.headers.get(TILE_BATCH_TRACE_ID_HEADER)?.trim() ?? "";
+    return traceId.length > 0 ? traceId : null;
+  }
+
+  #tileBatchTraceHopFromRequest(request: Request): number | null {
+    const rawHop = request.headers.get(TILE_BATCH_TRACE_HOP_HEADER)?.trim() ?? "";
+    if (rawHop.length === 0) {
+      return null;
+    }
+    const hop = Number.parseInt(rawHop, 10);
+    if (!Number.isFinite(hop) || hop < 0) {
+      return null;
+    }
+    return hop;
   }
 
   async #disconnectClientIfCurrent(

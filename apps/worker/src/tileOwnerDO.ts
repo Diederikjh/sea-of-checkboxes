@@ -32,6 +32,9 @@ const TILE_SNAPSHOT_MAX_AGE_MS = 5_000;
 const TILE_SNAPSHOT_MAX_OPS = 500;
 const TILE_WAL_FLUSH_MS = 50;
 const TILE_WAL_MAX_BATCH_OPS = 128;
+const TILE_BATCH_TRACE_ID_HEADER = "x-sea-trace-id";
+const TILE_BATCH_TRACE_HOP_HEADER = "x-sea-trace-hop";
+const TILE_BATCH_TRACE_ORIGIN_HEADER = "x-sea-trace-origin";
 
 export class TileOwnerDO {
   #env: Env;
@@ -367,6 +370,9 @@ export class TileOwnerDO {
     this.#pendingBatchToVer = null;
 
     const subscribers = Array.from(this.#subscriberShards);
+    const traceId = this.#nextTileBatchTraceId(tile, batch.toVer);
+    const traceHop = 1;
+    const traceOrigin = `tile-owner:${tile}`;
     const fanoutStartMs = Date.now();
     if (subscribers.length === 0) {
       this.#logEvent("broadcast", {
@@ -374,6 +380,9 @@ export class TileOwnerDO {
         batch_size: batch.ops.length,
         from_ver: batch.fromVer,
         to_ver: batch.toVer,
+        trace_id: traceId,
+        trace_hop: traceHop,
+        trace_origin: traceOrigin,
         ops_preview: batch.ops.slice(0, 4),
         watcher_count: 0,
         failed_count: 0,
@@ -391,6 +400,9 @@ export class TileOwnerDO {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [TILE_BATCH_TRACE_ID_HEADER]: traceId,
+            [TILE_BATCH_TRACE_HOP_HEADER]: String(traceHop),
+            [TILE_BATCH_TRACE_ORIGIN_HEADER]: traceOrigin,
           },
           body: JSON.stringify(batch),
         });
@@ -402,6 +414,9 @@ export class TileOwnerDO {
         batch_size: batch.ops.length,
         from_ver: batch.fromVer,
         to_ver: batch.toVer,
+        trace_id: traceId,
+        trace_hop: traceHop,
+        trace_origin: traceOrigin,
         ops_preview: batch.ops.slice(0, 4),
         watcher_count: subscribers.length,
         failed_count: failedCount,
@@ -494,6 +509,10 @@ export class TileOwnerDO {
       throw new Error("TileOwnerDO tile key was not initialized");
     }
     return this.#tileKey;
+  }
+
+  #nextTileBatchTraceId(tile: string, toVer: number): string {
+    return `${tile}:${toVer}:${crypto.randomUUID().slice(0, 8)}`;
   }
 
   #logEvent(event: string, fields: Record<string, unknown>): void {

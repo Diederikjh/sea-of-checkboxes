@@ -191,6 +191,23 @@ async function postTileBatch(
   return postJson(shard, "/tile-batch", body);
 }
 
+async function postTileBatchWithHeaders(
+  shard: ConnectionShardDO,
+  body: Extract<ServerMessage, { t: "cellUpBatch" }>,
+  headers: Record<string, string>
+): Promise<Response> {
+  return shard.fetch(
+    new Request("https://connection-shard.internal/tile-batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
 async function postCursorBatch(
   shard: ConnectionShardDO,
   body: unknown
@@ -444,6 +461,58 @@ describe("ConnectionShardDO websocket handling", () => {
         prev_to_ver: 921,
         incoming_to_ver: 920,
       });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("drops tile-batch requests with recursive trace hop > 1", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+
+      await waitFor(() => {
+        const messages = decodeMessages(socket);
+        expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+      });
+
+      const beforeMessages = decodeMessages(socket).length;
+      const response = await postTileBatchWithHeaders(
+        harness.shard,
+        {
+          t: "cellUpBatch",
+          tile: "0:0",
+          fromVer: 11,
+          toVer: 11,
+          ops: [[0, 1]],
+        },
+        {
+          "x-sea-trace-id": "trace-recursive",
+          "x-sea-trace-hop": "2",
+          "x-sea-trace-origin": "tile-owner:0:0",
+        }
+      );
+      expect(response.status).toBe(204);
+
+      const afterMessages = decodeMessages(socket).length;
+      expect(afterMessages).toBe(beforeMessages);
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "tile_batch_loop_guard_drop"
+            && event.trace_id === "trace-recursive"
+            && event.trace_hop === 2
+        )
+      ).toBe(true);
     } finally {
       logSpy.mockRestore();
     }
