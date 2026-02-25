@@ -120,6 +120,24 @@ function createWaitUntilRelayHarness() {
   };
 }
 
+type WaitUntilRelayHarness = ReturnType<typeof createWaitUntilRelayHarness>;
+
+function countCursorRelaySubrequests(harness: WaitUntilRelayHarness): number {
+  let total = 0;
+  for (const stub of harness.connectionShards.stubs.values()) {
+    total += stub.requests.filter((entry) => new URL(entry.request.url).pathname === "/cursor-batch").length;
+  }
+  return total;
+}
+
+async function drainDeferred(harness: WaitUntilRelayHarness): Promise<void> {
+  if (harness.deferred.length === 0) {
+    return;
+  }
+  const pending = harness.deferred.splice(0);
+  await Promise.allSettled(pending);
+}
+
 async function connectClient(
   shard: ConnectionShardDO,
   socketPairFactory: MockSocketPairFactory,
@@ -498,6 +516,52 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(false);
   });
 
+  it("does not relay inbound cursor batches to peer shards", async () => {
+    const harness = createWaitUntilRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    });
+
+    await drainDeferred(harness);
+    const beforeRelayCount = countCursorRelaySubrequests(harness);
+
+    const response = await postCursorBatch(harness.shard, {
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.5,
+          y: 1.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+
+    expect(response.status).toBe(204);
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(true);
+    }, { attempts: 80, delayMs: 5 });
+
+    await drainDeferred(harness);
+    const afterRelayCount = countCursorRelaySubrequests(harness);
+    expect(afterRelayCount).toBe(beforeRelayCount);
+  });
+
   it("rejects malformed cursor-batch payloads", async () => {
     const harness = createHarness();
     const badBodies = [
@@ -518,6 +582,43 @@ describe("ConnectionShardDO websocket handling", () => {
       const response = await postCursorBatch(harness.shard, body);
       expect(response.status).toBe(400);
     }
+  });
+
+  it("ignores self-origin cursor batches without forwarding", async () => {
+    const harness = createWaitUntilRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+    await drainDeferred(harness);
+    const beforeRelayCount = countCursorRelaySubrequests(harness);
+
+    const response = await postCursorBatch(harness.shard, {
+      from: "shard-0",
+      updates: [
+        {
+          uid: "u_remote_self",
+          name: "RemoteSelf",
+          x: 2.5,
+          y: 2.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+    expect(response.status).toBe(204);
+
+    const messages = decodeMessages(socket);
+    expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote_self")).toBe(false);
+
+    await drainDeferred(harness);
+    const afterRelayCount = countCursorRelaySubrequests(harness);
+    expect(afterRelayCount).toBe(beforeRelayCount);
   });
 
   it("limits remote cursor subscription to nearest MAX_REMOTE_CURSORS", async () => {
@@ -616,6 +717,34 @@ describe("ConnectionShardDO websocket handling", () => {
           return entry.request.method === "POST" && url.pathname === "/cursor-batch";
         })
       ).toBe(true);
+    }
+  });
+
+  it("does not generate timer-driven cursor relay from inbound batches", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createWaitUntilRelayHarness();
+      const response = await postCursorBatch(harness.shard, {
+        from: "shard-1",
+        updates: [
+          {
+            uid: "u_remote_timer",
+            name: "RemoteTimer",
+            x: 3.5,
+            y: 3.5,
+            seenAt: Date.now(),
+            seq: 1,
+            tileKey: "0:0",
+          },
+        ],
+      });
+      expect(response.status).toBe(204);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await drainDeferred(harness);
+      expect(countCursorRelaySubrequests(harness)).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

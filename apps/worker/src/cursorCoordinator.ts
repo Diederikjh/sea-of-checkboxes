@@ -15,7 +15,6 @@ import { peerShardNames } from "./sharding";
 
 const CURSOR_TTL_MS = 5_000;
 const CURSOR_SELECTION_REFRESH_MS = 250;
-const CURSOR_RELAY_FLUSH_MS = 100;
 
 interface CursorCoordinatorOptions {
   clients: Map<string, ConnectedClient>;
@@ -36,7 +35,6 @@ export class CursorCoordinator {
   #cursorTileIndex: Map<string, Set<string>>;
   #localCursorSeqByUid: Map<string, number>;
   #pendingCursorRelays: Map<string, CursorPresence>;
-  #cursorRelayFlushTimer: ReturnType<typeof setTimeout> | null;
   #cursorSelectionDirty: boolean;
   #lastCursorSelectionRefreshMs: number;
   #cursorSelectionRefreshTimer: ReturnType<typeof setTimeout> | null;
@@ -52,7 +50,6 @@ export class CursorCoordinator {
     this.#cursorTileIndex = new Map();
     this.#localCursorSeqByUid = new Map();
     this.#pendingCursorRelays = new Map();
-    this.#cursorRelayFlushTimer = null;
     this.#cursorSelectionDirty = false;
     this.#lastCursorSelectionRefreshMs = 0;
     this.#cursorSelectionRefreshTimer = null;
@@ -104,7 +101,7 @@ export class CursorCoordinator {
     this.#sendCursorToSubscribedClients(state);
 
     this.#pendingCursorRelays.set(state.uid, state);
-    this.#scheduleCursorRelayFlush();
+    this.#flushCursorRelays();
   }
 
   onCursorBatch(batch: CursorRelayBatch): void {
@@ -130,17 +127,6 @@ export class CursorCoordinator {
 
     this.#markCursorSelectionDirty();
     this.#refreshCursorSelections(false);
-  }
-
-  #scheduleCursorRelayFlush(): void {
-    if (this.#cursorRelayFlushTimer) {
-      return;
-    }
-
-    this.#cursorRelayFlushTimer = setTimeout(() => {
-      this.#cursorRelayFlushTimer = null;
-      void this.#flushCursorRelays();
-    }, CURSOR_RELAY_FLUSH_MS);
   }
 
   #flushCursorRelays(): void {
