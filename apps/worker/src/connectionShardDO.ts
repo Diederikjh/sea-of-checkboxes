@@ -80,8 +80,8 @@ export class ConnectionShardDO {
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
       getCurrentShardName: () => this.#currentShardName(),
-      defer: (promise) => {
-        this.#defer(promise);
+      defer: (task) => {
+        this.#deferCursorRelayTask(task);
       },
       clock: {
         nowMs: () => this.#nowMs(),
@@ -517,18 +517,20 @@ export class ConnectionShardDO {
     );
   }
 
-  #defer(promise: Promise<unknown>): void {
-    if (typeof this.#state.waitUntil === "function") {
-      try {
-        this.#state.waitUntil(promise);
-        return;
-      } catch {
-        // Fall through to detached best-effort execution when waitUntil rejects.
-      }
-    }
+  #deferCursorRelayTask(task: () => Promise<unknown>): void {
+    // Cursor fanout is best-effort and intentionally detached from the current
+    // request chain to avoid deep recursive service-binding ancestry.
+    const timer = setTimeout(() => {
+      void task().catch(() => {});
+    }, 0);
+    this.#maybeUnrefTimer(timer);
+  }
 
-    // Test harness states may not implement waitUntil.
-    void promise.catch(() => {});
+  #maybeUnrefTimer(timer: ReturnType<typeof setTimeout>): void {
+    const unref = (timer as unknown as { unref?: () => void }).unref;
+    if (typeof unref === "function") {
+      unref.call(timer);
+    }
   }
 
   #tileBatchTraceIdFromRequest(request: Request): string | null {

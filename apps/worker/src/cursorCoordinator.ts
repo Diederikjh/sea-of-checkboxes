@@ -30,7 +30,7 @@ export interface CursorRelayTransport {
 interface CursorCoordinatorOptions {
   clients: Map<string, ConnectedClient>;
   getCurrentShardName: () => string;
-  defer: (promise: Promise<unknown>) => void;
+  defer: (task: () => Promise<unknown>) => void;
   clock: Clock;
   shardTopology: ShardTopology;
   cursorRelayTransport: CursorRelayTransport;
@@ -40,7 +40,7 @@ interface CursorCoordinatorOptions {
 export class CursorCoordinator {
   #clients: Map<string, ConnectedClient>;
   #getCurrentShardName: () => string;
-  #defer: (promise: Promise<unknown>) => void;
+  #defer: (task: () => Promise<unknown>) => void;
   #clock: Clock;
   #shardTopology: ShardTopology;
   #cursorRelayTransport: CursorRelayTransport;
@@ -185,19 +185,24 @@ export class CursorCoordinator {
     });
 
     this.#cursorRelayInFlight = true;
-    this.#defer(
-      this.#cursorRelayTransport
-        .relayCursorBatch(peers, body)
-        .catch(() => {
-          // Cursor fanout is best-effort.
-        })
-        .finally(() => {
-          this.#cursorRelayInFlight = false;
-          if (this.#pendingCursorRelays.size > 0) {
-            this.#scheduleCursorRelayFlush(0);
-          }
-        })
-    );
+    const relayTask = async (): Promise<void> => {
+      try {
+        await this.#cursorRelayTransport.relayCursorBatch(peers, body);
+      } catch {
+        // Cursor fanout is best-effort.
+      } finally {
+        this.#cursorRelayInFlight = false;
+        if (this.#pendingCursorRelays.size > 0) {
+          this.#scheduleCursorRelayFlush(0);
+        }
+      }
+    };
+
+    try {
+      this.#defer(relayTask);
+    } catch {
+      void relayTask();
+    }
   }
 
   #upsertCursor(state: CursorPresence): void {

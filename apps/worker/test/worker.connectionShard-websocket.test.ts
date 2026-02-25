@@ -87,12 +87,11 @@ function createHarness() {
   };
 }
 
-function createWaitUntilRelayHarness() {
+function createRelayHarness() {
   const socketPairFactory = new MockSocketPairFactory();
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
   const connectionShards = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
-  const deferred: Promise<unknown>[] = [];
 
   const env = {
     CONNECTION_SHARD: connectionShards,
@@ -102,9 +101,6 @@ function createWaitUntilRelayHarness() {
   const state = {
     id: { toString: () => "shard:test" },
     storage: new NullStorage(),
-    waitUntil: (promise: Promise<unknown>) => {
-      deferred.push(promise);
-    },
   };
 
   const shard = new ConnectionShardDO(state, env, {
@@ -116,13 +112,12 @@ function createWaitUntilRelayHarness() {
     shard,
     socketPairFactory,
     connectionShards,
-    deferred,
   };
 }
 
-type WaitUntilRelayHarness = ReturnType<typeof createWaitUntilRelayHarness>;
+type RelayHarness = ReturnType<typeof createRelayHarness>;
 
-function countCursorRelaySubrequests(harness: WaitUntilRelayHarness): number {
+function countCursorRelaySubrequests(harness: RelayHarness): number {
   let total = 0;
   for (const stub of harness.connectionShards.stubs.values()) {
     total += stub.requests.filter((entry) => new URL(entry.request.url).pathname === "/cursor-batch").length;
@@ -130,12 +125,9 @@ function countCursorRelaySubrequests(harness: WaitUntilRelayHarness): number {
   return total;
 }
 
-async function drainDeferred(harness: WaitUntilRelayHarness): Promise<void> {
-  if (harness.deferred.length === 0) {
-    return;
-  }
-  const pending = harness.deferred.splice(0);
-  await Promise.allSettled(pending);
+async function drainDeferred(harness: RelayHarness): Promise<void> {
+  void harness;
+  await Promise.resolve();
 }
 
 async function connectClient(
@@ -634,7 +626,7 @@ describe("ConnectionShardDO websocket handling", () => {
   });
 
   it("does not relay inbound cursor batches to peer shards", async () => {
-    const harness = createWaitUntilRelayHarness();
+    const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
       name: "Alice",
@@ -704,7 +696,7 @@ describe("ConnectionShardDO websocket handling", () => {
   });
 
   it("ignores self-origin cursor batches without forwarding", async () => {
-    const harness = createWaitUntilRelayHarness();
+    const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
       name: "Alice",
@@ -713,6 +705,7 @@ describe("ConnectionShardDO websocket handling", () => {
 
     socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+    await new Promise((resolve) => setTimeout(resolve, 70));
     await drainDeferred(harness);
     const beforeRelayCount = countCursorRelaySubrequests(harness);
 
@@ -735,6 +728,7 @@ describe("ConnectionShardDO websocket handling", () => {
     const messages = decodeMessages(socket);
     expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote_self")).toBe(false);
 
+    await new Promise((resolve) => setTimeout(resolve, 70));
     await drainDeferred(harness);
     const afterRelayCount = countCursorRelaySubrequests(harness);
     expect(afterRelayCount).toBe(beforeRelayCount);
@@ -806,8 +800,8 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
-  it("defers cross-shard cursor relay fanout via state.waitUntil", async () => {
-    const harness = createWaitUntilRelayHarness();
+  it("defers cross-shard cursor relay fanout asynchronously", async () => {
+    const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
       name: "Alice",
@@ -816,10 +810,8 @@ describe("ConnectionShardDO websocket handling", () => {
 
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 0.5 }));
 
-    await waitFor(() => {
-      expect(harness.deferred.length).toBeGreaterThan(0);
-    });
-    await Promise.allSettled(harness.deferred);
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await drainDeferred(harness);
 
     const peerNames = new Set(
       harness.connectionShards.requestedNames.filter((name) => name !== "shard-0")
@@ -842,7 +834,7 @@ describe("ConnectionShardDO websocket handling", () => {
   it("does not generate timer-driven cursor relay from inbound batches", async () => {
     vi.useFakeTimers();
     try {
-      const harness = createWaitUntilRelayHarness();
+      const harness = createRelayHarness();
       const response = await postCursorBatch(harness.shard, {
         from: "shard-1",
         updates: [

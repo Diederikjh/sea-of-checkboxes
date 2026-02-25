@@ -42,8 +42,8 @@ describe("CursorCoordinator", () => {
       const coordinator = new CursorCoordinator({
         clients,
         getCurrentShardName: () => "shard-5",
-        defer: (promise) => {
-          deferred.push(promise);
+        defer: (task) => {
+          deferred.push(task());
         },
         clock: {
           nowMs: () => nowMs,
@@ -118,8 +118,8 @@ describe("CursorCoordinator", () => {
       const coordinator = new CursorCoordinator({
         clients,
         getCurrentShardName: () => "shard-5",
-        defer: (promise) => {
-          deferred.push(promise);
+        defer: (task) => {
+          deferred.push(task());
         },
         clock: {
           nowMs: () => nowMs,
