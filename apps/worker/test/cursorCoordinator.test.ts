@@ -249,4 +249,114 @@ describe("CursorCoordinator", () => {
     expect(relayCalls).toBe(0);
     expect(sendServerMessage).not.toHaveBeenCalled();
   });
+
+  it("suppresses local cursor relay when relay policy blocks during ingress", async () => {
+    vi.useFakeTimers();
+    try {
+      const localClient = createClient("u_local", "Local");
+      const clients = new Map<string, ConnectedClient>([[localClient.uid, localClient]]);
+      const deferred: Promise<unknown>[] = [];
+      const relayCalls: Array<{ peerShards: string[]; body: string }> = [];
+      let suppressedCount = 0;
+
+      const coordinator = new CursorCoordinator({
+        clients,
+        getCurrentShardName: () => "shard-5",
+        defer: (task) => {
+          deferred.push(task());
+        },
+        clock: {
+          nowMs: () => 10_000,
+        },
+        shardTopology: {
+          peerShardNames: () => ["shard-1", "shard-2"],
+        },
+        cursorRelayTransport: {
+          relayCursorBatch: async (peerShards, body) => {
+            relayCalls.push({ peerShards, body });
+          },
+        },
+        canRelayNow: () => false,
+        onRelaySuppressed: (dropped) => {
+          suppressedCount += dropped;
+        },
+        sendServerMessage: vi.fn(),
+      });
+
+      coordinator.onLocalCursor(localClient, 1.25, 0.75);
+      await vi.advanceTimersByTimeAsync(100);
+      await Promise.allSettled(deferred);
+
+      expect(relayCalls).toHaveLength(0);
+      expect(suppressedCount).toBeGreaterThanOrEqual(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("suppresses local cursor relay immediately after inbound cursor batches", async () => {
+    vi.useFakeTimers();
+    try {
+      let nowMs = 10_000;
+      const localClient = createClient("u_local", "Local");
+      localClient.cursorSubscriptions = new Set(["u_remote"]);
+      const clients = new Map<string, ConnectedClient>([[localClient.uid, localClient]]);
+      const deferred: Promise<unknown>[] = [];
+      let relayCalls = 0;
+      let suppressedCount = 0;
+
+      const coordinator = new CursorCoordinator({
+        clients,
+        getCurrentShardName: () => "shard-5",
+        defer: (task) => {
+          deferred.push(task());
+        },
+        clock: {
+          nowMs: () => nowMs,
+        },
+        shardTopology: {
+          peerShardNames: () => ["shard-1", "shard-2"],
+        },
+        cursorRelayTransport: {
+          relayCursorBatch: async () => {
+            relayCalls += 1;
+          },
+        },
+        onRelaySuppressed: (dropped) => {
+          suppressedCount += dropped;
+        },
+        sendServerMessage: vi.fn(),
+      });
+
+      coordinator.onCursorBatch({
+        from: "shard-1",
+        updates: [
+          {
+            uid: "u_remote",
+            name: "Remote",
+            x: 1.5,
+            y: 1.5,
+            seenAt: nowMs,
+            seq: 1,
+            tileKey: "0:0",
+          },
+        ],
+      });
+
+      coordinator.onLocalCursor(localClient, 2.5, 2.5);
+      await vi.advanceTimersByTimeAsync(60);
+      await Promise.allSettled(deferred);
+
+      expect(relayCalls).toBe(0);
+      expect(suppressedCount).toBeGreaterThanOrEqual(1);
+
+      nowMs += 400;
+      coordinator.onLocalCursor(localClient, 3.5, 3.5);
+      await vi.advanceTimersByTimeAsync(60);
+      await Promise.allSettled(deferred);
+      expect(relayCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

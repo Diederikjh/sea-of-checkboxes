@@ -737,6 +737,70 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(afterRelayCount).toBe(beforeRelayCount);
   });
 
+  it("suppresses local cursor relay re-entry while processing inbound cursor batches", async () => {
+    const harness = createRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await drainDeferred(harness);
+    const beforeRelayCount = countCursorRelaySubrequests(harness);
+
+    const originalSend = socket.send.bind(socket);
+    let reflectedCursor = false;
+    socket.send = (payload) => {
+      originalSend(payload);
+      if (reflectedCursor || typeof payload === "string") {
+        return;
+      }
+
+      const message = decodeServerMessageBinary(toUint8Array(payload));
+      if (message.t !== "curUp" || message.uid !== "u_remote") {
+        return;
+      }
+
+      reflectedCursor = true;
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 1.5 }));
+    };
+
+    const response = await postCursorBatch(harness.shard, {
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.5,
+          y: 1.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+    expect(response.status).toBe(204);
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(true);
+    }, { attempts: 80, delayMs: 5 });
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await drainDeferred(harness);
+    const afterRelayCount = countCursorRelaySubrequests(harness);
+    expect(afterRelayCount).toBe(beforeRelayCount);
+  });
+
   it("rejects malformed cursor-batch payloads", async () => {
     const harness = createHarness();
     const badBodies = [

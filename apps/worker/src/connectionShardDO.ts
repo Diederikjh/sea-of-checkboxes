@@ -60,6 +60,7 @@ export class ConnectionShardDO {
   #tileGateway: ConnectionShardTileGateway;
   #tileBatchOrderTracker: ConnectionShardTileBatchOrderTracker;
   #setCellQueue: ConnectionShardSetCellQueue;
+  #cursorBatchIngressDepth: number;
 
   constructor(
     state: DurableObjectStateLike,
@@ -74,6 +75,7 @@ export class ConnectionShardDO {
     this.#shardName = null;
     this.#clients = new Map();
     this.#tileToClients = new Map();
+    this.#cursorBatchIngressDepth = 0;
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
@@ -91,6 +93,13 @@ export class ConnectionShardDO {
       },
       cursorRelayTransport: {
         relayCursorBatch: (peerShards, body) => this.#relayCursorBatchToPeers(peerShards, body),
+      },
+      canRelayNow: () => this.#cursorBatchIngressDepth === 0,
+      onRelaySuppressed: (droppedCount) => {
+        this.#logEvent("cursor_relay_suppressed_ingress", {
+          dropped_count: droppedCount,
+          cursor_batch_ingress_depth: this.#cursorBatchIngressDepth,
+        });
       },
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
@@ -161,7 +170,12 @@ export class ConnectionShardDO {
       if (!batch || !isValidCursorRelayBatch(batch)) {
         return new Response("Invalid cursor batch payload", { status: 400 });
       }
-      this.#receiveCursorBatch(batch);
+      this.#cursorBatchIngressDepth += 1;
+      try {
+        this.#receiveCursorBatch(batch);
+      } finally {
+        this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
+      }
       return new Response(null, { status: 204 });
     }
 

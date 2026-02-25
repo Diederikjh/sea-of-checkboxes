@@ -14,6 +14,7 @@ import { selectCursorSubscriptions } from "./cursorSelection";
 const CURSOR_TTL_MS = 5_000;
 const CURSOR_SELECTION_REFRESH_MS = 250;
 const CURSOR_RELAY_FLUSH_MS = 50;
+const CURSOR_RELAY_INGRESS_SUPPRESSION_MS = 300;
 
 export interface Clock {
   nowMs(): number;
@@ -34,6 +35,8 @@ interface CursorCoordinatorOptions {
   clock: Clock;
   shardTopology: ShardTopology;
   cursorRelayTransport: CursorRelayTransport;
+  canRelayNow?: () => boolean;
+  onRelaySuppressed?: (droppedCount: number) => void;
   sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 }
 
@@ -44,6 +47,8 @@ export class CursorCoordinator {
   #clock: Clock;
   #shardTopology: ShardTopology;
   #cursorRelayTransport: CursorRelayTransport;
+  #canRelayNow: () => boolean;
+  #onRelaySuppressed: (droppedCount: number) => void;
   #sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 
   #cursorByUid: Map<string, CursorPresence>;
@@ -52,6 +57,7 @@ export class CursorCoordinator {
   #pendingCursorRelays: Map<string, CursorPresence>;
   #cursorRelayFlushTimer: ReturnType<typeof setTimeout> | null;
   #cursorRelayInFlight: boolean;
+  #relaySuppressedUntilMs: number;
   #cursorSelectionDirty: boolean;
   #lastCursorSelectionRefreshMs: number;
   #cursorSelectionRefreshTimer: ReturnType<typeof setTimeout> | null;
@@ -63,6 +69,8 @@ export class CursorCoordinator {
     this.#clock = options.clock;
     this.#shardTopology = options.shardTopology;
     this.#cursorRelayTransport = options.cursorRelayTransport;
+    this.#canRelayNow = options.canRelayNow ?? (() => true);
+    this.#onRelaySuppressed = options.onRelaySuppressed ?? (() => {});
     this.#sendServerMessage = options.sendServerMessage;
 
     this.#cursorByUid = new Map();
@@ -71,6 +79,7 @@ export class CursorCoordinator {
     this.#pendingCursorRelays = new Map();
     this.#cursorRelayFlushTimer = null;
     this.#cursorRelayInFlight = false;
+    this.#relaySuppressedUntilMs = 0;
     this.#cursorSelectionDirty = false;
     this.#lastCursorSelectionRefreshMs = 0;
     this.#cursorSelectionRefreshTimer = null;
@@ -121,6 +130,16 @@ export class CursorCoordinator {
     this.#refreshCursorSelections(false);
     this.#sendCursorToSubscribedClients(state);
 
+    if (nowMs < this.#relaySuppressedUntilMs) {
+      this.#onRelaySuppressed(1);
+      return;
+    }
+
+    if (!this.#canRelayNow()) {
+      this.#onRelaySuppressed(1);
+      return;
+    }
+
     this.#pendingCursorRelays.set(state.uid, state);
     this.#scheduleCursorRelayFlush();
   }
@@ -148,6 +167,10 @@ export class CursorCoordinator {
 
     this.#markCursorSelectionDirty();
     this.#refreshCursorSelections(false);
+    this.#relaySuppressedUntilMs = Math.max(
+      this.#relaySuppressedUntilMs,
+      this.#clock.nowMs() + CURSOR_RELAY_INGRESS_SUPPRESSION_MS
+    );
   }
 
   #scheduleCursorRelayFlush(delayMs: number = CURSOR_RELAY_FLUSH_MS): void {
@@ -163,6 +186,22 @@ export class CursorCoordinator {
 
   #flushCursorRelays(): void {
     if (this.#cursorRelayInFlight) {
+      return;
+    }
+
+    if (this.#clock.nowMs() < this.#relaySuppressedUntilMs) {
+      if (this.#pendingCursorRelays.size > 0) {
+        this.#onRelaySuppressed(this.#pendingCursorRelays.size);
+        this.#pendingCursorRelays.clear();
+      }
+      return;
+    }
+
+    if (!this.#canRelayNow()) {
+      if (this.#pendingCursorRelays.size > 0) {
+        this.#onRelaySuppressed(this.#pendingCursorRelays.size);
+        this.#pendingCursorRelays.clear();
+      }
       return;
     }
 
