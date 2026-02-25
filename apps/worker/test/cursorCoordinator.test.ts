@@ -277,8 +277,8 @@ describe("CursorCoordinator", () => {
           },
         },
         canRelayNow: () => false,
-        onRelaySuppressed: (dropped) => {
-          suppressedCount += dropped;
+        onRelaySuppressed: ({ droppedCount }) => {
+          suppressedCount += droppedCount;
         },
         sendServerMessage: vi.fn(),
       });
@@ -304,6 +304,7 @@ describe("CursorCoordinator", () => {
       const deferred: Promise<unknown>[] = [];
       let relayCalls = 0;
       let suppressedCount = 0;
+      const suppressionReasons = new Set<string>();
 
       const coordinator = new CursorCoordinator({
         clients,
@@ -322,8 +323,9 @@ describe("CursorCoordinator", () => {
             relayCalls += 1;
           },
         },
-        onRelaySuppressed: (dropped) => {
-          suppressedCount += dropped;
+        onRelaySuppressed: ({ droppedCount, reason }) => {
+          suppressedCount += droppedCount;
+          suppressionReasons.add(reason);
         },
         sendServerMessage: vi.fn(),
       });
@@ -349,6 +351,7 @@ describe("CursorCoordinator", () => {
 
       expect(relayCalls).toBe(0);
       expect(suppressedCount).toBeGreaterThanOrEqual(1);
+      expect(suppressionReasons.has("post_ingress_cooldown")).toBe(true);
 
       nowMs += 400;
       coordinator.onLocalCursor(localClient, 3.5, 3.5);

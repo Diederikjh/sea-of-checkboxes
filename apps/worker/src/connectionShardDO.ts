@@ -95,9 +95,10 @@ export class ConnectionShardDO {
         relayCursorBatch: (peerShards, body) => this.#relayCursorBatchToPeers(peerShards, body),
       },
       canRelayNow: () => this.#cursorBatchIngressDepth === 0,
-      onRelaySuppressed: (droppedCount) => {
-        this.#logEvent("cursor_relay_suppressed_ingress", {
+      onRelaySuppressed: ({ droppedCount, reason }) => {
+        this.#logEvent("cursor_relay_suppressed", {
           dropped_count: droppedCount,
+          reason,
           cursor_batch_ingress_depth: this.#cursorBatchIngressDepth,
         });
       },

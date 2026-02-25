@@ -801,6 +801,43 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(afterRelayCount).toBe(beforeRelayCount);
   });
 
+  it("resumes local cursor relay after inbound suppression cooldown", async () => {
+    const harness = createRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    const beforeRelayCount = countCursorRelaySubrequests(harness);
+
+    const inboundResponse = await postCursorBatch(harness.shard, {
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.5,
+          y: 1.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+    expect(inboundResponse.status).toBe(204);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 3.5, y: 3.5 }));
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await drainDeferred(harness);
+
+    const afterRelayCount = countCursorRelaySubrequests(harness);
+    expect(afterRelayCount - beforeRelayCount).toBe(SHARD_COUNT - 1);
+  });
+
   it("rejects malformed cursor-batch payloads", async () => {
     const harness = createHarness();
     const badBodies = [

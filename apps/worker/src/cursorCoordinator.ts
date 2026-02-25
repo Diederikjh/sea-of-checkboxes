@@ -28,6 +28,13 @@ export interface CursorRelayTransport {
   relayCursorBatch(peerShards: string[], body: string): Promise<void>;
 }
 
+export type CursorRelaySuppressionReason = "ingress_active" | "post_ingress_cooldown";
+
+export interface CursorRelaySuppression {
+  droppedCount: number;
+  reason: CursorRelaySuppressionReason;
+}
+
 interface CursorCoordinatorOptions {
   clients: Map<string, ConnectedClient>;
   getCurrentShardName: () => string;
@@ -36,7 +43,7 @@ interface CursorCoordinatorOptions {
   shardTopology: ShardTopology;
   cursorRelayTransport: CursorRelayTransport;
   canRelayNow?: () => boolean;
-  onRelaySuppressed?: (droppedCount: number) => void;
+  onRelaySuppressed?: (suppression: CursorRelaySuppression) => void;
   sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 }
 
@@ -48,7 +55,7 @@ export class CursorCoordinator {
   #shardTopology: ShardTopology;
   #cursorRelayTransport: CursorRelayTransport;
   #canRelayNow: () => boolean;
-  #onRelaySuppressed: (droppedCount: number) => void;
+  #onRelaySuppressed: (suppression: CursorRelaySuppression) => void;
   #sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
 
   #cursorByUid: Map<string, CursorPresence>;
@@ -131,12 +138,12 @@ export class CursorCoordinator {
     this.#sendCursorToSubscribedClients(state);
 
     if (nowMs < this.#relaySuppressedUntilMs) {
-      this.#onRelaySuppressed(1);
+      this.#emitRelaySuppressed(1, "post_ingress_cooldown");
       return;
     }
 
     if (!this.#canRelayNow()) {
-      this.#onRelaySuppressed(1);
+      this.#emitRelaySuppressed(1, "ingress_active");
       return;
     }
 
@@ -190,18 +197,12 @@ export class CursorCoordinator {
     }
 
     if (this.#clock.nowMs() < this.#relaySuppressedUntilMs) {
-      if (this.#pendingCursorRelays.size > 0) {
-        this.#onRelaySuppressed(this.#pendingCursorRelays.size);
-        this.#pendingCursorRelays.clear();
-      }
+      this.#suppressPendingRelays("post_ingress_cooldown");
       return;
     }
 
     if (!this.#canRelayNow()) {
-      if (this.#pendingCursorRelays.size > 0) {
-        this.#onRelaySuppressed(this.#pendingCursorRelays.size);
-        this.#pendingCursorRelays.clear();
-      }
+      this.#suppressPendingRelays("ingress_active");
       return;
     }
 
@@ -365,6 +366,21 @@ export class CursorCoordinator {
       name: cursor.name,
       x: cursor.x,
       y: cursor.y,
+    });
+  }
+
+  #suppressPendingRelays(reason: CursorRelaySuppressionReason): void {
+    if (this.#pendingCursorRelays.size === 0) {
+      return;
+    }
+    this.#emitRelaySuppressed(this.#pendingCursorRelays.size, reason);
+    this.#pendingCursorRelays.clear();
+  }
+
+  #emitRelaySuppressed(droppedCount: number, reason: CursorRelaySuppressionReason): void {
+    this.#onRelaySuppressed({
+      droppedCount,
+      reason,
     });
   }
 }
