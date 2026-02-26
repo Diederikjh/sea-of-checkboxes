@@ -21,7 +21,6 @@ import {
 } from "./helpers/doStubs";
 import { NullStorage } from "./helpers/storageMocks";
 import { waitFor } from "./helpers/waitFor";
-import { SHARD_COUNT } from "../src/sharding";
 import type { CursorRelayBatch } from "../src/cursorRelay";
 
 function decodeMessages(socket: MockSocket): ServerMessage[] {
@@ -64,10 +63,12 @@ function createHarness() {
   const socketPairFactory = new MockSocketPairFactory();
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
   const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
+  const cursorHub = new StubNamespace((name) => new RecordingDurableObjectStub(name));
 
   const env = {
     CONNECTION_SHARD: tileOwners,
     TILE_OWNER: tileOwners,
+    CURSOR_HUB: cursorHub,
   };
 
   const state = {
@@ -85,6 +86,7 @@ function createHarness() {
     socketPairFactory,
     upgradeResponseFactory,
     tileOwners,
+    cursorHub,
   };
 }
 
@@ -93,10 +95,12 @@ function createRelayHarness() {
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
   const connectionShards = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
+  const cursorHub = new StubNamespace((name) => new RecordingDurableObjectStub(name));
 
   const env = {
     CONNECTION_SHARD: connectionShards,
     TILE_OWNER: tileOwners,
+    CURSOR_HUB: cursorHub,
   };
 
   const state = {
@@ -113,6 +117,7 @@ function createRelayHarness() {
     shard,
     socketPairFactory,
     connectionShards,
+    cursorHub,
   };
 }
 
@@ -150,6 +155,34 @@ function countCursorStatePullRequests(harness: RelayHarness): number {
   return countConnectionShardSubrequests(harness, {
     path: "/cursor-state",
     method: "GET",
+  });
+}
+
+function countCursorHubRequests(
+  harness: RelayHarness,
+  options: { path: string; method?: string }
+): number {
+  let total = 0;
+  const method = options.method?.toUpperCase();
+  for (const stub of harness.cursorHub.stubs.values()) {
+    total += stub.requests.filter((entry) => {
+      const url = new URL(entry.request.url);
+      if (url.pathname !== options.path) {
+        return false;
+      }
+      if (!method) {
+        return true;
+      }
+      return entry.request.method.toUpperCase() === method;
+    }).length;
+  }
+  return total;
+}
+
+function countCursorHubPublishes(harness: RelayHarness): number {
+  return countCursorHubRequests(harness, {
+    path: "/publish",
+    method: "POST",
   });
 }
 
@@ -952,7 +985,7 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(afterRelayCount).toBe(beforeRelayCount);
   });
 
-  it("does not emit cursor-batch fanout while processing inbound tile batches in pull mode", async () => {
+  it("suppresses cursor hub publishes during inbound tile-batch processing and resumes after cooldown", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -968,8 +1001,7 @@ describe("ConnectionShardDO websocket handling", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 70));
     await drainDeferred(harness);
-    const beforeRelayCount = countCursorRelaySubrequests(harness);
-    const beforePullCount = countCursorStatePullRequests(harness);
+    const beforeHubPublishCount = countCursorHubPublishes(harness);
 
     const originalSend = socket.send.bind(socket);
     let reflectedCursor = false;
@@ -999,21 +1031,19 @@ describe("ConnectionShardDO websocket handling", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 90));
     await drainDeferred(harness);
-    const duringCooldownRelayCount = countCursorRelaySubrequests(harness);
-    expect(duringCooldownRelayCount).toBe(beforeRelayCount);
+    const duringCooldownHubPublishCount = countCursorHubPublishes(harness);
+    expect(duringCooldownHubPublishCount).toBe(beforeHubPublishCount);
 
     await new Promise((resolve) => setTimeout(resolve, 80));
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 2.5 }));
 
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    await drainDeferred(harness);
-    const afterRelayCount = countCursorRelaySubrequests(harness);
-    expect(afterRelayCount).toBe(beforeRelayCount);
-    const afterPullCount = countCursorStatePullRequests(harness);
-    expect(afterPullCount).toBeGreaterThan(beforePullCount);
+    await waitFor(() => {
+      expect(countCursorHubPublishes(harness)).toBeGreaterThan(beforeHubPublishCount);
+    }, { attempts: 80, delayMs: 5 });
+    expect(countCursorStatePullRequests(harness)).toBe(0);
   });
 
-  it("does not resume cursor-batch relay after inbound suppression cooldown in pull mode", async () => {
+  it("does not publish hub updates from inbound cursor batches and only publishes new local cursors", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1021,8 +1051,7 @@ describe("ConnectionShardDO websocket handling", () => {
       shard: "shard-0",
     });
 
-    const beforeRelayCount = countCursorRelaySubrequests(harness);
-    const beforePullCount = countCursorStatePullRequests(harness);
+    const beforeHubPublishCount = countCursorHubPublishes(harness);
 
     const inboundResponse = await postCursorBatch(harness.shard, {
       from: "shard-1",
@@ -1040,17 +1069,15 @@ describe("ConnectionShardDO websocket handling", () => {
     });
     expect(inboundResponse.status).toBe(204);
 
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(countCursorHubPublishes(harness)).toBe(beforeHubPublishCount);
 
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 3.5, y: 3.5 }));
 
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    await drainDeferred(harness);
-
-    const afterRelayCount = countCursorRelaySubrequests(harness);
-    expect(afterRelayCount).toBe(beforeRelayCount);
-    const afterPullCount = countCursorStatePullRequests(harness);
-    expect(afterPullCount).toBeGreaterThan(beforePullCount);
+    await waitFor(() => {
+      expect(countCursorHubPublishes(harness)).toBeGreaterThan(beforeHubPublishCount);
+    }, { attempts: 80, delayMs: 5 });
+    expect(countCursorStatePullRequests(harness)).toBe(0);
   });
 
   it("rejects malformed cursor-batch payloads", async () => {
@@ -1180,7 +1207,7 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
-  it("polls peer cursor-state asynchronously and fans out remote cursors", async () => {
+  it("publishes local cursor updates to cursor hub and does not poll peer cursor-state", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1190,47 +1217,32 @@ describe("ConnectionShardDO websocket handling", () => {
 
     socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 0.5 }));
-    const remoteUpdate = {
-      from: "shard-1",
-      updates: [
-        {
-          uid: "u_remote_pull",
-          name: "RemotePull",
-          x: 2.5,
-          y: 2.5,
-          seenAt: Date.now(),
-          seq: 1,
-          tileKey: "0:0",
-        },
-      ],
-    };
-    harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", remoteUpdate);
 
     await waitFor(() => {
-      const messages = decodeMessages(socket);
-      expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote_pull")).toBe(true);
-    }, { attempts: 120, delayMs: 10 });
+      expect(countCursorHubPublishes(harness)).toBeGreaterThan(0);
+    }, { attempts: 80, delayMs: 5 });
 
-    const peerNames = new Set(
-      harness.connectionShards.requestedNames.filter((name) => name !== "shard-0")
-    );
-    expect(peerNames.size).toBe(SHARD_COUNT - 1);
+    const hub = harness.cursorHub.getByName("global");
+    const watchRequest = hub.requests.find((entry) => {
+      const url = new URL(entry.request.url);
+      return entry.request.method === "POST" && url.pathname === "/watch";
+    });
+    expect(watchRequest).toBeDefined();
 
-    for (const peerName of peerNames) {
-      const peer = harness.connectionShards.stubs.get(peerName);
-      expect(peer).toBeDefined();
-      const requests = peer?.requests ?? [];
-      expect(
-        requests.some((entry) => {
-          const url = new URL(entry.request.url);
-          return (
-            entry.request.method === "GET"
-            && url.pathname === "/cursor-state"
-            && entry.request.headers.get("x-sea-cursor-pull") === "1"
-          );
-        })
-      ).toBe(true);
-    }
+    const publishRequest = hub.requests.find((entry) => {
+      const url = new URL(entry.request.url);
+      return entry.request.method === "POST" && url.pathname === "/publish";
+    });
+    expect(publishRequest).toBeDefined();
+    const publishBody = publishRequest ? JSON.parse(publishRequest.body) as CursorRelayBatch : null;
+    expect(publishBody?.from).toBe("shard-0");
+    expect(
+      publishBody?.updates.some(
+        (update) => update.uid === "u_a" && update.name === "Alice" && update.x === 1.5 && update.y === 0.5
+      )
+    ).toBe(true);
+
+    expect(countCursorStatePullRequests(harness)).toBe(0);
     expect(countCursorRelaySubrequests(harness)).toBe(0);
   });
 
@@ -1257,9 +1269,39 @@ describe("ConnectionShardDO websocket handling", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await drainDeferred(harness);
       expect(countCursorRelaySubrequests(harness)).toBe(0);
+      expect(countCursorHubPublishes(harness)).toBe(0);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("subscribes and unsubscribes shard watch with cursor hub as clients connect/disconnect", async () => {
+    const harness = createRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    await waitFor(() => {
+      const hub = harness.cursorHub.getByName("global");
+      const subWatch = hub.requests.some((entry) => {
+        const url = new URL(entry.request.url);
+        return entry.request.method === "POST" && url.pathname === "/watch" && entry.body.includes('"action":"sub"');
+      });
+      expect(subWatch).toBe(true);
+    });
+
+    socket.emitClose();
+
+    await waitFor(() => {
+      const hub = harness.cursorHub.getByName("global");
+      const unsubWatch = hub.requests.some((entry) => {
+        const url = new URL(entry.request.url);
+        return entry.request.method === "POST" && url.pathname === "/watch" && entry.body.includes('"action":"unsub"');
+      });
+      expect(unsubWatch).toBe(true);
+    });
   });
 
   it("unsubscribes watcher on socket close when last subscriber disconnects", async () => {

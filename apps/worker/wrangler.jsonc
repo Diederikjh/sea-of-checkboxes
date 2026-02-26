@@ -15,6 +15,10 @@
 			{
 				"name": "TILE_OWNER",
 				"class_name": "TileOwnerDO"
+			},
+			{
+				"name": "CURSOR_HUB",
+				"class_name": "CursorHubDO"
 			}
 		]
 	},
@@ -31,6 +35,12 @@
 			"new_sqlite_classes": [
 				"ConnectionShardDO",
 				"TileOwnerDO"
+			]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": [
+				"CursorHubDO"
 			]
 		}
 	]

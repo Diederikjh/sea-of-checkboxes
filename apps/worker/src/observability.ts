@@ -1,6 +1,7 @@
 export type ObservabilityScope =
   | "worker"
   | "connection_shard_do"
+  | "cursor_hub_do"
   | "tile_owner_do"
   | "tile_owner_persistence";
 

@@ -3,6 +3,7 @@ import {
   type ExecutionContextLike,
 } from "./doCommon";
 import { ConnectionShardDO } from "./connectionShardDO";
+import { CursorHubDO } from "./cursorHubDO";
 import { TileOwnerDO } from "./tileOwnerDO";
 import { handleWorkerFetch } from "./workerFetch";
 
@@ -14,5 +15,6 @@ export default {
 
 export {
   ConnectionShardDO,
+  CursorHubDO,
   TileOwnerDO,
 };
