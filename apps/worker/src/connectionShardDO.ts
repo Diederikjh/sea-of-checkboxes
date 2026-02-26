@@ -31,6 +31,7 @@ import { ConnectionShardTileBatchOrderTracker } from "./connectionShardTileBatch
 import { CursorCoordinator } from "./cursorCoordinator";
 import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import { ConnectionShardCursorHubGateway } from "./cursorHubGateway";
+import { ConnectionShardCursorHubController } from "./connectionShardCursorHubController";
 import { peerShardNames } from "./sharding";
 import {
   createCloudflareUpgradeResponseFactory,
@@ -56,8 +57,6 @@ const TILE_PULL_PAGE_LIMIT = 256;
 const TILE_PULL_MAX_PAGES_PER_TICK = 4;
 const CURSOR_PULL_INTERVAL_MS = 75;
 const CURSOR_HUB_NAME = "global";
-const CURSOR_HUB_PUBLISH_FLUSH_MS = 50;
-const CURSOR_HUB_WATCH_RENEW_MS = 10_000;
 
 type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
@@ -84,14 +83,7 @@ export class ConnectionShardDO {
   #cursorPullInFlight: boolean;
   #cursorPullTimer: ReturnType<typeof setTimeout> | null;
   #cursorStateIngressDepth: number;
-  #cursorHubGateway: ConnectionShardCursorHubGateway | null;
-  #cursorHubSubscribed: boolean;
-  #cursorHubWatchInFlight: boolean;
-  #cursorHubDesiredWatchAction: "sub" | "unsub" | null;
-  #cursorHubWatchRenewTimer: ReturnType<typeof setTimeout> | null;
-  #cursorHubPublishTimer: ReturnType<typeof setTimeout> | null;
-  #cursorHubPublishInFlight: boolean;
-  #cursorHubPublishPending: boolean;
+  #cursorHubController: ConnectionShardCursorHubController;
 
   constructor(
     state: DurableObjectStateLike,
@@ -115,19 +107,12 @@ export class ConnectionShardDO {
     this.#cursorPullInFlight = false;
     this.#cursorPullTimer = null;
     this.#cursorStateIngressDepth = 0;
-    this.#cursorHubGateway = this.#env.CURSOR_HUB
+    const cursorHubGateway = this.#env.CURSOR_HUB
       ? new ConnectionShardCursorHubGateway({
           namespace: this.#env.CURSOR_HUB,
           hubName: CURSOR_HUB_NAME,
         })
       : null;
-    this.#cursorHubSubscribed = false;
-    this.#cursorHubWatchInFlight = false;
-    this.#cursorHubDesiredWatchAction = null;
-    this.#cursorHubWatchRenewTimer = null;
-    this.#cursorHubPublishTimer = null;
-    this.#cursorHubPublishInFlight = false;
-    this.#cursorHubPublishPending = false;
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
@@ -167,6 +152,16 @@ export class ConnectionShardDO {
     });
     this.#tileBatchOrderTracker = new ConnectionShardTileBatchOrderTracker();
     this.#setCellQueue = new ConnectionShardSetCellQueue();
+    this.#cursorHubController = new ConnectionShardCursorHubController({
+      gateway: cursorHubGateway,
+      hasClients: () => this.#clients.size > 0,
+      currentShardName: () => this.#currentShardName(),
+      canRelayNow: () => this.#canRelayCursorNow(),
+      localCursorSnapshot: () => this.#cursorCoordinator.localCursorSnapshot(),
+      ingestBatch: (batch) => this.#ingestCursorBatchWithIngress(batch),
+      deferDetachedTask: (task) => this.#deferDetachedTask(task),
+      maybeUnrefTimer: (timer) => this.#maybeUnrefTimer(timer),
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -235,12 +230,7 @@ export class ConnectionShardDO {
       if (!batch || !isValidCursorRelayBatch(batch)) {
         return new Response("Invalid cursor batch payload", { status: 400 });
       }
-      this.#cursorBatchIngressDepth += 1;
-      try {
-        this.#receiveCursorBatch(batch);
-      } finally {
-        this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
-      }
+      this.#ingestCursorBatchWithIngress(batch);
       return new Response(null, { status: 204 });
     }
 
@@ -492,8 +482,7 @@ export class ConnectionShardDO {
           return;
         case "cur":
           this.#cursorCoordinator.onLocalCursor(client, message.x, message.y);
-          this.#cursorHubPublishPending = true;
-          this.#scheduleCursorHubPublish();
+          this.#cursorHubController.markLocalCursorDirty();
           return;
         default:
           return;
@@ -780,6 +769,15 @@ export class ConnectionShardDO {
     this.#cursorCoordinator.onCursorBatch(batch);
   }
 
+  #ingestCursorBatchWithIngress(batch: CursorRelayBatch): void {
+    this.#cursorBatchIngressDepth += 1;
+    try {
+      this.#receiveCursorBatch(batch);
+    } finally {
+      this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
+    }
+  }
+
   #localTileSubscriberCount(tileKey: string): number {
     return this.#tileToClients.get(tileKey)?.size ?? 0;
   }
@@ -846,7 +844,7 @@ export class ConnectionShardDO {
   }
 
   #refreshCursorPullSchedule(): void {
-    if (this.#cursorHubGateway) {
+    if (this.#cursorHubController.isEnabled()) {
       this.#clearCursorPullTimer();
       this.#cursorPullInFlight = false;
       return;
@@ -867,166 +865,7 @@ export class ConnectionShardDO {
   }
 
   #refreshCursorHubWatchState(): void {
-    if (!this.#cursorHubGateway) {
-      return;
-    }
-
-    if (this.#clients.size === 0) {
-      this.#clearCursorHubWatchRenewTimer();
-      this.#clearCursorHubPublishTimer();
-      this.#cursorHubPublishPending = false;
-      if (this.#cursorHubSubscribed) {
-        this.#queueCursorHubWatch("unsub");
-      } else {
-        this.#cursorHubDesiredWatchAction = null;
-      }
-      return;
-    }
-
-    this.#queueCursorHubWatch("sub");
-    this.#scheduleCursorHubWatchRenew(CURSOR_HUB_WATCH_RENEW_MS);
-  }
-
-  #queueCursorHubWatch(action: "sub" | "unsub"): void {
-    if (!this.#cursorHubGateway) {
-      return;
-    }
-    this.#cursorHubDesiredWatchAction = action;
-    void this.#runCursorHubWatchLoop();
-  }
-
-  async #runCursorHubWatchLoop(): Promise<void> {
-    if (!this.#cursorHubGateway || this.#cursorHubWatchInFlight) {
-      return;
-    }
-
-    const action = this.#cursorHubDesiredWatchAction;
-    if (!action) {
-      return;
-    }
-    this.#cursorHubDesiredWatchAction = null;
-    this.#cursorHubWatchInFlight = true;
-
-    try {
-      const snapshot = await this.#cursorHubGateway.watchShard(this.#currentShardName(), action);
-      if (action === "sub") {
-        this.#cursorHubSubscribed = true;
-        this.#scheduleCursorHubWatchRenew(CURSOR_HUB_WATCH_RENEW_MS);
-        if (snapshot && snapshot.updates.length > 0) {
-          this.#cursorBatchIngressDepth += 1;
-          try {
-            this.#receiveCursorBatch(snapshot);
-          } finally {
-            this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
-          }
-        }
-        if (this.#cursorHubPublishPending) {
-          this.#scheduleCursorHubPublish(0);
-        }
-      } else {
-        this.#cursorHubSubscribed = false;
-      }
-    } catch {
-      // Hub watch registration is best-effort.
-    } finally {
-      this.#cursorHubWatchInFlight = false;
-      if (this.#cursorHubDesiredWatchAction) {
-        this.#deferDetachedTask(async () => {
-          await this.#runCursorHubWatchLoop();
-        });
-      }
-    }
-  }
-
-  #scheduleCursorHubWatchRenew(delayMs: number): void {
-    if (!this.#cursorHubGateway || this.#clients.size === 0) {
-      return;
-    }
-    if (this.#cursorHubWatchRenewTimer) {
-      return;
-    }
-
-    this.#cursorHubWatchRenewTimer = setTimeout(() => {
-      this.#cursorHubWatchRenewTimer = null;
-      if (this.#clients.size === 0) {
-        return;
-      }
-      this.#queueCursorHubWatch("sub");
-    }, Math.max(1, delayMs));
-    this.#maybeUnrefTimer(this.#cursorHubWatchRenewTimer);
-  }
-
-  #clearCursorHubWatchRenewTimer(): void {
-    if (!this.#cursorHubWatchRenewTimer) {
-      return;
-    }
-    clearTimeout(this.#cursorHubWatchRenewTimer);
-    this.#cursorHubWatchRenewTimer = null;
-  }
-
-  #scheduleCursorHubPublish(delayMs: number = CURSOR_HUB_PUBLISH_FLUSH_MS): void {
-    if (!this.#cursorHubGateway || this.#clients.size === 0) {
-      return;
-    }
-
-    if (!this.#cursorHubSubscribed) {
-      this.#queueCursorHubWatch("sub");
-      return;
-    }
-
-    if (this.#cursorHubPublishTimer) {
-      return;
-    }
-
-    this.#cursorHubPublishTimer = setTimeout(() => {
-      this.#cursorHubPublishTimer = null;
-      void this.#flushCursorHubPublish();
-    }, Math.max(0, delayMs));
-    this.#maybeUnrefTimer(this.#cursorHubPublishTimer);
-  }
-
-  #clearCursorHubPublishTimer(): void {
-    if (!this.#cursorHubPublishTimer) {
-      return;
-    }
-
-    clearTimeout(this.#cursorHubPublishTimer);
-    this.#cursorHubPublishTimer = null;
-  }
-
-  async #flushCursorHubPublish(): Promise<void> {
-    if (!this.#cursorHubGateway || this.#clients.size === 0 || !this.#cursorHubSubscribed) {
-      return;
-    }
-
-    if (this.#cursorHubPublishInFlight) {
-      this.#cursorHubPublishPending = true;
-      return;
-    }
-
-    if (!this.#canRelayCursorNow()) {
-      this.#scheduleCursorHubPublish(CURSOR_HUB_PUBLISH_FLUSH_MS);
-      return;
-    }
-
-    const updates = this.#cursorCoordinator.localCursorSnapshot();
-    if (updates.length === 0) {
-      this.#cursorHubPublishPending = false;
-      return;
-    }
-
-    this.#cursorHubPublishInFlight = true;
-    try {
-      await this.#cursorHubGateway.publishLocalCursors(this.#currentShardName(), updates);
-      this.#cursorHubPublishPending = false;
-    } catch {
-      // Hub publish is best-effort.
-    } finally {
-      this.#cursorHubPublishInFlight = false;
-      if (this.#cursorHubPublishPending) {
-        this.#scheduleCursorHubPublish(0);
-      }
-    }
+    this.#cursorHubController.refreshWatchState();
   }
 
   #scheduleTilePullTick(delayMs: number = TILE_PULL_INTERVAL_MS): void {
@@ -1083,7 +922,7 @@ export class ConnectionShardDO {
   }
 
   async #runCursorPullTick(): Promise<void> {
-    if (this.#cursorHubGateway) {
+    if (this.#cursorHubController.isEnabled()) {
       return;
     }
 
@@ -1144,12 +983,7 @@ export class ConnectionShardDO {
         return;
       }
 
-      this.#cursorBatchIngressDepth += 1;
-      try {
-        this.#receiveCursorBatch(batch);
-      } finally {
-        this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
-      }
+      this.#ingestCursorBatchWithIngress(batch);
     } catch {
       // Cursor pull is best-effort.
     }
