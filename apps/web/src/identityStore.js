@@ -8,7 +8,7 @@ function defaultStorage() {
     return null;
   }
 
-  return window.localStorage ?? null;
+  return window.sessionStorage ?? window.localStorage ?? null;
 }
 
 export function normalizeStoredIdentity(value) {

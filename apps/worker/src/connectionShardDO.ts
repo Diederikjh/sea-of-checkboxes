@@ -316,6 +316,7 @@ export class ConnectionShardDO {
       uid: identity.uid,
       name: identity.name,
       socket: serverSocket,
+      connectedAtMs: this.#nowMs(),
       subscribed: new Set(),
       churnTimestamps: [],
       setCellBurstTimestamps: [],
@@ -427,6 +428,21 @@ export class ConnectionShardDO {
         case "setCell": {
           const startMs = Date.now();
           const setCellResult = await handleSetCellMessage(context, client, message);
+          if (setCellResult.reason === "not_subscribed" && setCellResult.notSubscribed) {
+            this.#logEvent("setcell_not_subscribed", {
+              uid,
+              tile: message.tile,
+              i: message.i,
+              v: message.v,
+              op: message.op,
+              subscribed_count: setCellResult.notSubscribed.subscribedCount,
+              subscribed_tiles_sample: setCellResult.notSubscribed.subscribedTilesSample,
+              clients_connected: setCellResult.notSubscribed.clientsConnected,
+              ...(typeof setCellResult.notSubscribed.connectionAgeMs === "number"
+                ? { connection_age_ms: setCellResult.notSubscribed.connectionAgeMs }
+                : {}),
+            });
+          }
           this.#logEvent("setCell", {
             uid,
             tile: message.tile,

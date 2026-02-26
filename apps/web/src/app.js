@@ -182,7 +182,67 @@ export async function startApp() {
     identityProvider: readStoredIdentity,
   });
   let transportOnline = false;
+  let wsSessionId = 0;
+  let wsSessionOpenedAtMs = null;
+  let wsFirstSubLogged = false;
+  let wsFirstSetCellLogged = false;
   const isTransportOnline = () => transportOnline;
+  const logOther = (...args) => {
+    if (typeof logger.other === "function") {
+      logger.other(...args);
+    }
+  };
+
+  const beginWsSession = (reconnected) => {
+    wsSessionId += 1;
+    wsSessionOpenedAtMs = Date.now();
+    wsFirstSubLogged = false;
+    wsFirstSetCellLogged = false;
+    logOther("ws session_open", {
+      sessionId: wsSessionId,
+      reconnected,
+    });
+  };
+
+  const endWsSession = ({ disposed }) => {
+    if (wsSessionOpenedAtMs === null) {
+      return;
+    }
+    logOther("ws session_close", {
+      sessionId: wsSessionId,
+      disposed,
+      uptimeMs: Math.max(0, Date.now() - wsSessionOpenedAtMs),
+    });
+    wsSessionOpenedAtMs = null;
+  };
+
+  const maybeLogFirstClientMessageAfterOpen = (message) => {
+    if (!transportOnline || wsSessionOpenedAtMs === null) {
+      return;
+    }
+
+    const elapsedMs = Math.max(0, Date.now() - wsSessionOpenedAtMs);
+    if (message.t === "sub" && !wsFirstSubLogged) {
+      wsFirstSubLogged = true;
+      logOther("ws first_sub_after_open", {
+        sessionId: wsSessionId,
+        elapsedMs,
+        tileCount: message.tiles.length,
+      });
+      return;
+    }
+
+    if (message.t === "setCell" && !wsFirstSetCellLogged) {
+      wsFirstSetCellLogged = true;
+      logOther("ws first_setcell_after_open", {
+        sessionId: wsSessionId,
+        elapsedMs,
+        tile: message.tile,
+        i: message.i,
+        op: message.op,
+      });
+    }
+  };
 
   const sendToWireTransport = (message) => {
     const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
@@ -211,6 +271,7 @@ export async function startApp() {
     if (message.t === "cur" && !transportOnline) {
       return;
     }
+    maybeLogFirstClientMessageAfterOpen(message);
     if (trackSetCell) {
       setCellOutboxSync.trackOutgoingClientMessage(message);
     }
@@ -242,11 +303,13 @@ export async function startApp() {
       }, {
         onOpen(info) {
           transportOnline = true;
+          beginWsSession(info.reconnected);
           setCellOutboxSync.handleConnectionOpen();
           onOpen(info);
         },
         onClose(info) {
           transportOnline = false;
+          endWsSession(info);
           onClose(info);
         },
       });

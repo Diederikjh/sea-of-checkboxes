@@ -21,6 +21,7 @@ export interface ConnectedClient {
   uid: string;
   name: string;
   socket: SocketLike;
+  connectedAtMs?: number;
   subscribed: Set<string>;
   churnTimestamps?: number[];
   setCellBurstTimestamps?: number[];
@@ -61,12 +62,20 @@ type UnsubscriptionMessageResult = {
   subscribedCount: number;
 };
 
+type SetCellNotSubscribedDiagnostics = {
+  subscribedCount: number;
+  subscribedTilesSample: string[];
+  clientsConnected: number;
+  connectionAgeMs?: number;
+};
+
 type SetCellMessageResult = {
   accepted: boolean;
   changed: boolean;
   ver?: number;
   watcherCount?: number;
   reason?: string;
+  notSubscribed?: SetCellNotSubscribedDiagnostics;
 };
 
 function recordWithinLimit(
@@ -278,9 +287,24 @@ export async function handleSetCellMessage(
   }
 
   if (!client.subscribed.has(message.tile)) {
+    const nowMs = context.nowMs();
     context.sendError(client, "not_subscribed", `Tile ${message.tile} is not currently subscribed`);
     await context.sendSnapshotToClient(client, message.tile);
-    return { accepted: false, changed: false, reason: "not_subscribed" };
+    const connectionAgeMs =
+      typeof client.connectedAtMs === "number"
+        ? Math.max(0, nowMs - client.connectedAtMs)
+        : undefined;
+    return {
+      accepted: false,
+      changed: false,
+      reason: "not_subscribed",
+      notSubscribed: {
+        subscribedCount: client.subscribed.size,
+        subscribedTilesSample: Array.from(client.subscribed).slice(0, 8),
+        clientsConnected: context.clients.size,
+        ...(typeof connectionAgeMs === "number" ? { connectionAgeMs } : {}),
+      },
+    };
   }
 
   if (!consumeSetCellRateOrError(context, client)) {

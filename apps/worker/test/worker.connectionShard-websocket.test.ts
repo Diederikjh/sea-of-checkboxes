@@ -810,6 +810,71 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(secondMessages.some((message) => message.t === "hello" && message.uid === "u_same")).toBe(true);
   });
 
+  it("logs setcell_not_subscribed diagnostics when a reconnect sends setCell before re-subscribe", async () => {
+    const harness = createHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const firstSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_reconnect",
+        name: "Alice",
+        shard: "shard-a",
+      });
+
+      firstSocket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      await waitFor(() => {
+        const tileStub = harness.tileOwners.getByName("0:0");
+        expect(tileStub.watchRequests.length).toBe(1);
+      });
+
+      firstSocket.emitClose();
+
+      const secondSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_reconnect",
+        name: "Alice",
+        shard: "shard-a",
+      });
+      secondSocket.emitMessage(
+        encodeClientMessageBinary({
+          t: "setCell",
+          tile: "0:0",
+          i: 7,
+          v: 1,
+          op: "op_before_resub",
+        })
+      );
+
+      await waitFor(() => {
+        const messages = decodeMessages(secondSocket);
+        expect(messages.some((message) => message.t === "err" && message.code === "not_subscribed")).toBe(true);
+      });
+
+      const events = parseStructuredLogs(logSpy);
+      const event = events.find(
+        (entry) =>
+          entry.scope === "connection_shard_do"
+          && entry.event === "setcell_not_subscribed"
+          && entry.uid === "u_reconnect"
+          && entry.tile === "0:0"
+      );
+
+      expect(event).toBeDefined();
+      expect(event).toMatchObject({
+        i: 7,
+        v: 1,
+        op: "op_before_resub",
+        subscribed_count: 0,
+        clients_connected: 1,
+      });
+      expect(Array.isArray(event?.subscribed_tiles_sample)).toBe(true);
+      expect((event?.subscribed_tiles_sample as unknown[]).length).toBe(0);
+      expect(typeof event?.connection_age_ms).toBe("number");
+      expect((event?.connection_age_ms as number)).toBeGreaterThanOrEqual(0);
+      expect((event?.connection_age_ms as number)).toBeLessThan(10_000);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it("ingests cursor batches and forwards only to clients with cursor subscriptions", async () => {
     const harness = createHarness();
     const socketA = await connectClient(harness.shard, harness.socketPairFactory, {

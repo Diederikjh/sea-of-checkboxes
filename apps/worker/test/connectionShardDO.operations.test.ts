@@ -169,6 +169,30 @@ describe("connection shard DO operations", () => {
     expect(harness.setCellRequests.length).toBe(0);
   });
 
+  it("returns not_subscribed diagnostics for reconnect race debugging", async () => {
+    const harness = createContext();
+    const client = createClient("u_a", "Alice");
+    client.connectedAtMs = 1_000;
+    harness.clients.set(client.uid, client);
+    harness.setNowMs(1_250);
+
+    const result = await handleSetCellMessage(harness.context, client, {
+      t: "setCell",
+      tile: "0:0",
+      i: 22,
+      v: 1,
+      op: "op_1",
+    });
+
+    expect(result.reason).toBe("not_subscribed");
+    expect(result.notSubscribed).toEqual({
+      subscribedCount: 0,
+      subscribedTilesSample: [],
+      clientsConnected: 1,
+      connectionAgeMs: 250,
+    });
+  });
+
   it("sends setcell_rejected when setCell is rejected by tile owner", async () => {
     const harness = createContext();
     const client = createClient("u_a", "Alice");
