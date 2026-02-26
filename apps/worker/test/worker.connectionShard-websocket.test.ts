@@ -22,6 +22,7 @@ import {
 import { NullStorage } from "./helpers/storageMocks";
 import { waitFor } from "./helpers/waitFor";
 import { SHARD_COUNT } from "../src/sharding";
+import type { CursorRelayBatch } from "../src/cursorRelay";
 
 function decodeMessages(socket: MockSocket): ServerMessage[] {
   const messages: ServerMessage[] = [];
@@ -117,12 +118,39 @@ function createRelayHarness() {
 
 type RelayHarness = ReturnType<typeof createRelayHarness>;
 
-function countCursorRelaySubrequests(harness: RelayHarness): number {
+function countConnectionShardSubrequests(
+  harness: RelayHarness,
+  options: { path: string; method?: string }
+): number {
   let total = 0;
+  const method = options.method?.toUpperCase();
   for (const stub of harness.connectionShards.stubs.values()) {
-    total += stub.requests.filter((entry) => new URL(entry.request.url).pathname === "/cursor-batch").length;
+    total += stub.requests.filter((entry) => {
+      const url = new URL(entry.request.url);
+      if (url.pathname !== options.path) {
+        return false;
+      }
+      if (!method) {
+        return true;
+      }
+      return entry.request.method.toUpperCase() === method;
+    }).length;
   }
   return total;
+}
+
+function countCursorRelaySubrequests(harness: RelayHarness): number {
+  return countConnectionShardSubrequests(harness, {
+    path: "/cursor-batch",
+    method: "POST",
+  });
+}
+
+function countCursorStatePullRequests(harness: RelayHarness): number {
+  return countConnectionShardSubrequests(harness, {
+    path: "/cursor-state",
+    method: "GET",
+  });
 }
 
 async function drainDeferred(harness: RelayHarness): Promise<void> {
@@ -205,6 +233,16 @@ async function postCursorBatch(
   body: unknown
 ): Promise<Response> {
   return postJson(shard, "/cursor-batch", body);
+}
+
+async function getCursorState(shard: ConnectionShardDO): Promise<CursorRelayBatch> {
+  const response = await shard.fetch(
+    new Request("https://connection-shard.internal/cursor-state", {
+      method: "GET",
+    })
+  );
+  expect(response.status).toBe(200);
+  return (await response.json()) as CursorRelayBatch;
 }
 
 describe("ConnectionShardDO websocket handling", () => {
@@ -422,6 +460,64 @@ describe("ConnectionShardDO websocket handling", () => {
 
     expect(messagesA.some((message) => message.t === "cellUpBatch" && message.tile === "0:0")).toBe(true);
     expect(messagesB.some((message) => message.t === "cellUpBatch")).toBe(false);
+  });
+
+  it("pulls tile deltas from tile owner and fans out to local subscribers", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    });
+
+    const tileStub = harness.tileOwners.getByName("0:0");
+    tileStub.injectOp("0:0", 77, 1);
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(
+        messages.some(
+          (message) =>
+            message.t === "cellUpBatch"
+            && message.tile === "0:0"
+            && message.fromVer === 1
+            && message.toVer === 1
+            && message.ops.some(([index, value]) => index === 77 && value === 1)
+        )
+      ).toBe(true);
+    }, { attempts: 120, delayMs: 10 });
+  });
+
+  it("resyncs snapshot when pulled tile deltas have a version gap", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0" && message.ver === 0)).toBe(true);
+    });
+
+    const tileStub = harness.tileOwners.getByName("0:0");
+    tileStub.setOpsHistoryLimit(2);
+    tileStub.injectOp("0:0", 9, 1);
+    tileStub.injectOp("0:0", 9, 0);
+    tileStub.injectOp("0:0", 9, 1);
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0" && message.ver === 3)).toBe(true);
+    }, { attempts: 120, delayMs: 10 });
   });
 
   it("defers re-entrant setCell messages emitted during tile-batch fanout until cooldown", async () => {
@@ -691,6 +787,27 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(false);
   });
 
+  it("exposes local cursor state via cursor-state endpoint", async () => {
+    const harness = createRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 5.5, y: 6.5 }));
+
+    await waitFor(async () => {
+      const state = await getCursorState(harness.shard);
+      expect(state.from).toBe("shard-0");
+      expect(
+        state.updates.some(
+          (update) => update.uid === "u_a" && update.name === "Alice" && update.x === 5.5 && update.y === 6.5
+        )
+      ).toBe(true);
+    });
+  });
+
   it("does not relay inbound cursor batches to peer shards", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
@@ -803,7 +920,7 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(afterRelayCount).toBe(beforeRelayCount);
   });
 
-  it("suppresses local cursor relay re-entry while processing inbound tile batches", async () => {
+  it("does not emit cursor-batch fanout while processing inbound tile batches in pull mode", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -820,6 +937,7 @@ describe("ConnectionShardDO websocket handling", () => {
     await new Promise((resolve) => setTimeout(resolve, 70));
     await drainDeferred(harness);
     const beforeRelayCount = countCursorRelaySubrequests(harness);
+    const beforePullCount = countCursorStatePullRequests(harness);
 
     const originalSend = socket.send.bind(socket);
     let reflectedCursor = false;
@@ -858,10 +976,12 @@ describe("ConnectionShardDO websocket handling", () => {
     await new Promise((resolve) => setTimeout(resolve, 70));
     await drainDeferred(harness);
     const afterRelayCount = countCursorRelaySubrequests(harness);
-    expect(afterRelayCount - beforeRelayCount).toBe(SHARD_COUNT - 1);
+    expect(afterRelayCount).toBe(beforeRelayCount);
+    const afterPullCount = countCursorStatePullRequests(harness);
+    expect(afterPullCount).toBeGreaterThan(beforePullCount);
   });
 
-  it("resumes local cursor relay after inbound suppression cooldown", async () => {
+  it("does not resume cursor-batch relay after inbound suppression cooldown in pull mode", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -870,6 +990,7 @@ describe("ConnectionShardDO websocket handling", () => {
     });
 
     const beforeRelayCount = countCursorRelaySubrequests(harness);
+    const beforePullCount = countCursorStatePullRequests(harness);
 
     const inboundResponse = await postCursorBatch(harness.shard, {
       from: "shard-1",
@@ -895,7 +1016,9 @@ describe("ConnectionShardDO websocket handling", () => {
     await drainDeferred(harness);
 
     const afterRelayCount = countCursorRelaySubrequests(harness);
-    expect(afterRelayCount - beforeRelayCount).toBe(SHARD_COUNT - 1);
+    expect(afterRelayCount).toBe(beforeRelayCount);
+    const afterPullCount = countCursorStatePullRequests(harness);
+    expect(afterPullCount).toBeGreaterThan(beforePullCount);
   });
 
   it("rejects malformed cursor-batch payloads", async () => {
@@ -1025,7 +1148,7 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
-  it("defers cross-shard cursor relay fanout asynchronously", async () => {
+  it("polls peer cursor-state asynchronously and fans out remote cursors", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1033,10 +1156,28 @@ describe("ConnectionShardDO websocket handling", () => {
       shard: "shard-0",
     });
 
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 0.5 }));
+    const remoteUpdate = {
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote_pull",
+          name: "RemotePull",
+          x: 2.5,
+          y: 2.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    };
+    harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", remoteUpdate);
 
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    await drainDeferred(harness);
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote_pull")).toBe(true);
+    }, { attempts: 120, delayMs: 10 });
 
     const peerNames = new Set(
       harness.connectionShards.requestedNames.filter((name) => name !== "shard-0")
@@ -1050,10 +1191,11 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(
         requests.some((entry) => {
           const url = new URL(entry.request.url);
-          return entry.request.method === "POST" && url.pathname === "/cursor-batch";
+          return entry.request.method === "GET" && url.pathname === "/cursor-state";
         })
       ).toBe(true);
     }
+    expect(countCursorRelaySubrequests(harness)).toBe(0);
   });
 
   it("does not generate timer-driven cursor relay from inbound batches", async () => {

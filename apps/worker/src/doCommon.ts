@@ -71,6 +71,15 @@ export interface TileSetCellResponse {
   watcherCount?: number;
 }
 
+export interface TileOpsSinceResponse {
+  tile: string;
+  fromVer: number;
+  toVer: number;
+  currentVer: number;
+  gap: boolean;
+  ops: Array<[number, 0 | 1]>;
+}
+
 export interface CellLastEditInfo {
   uid: string;
   name: string;

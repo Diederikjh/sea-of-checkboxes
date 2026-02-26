@@ -1,6 +1,6 @@
 import { TILE_CELL_COUNT } from "@sea/domain";
 import { decodeRle64, encodeRle64 } from "@sea/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { TileOwnerDO } from "../src/worker";
 import {
@@ -10,22 +10,6 @@ import {
 import type { TileOwnerPersistence } from "../src/tileOwnerPersistence";
 import { MemoryStorage, NullStorage } from "./helpers/storageMocks";
 import { waitFor } from "./helpers/waitFor";
-
-function parseStructuredLogs(logSpy: ReturnType<typeof vi.spyOn>) {
-  return logSpy.mock.calls
-    .flatMap((call) => {
-      const payload = call[0];
-      if (typeof payload !== "string") {
-        return [];
-      }
-      try {
-        const parsed = JSON.parse(payload) as Record<string, unknown>;
-        return [parsed];
-      } catch {
-        return [];
-      }
-    });
-}
 
 function createTileOwnerHarness() {
   const storage = new MemoryStorage();
@@ -41,7 +25,7 @@ function createTileOwnerHarness() {
   };
 
   return {
-    createInstance: () => new TileOwnerDO(state, env),
+    createInstance: (options: { opHistoryLimit?: number } = {}) => new TileOwnerDO(state, env, options),
     shardNamespace,
   };
 }
@@ -92,7 +76,7 @@ class MemoryR2Bucket {
 }
 
 describe("TileOwnerDO propagation across restart", () => {
-  it("keeps shard watchers and continues fanout after re-instantiation", async () => {
+  it("keeps shard watchers across re-instantiation without shard push fanout", async () => {
     const harness = createTileOwnerHarness();
     const first = harness.createInstance();
 
@@ -111,7 +95,7 @@ describe("TileOwnerDO propagation across restart", () => {
       })
     );
 
-    await first.fetch(
+    const firstSetCellResponse = await first.fetch(
       postJson("/setCell", {
         tile: "0:0",
         i: 1,
@@ -119,17 +103,21 @@ describe("TileOwnerDO propagation across restart", () => {
         op: "op_1",
       })
     );
+    expect(firstSetCellResponse.ok).toBe(true);
+    await expect(firstSetCellResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      watcherCount: 2,
+    });
 
     const shardA = harness.shardNamespace.getByName("shard-a");
     const shardB = harness.shardNamespace.getByName("shard-b");
-    await waitFor(() => {
-      expect(shardA.requests.length).toBe(1);
-      expect(shardB.requests.length).toBe(1);
-    });
+    expect(shardA.requests.length).toBe(0);
+    expect(shardB.requests.length).toBe(0);
 
     // Recreate the DO instance with the same storage to simulate lifecycle recycle.
     const second = harness.createInstance();
-    await second.fetch(
+    const secondSetCellResponse = await second.fetch(
       postJson("/setCell", {
         tile: "0:0",
         i: 2,
@@ -137,11 +125,14 @@ describe("TileOwnerDO propagation across restart", () => {
         op: "op_2",
       })
     );
-
-    await waitFor(() => {
-      expect(shardA.requests.length).toBe(2);
-      expect(shardB.requests.length).toBe(2);
+    expect(secondSetCellResponse.ok).toBe(true);
+    await expect(secondSetCellResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      watcherCount: 2,
     });
+    expect(shardA.requests.length).toBe(0);
+    expect(shardB.requests.length).toBe(0);
   });
 
   it("persists tile snapshot across re-instantiation", async () => {
@@ -173,6 +164,107 @@ describe("TileOwnerDO propagation across restart", () => {
 
     const bits = decodeRle64(snapshot.bits);
     expect(bits[15]).toBe(1);
+  });
+
+  it("returns ops-since deltas for contiguous versions", async () => {
+    const harness = createTileOwnerHarness();
+    const owner = harness.createInstance();
+
+    await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 1,
+        v: 1,
+        op: "op_1",
+      })
+    );
+    await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 2,
+        v: 1,
+        op: "op_2",
+      })
+    );
+    await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 3,
+        v: 1,
+        op: "op_3",
+      })
+    );
+
+    const response = await owner.fetch(getJson("/ops-since?tile=0:0&fromVer=0"));
+    expect(response.ok).toBe(true);
+    await expect(response.json()).resolves.toMatchObject({
+      tile: "0:0",
+      fromVer: 0,
+      toVer: 3,
+      currentVer: 3,
+      gap: false,
+      ops: [[1, 1], [2, 1], [3, 1]],
+    });
+  });
+
+  it("returns bounded ops-since pages and gap when history window is exceeded", async () => {
+    const harness = createTileOwnerHarness();
+    const owner = harness.createInstance({ opHistoryLimit: 3 });
+
+    await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 5,
+        v: 1,
+        op: "op_1",
+      })
+    );
+    await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 5,
+        v: 0,
+        op: "op_2",
+      })
+    );
+    await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 5,
+        v: 1,
+        op: "op_3",
+      })
+    );
+    await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 5,
+        v: 0,
+        op: "op_4",
+      })
+    );
+
+    const page = await owner.fetch(getJson("/ops-since?tile=0:0&fromVer=1&limit=2"));
+    expect(page.ok).toBe(true);
+    await expect(page.json()).resolves.toMatchObject({
+      tile: "0:0",
+      fromVer: 1,
+      toVer: 3,
+      currentVer: 4,
+      gap: false,
+      ops: [[5, 0], [5, 1]],
+    });
+
+    const gap = await owner.fetch(getJson("/ops-since?tile=0:0&fromVer=0"));
+    expect(gap.ok).toBe(true);
+    await expect(gap.json()).resolves.toMatchObject({
+      tile: "0:0",
+      fromVer: 0,
+      toVer: 4,
+      currentVer: 4,
+      gap: true,
+      ops: [],
+    });
   });
 
   it("returns per-cell last edit metadata and null for untouched cells", async () => {
@@ -360,7 +452,7 @@ describe("TileOwnerDO propagation across restart", () => {
     expect(existingResponse.status).toBe(204);
   });
 
-  it("does not block setCell response on slow shard fanout", async () => {
+  it("completes setCell without shard push fanout under watcher subscriptions", async () => {
     const harness = createTileOwnerHarness();
     const owner = harness.createInstance();
 
@@ -371,7 +463,6 @@ describe("TileOwnerDO propagation across restart", () => {
         action: "sub",
       })
     );
-    harness.shardNamespace.getByName("shard-a").setNeverResolvePath("/tile-batch", true);
 
     const setCellPromise = owner.fetch(
       postJson("/setCell", {
@@ -388,79 +479,50 @@ describe("TileOwnerDO propagation across restart", () => {
     ]);
 
     expect(race).toBe("resolved");
+    const shardA = harness.shardNamespace.getByName("shard-a");
+    expect(shardA.requests.length).toBe(0);
   });
 
-  it("prunes stale shard watchers when shard reports no local subscribers", async () => {
+  it("does not perform shard push fanout for multi-watcher tiles", async () => {
     const harness = createTileOwnerHarness();
     const owner = harness.createInstance();
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    try {
-      await owner.fetch(
-        postJson("/watch", {
-          tile: "0:0",
-          shard: "shard-active",
-          action: "sub",
-        })
-      );
-      await owner.fetch(
-        postJson("/watch", {
-          tile: "0:0",
-          shard: "shard-stale",
-          action: "sub",
-        })
-      );
+    await owner.fetch(
+      postJson("/watch", {
+        tile: "0:0",
+        shard: "shard-a",
+        action: "sub",
+      })
+    );
+    await owner.fetch(
+      postJson("/watch", {
+        tile: "0:0",
+        shard: "shard-b",
+        action: "sub",
+      })
+    );
 
-      harness.shardNamespace.getByName("shard-stale").setPathStatus("/tile-batch", 410);
+    const response = await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 7,
+        v: 1,
+        op: "op_1",
+      })
+    );
+    expect(response.ok).toBe(true);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      watcherCount: 2,
+    });
 
-      const firstResponse = await owner.fetch(
-        postJson("/setCell", {
-          tile: "0:0",
-          i: 7,
-          v: 1,
-          op: "op_1",
-        })
-      );
-      expect(firstResponse.ok).toBe(true);
-
-      await waitFor(() => {
-        const events = parseStructuredLogs(logSpy);
-        expect(
-          events.some(
-            (event) =>
-              event.scope === "tile_owner_do"
-              && event.event === "stale_watchers_pruned"
-              && event.removed_count === 1
-          )
-        ).toBe(true);
-      });
-
-      const secondResponse = await owner.fetch(
-        postJson("/setCell", {
-          tile: "0:0",
-          i: 8,
-          v: 1,
-          op: "op_2",
-        })
-      );
-      expect(secondResponse.ok).toBe(true);
-      await expect(secondResponse.json()).resolves.toMatchObject({
-        accepted: true,
-        changed: true,
-        watcherCount: 1,
-      });
-
-      const activeShard = harness.shardNamespace.getByName("shard-active");
-      const staleShard = harness.shardNamespace.getByName("shard-stale");
-      await waitFor(() => {
-        expect(activeShard.requests.length).toBe(1);
-      });
-      expect(staleShard.requests.length).toBe(1);
-    } finally {
-      logSpy.mockRestore();
-    }
+    const shardA = harness.shardNamespace.getByName("shard-a");
+    const shardB = harness.shardNamespace.getByName("shard-b");
+    expect(shardA.requests.length).toBe(0);
+    expect(shardB.requests.length).toBe(0);
   });
 
-  it("dedupes duplicate op ids and avoids duplicate shard fanout", async () => {
+  it("dedupes duplicate op ids without shard push fanout", async () => {
     const harness = createTileOwnerHarness();
     const owner = harness.createInstance();
 
@@ -512,10 +574,8 @@ describe("TileOwnerDO propagation across restart", () => {
 
     const shardA = harness.shardNamespace.getByName("shard-a");
     const shardB = harness.shardNamespace.getByName("shard-b");
-    await waitFor(() => {
-      expect(shardA.requests.length).toBe(1);
-      expect(shardB.requests.length).toBe(1);
-    });
+    expect(shardA.requests.length).toBe(0);
+    expect(shardB.requests.length).toBe(0);
   });
 
   it("supports injectable persistence adapters for testability", async () => {

@@ -8,6 +8,7 @@ import {
 
 import {
   isWebSocketUpgrade,
+  jsonResponse,
   readJson,
   type ConnectionIdentity,
   type DurableObjectStateLike,
@@ -49,6 +50,10 @@ const TILE_BATCH_TRACE_HOP_HEADER = "x-sea-trace-hop";
 const TILE_BATCH_TRACE_ORIGIN_HEADER = "x-sea-trace-origin";
 const TILE_BATCH_SETCELL_SUPPRESSION_MS = 120;
 const TILE_BATCH_SETCELL_RETRY_MS = 20;
+const TILE_PULL_INTERVAL_MS = 75;
+const TILE_PULL_PAGE_LIMIT = 256;
+const TILE_PULL_MAX_PAGES_PER_TICK = 4;
+const CURSOR_PULL_INTERVAL_MS = 75;
 
 type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
@@ -69,6 +74,11 @@ export class ConnectionShardDO {
   #cursorBatchIngressDepth: number;
   #tileBatchIngressDepth: number;
   #setCellSuppressedUntilMs: number;
+  #tileKnownVersionByTile: Map<string, number>;
+  #tilePullInFlight: Set<string>;
+  #tilePullTimer: ReturnType<typeof setTimeout> | null;
+  #cursorPullInFlight: boolean;
+  #cursorPullTimer: ReturnType<typeof setTimeout> | null;
 
   constructor(
     state: DurableObjectStateLike,
@@ -86,6 +96,11 @@ export class ConnectionShardDO {
     this.#cursorBatchIngressDepth = 0;
     this.#tileBatchIngressDepth = 0;
     this.#setCellSuppressedUntilMs = 0;
+    this.#tileKnownVersionByTile = new Map();
+    this.#tilePullInFlight = new Set();
+    this.#tilePullTimer = null;
+    this.#cursorPullInFlight = false;
+    this.#cursorPullTimer = null;
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
@@ -93,7 +108,7 @@ export class ConnectionShardDO {
       clients: this.#clients,
       getCurrentShardName: () => this.#currentShardName(),
       defer: (task) => {
-        this.#deferCursorRelayTask(task);
+        void task().catch(() => {});
       },
       clock: {
         nowMs: () => this.#nowMs(),
@@ -102,7 +117,7 @@ export class ConnectionShardDO {
         peerShardNames: (currentShard) => this.#peerShardNames(currentShard),
       },
       cursorRelayTransport: {
-        relayCursorBatch: (peerShards, body) => this.#relayCursorBatchToPeers(peerShards, body),
+        relayCursorBatch: async () => {},
       },
       canRelayNow: () => this.#canRelayCursorNow(),
       onRelaySuppressed: ({ droppedCount, reason }) => {
@@ -117,6 +132,7 @@ export class ConnectionShardDO {
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
       },
+      relayEnabled: false,
     });
     this.#tileGateway = new ConnectionShardTileGateway({
       tileOwnerNamespace: this.#env.TILE_OWNER,
@@ -201,6 +217,13 @@ export class ConnectionShardDO {
       return new Response(null, { status: 204 });
     }
 
+    if (url.pathname === "/cursor-state" && request.method === "GET") {
+      return jsonResponse({
+        from: this.#currentShardName(),
+        updates: this.#cursorCoordinator.localCursorSnapshot(),
+      } satisfies CursorRelayBatch);
+    }
+
     return new Response("Not found", { status: 404 });
   }
 
@@ -277,6 +300,7 @@ export class ConnectionShardDO {
     });
     this.#sendServerMessage(client, { t: "hello", ...identity });
     this.#cursorCoordinator.onClientConnected(client);
+    this.#refreshCursorPullSchedule();
 
     serverSocket.addEventListener("message", (event: unknown) => {
       const payload = readBinaryMessageEventPayload(event);
@@ -352,6 +376,7 @@ export class ConnectionShardDO {
             clamped: subResult.clamped,
           });
           this.#cursorCoordinator.onSubscriptionsChanged(true);
+          this.#refreshTilePullSchedule();
           return;
         }
         case "unsub": {
@@ -363,6 +388,7 @@ export class ConnectionShardDO {
             subscribed_count: unsubResult.subscribedCount,
           });
           this.#cursorCoordinator.onSubscriptionsChanged(true);
+          this.#refreshTilePullSchedule();
           return;
         }
         case "setCell": {
@@ -383,6 +409,13 @@ export class ConnectionShardDO {
               : {}),
             duration_ms: elapsedMs(startMs),
           });
+          if (
+            setCellResult.accepted &&
+            setCellResult.changed &&
+            typeof setCellResult.ver === "number"
+          ) {
+            this.#recordTileVersion(message.tile, setCellResult.ver);
+          }
           if (
             setCellResult.accepted &&
             setCellResult.changed &&
@@ -529,6 +562,7 @@ export class ConnectionShardDO {
   }
 
   #receiveTileBatch(message: Extract<ServerMessage, { t: "cellUpBatch" }>): void {
+    this.#recordTileVersion(message.tile, message.toVer);
     this.#recordTileBatchOrdering(message);
     fanoutTileBatchToSubscribers({
       message,
@@ -575,6 +609,21 @@ export class ConnectionShardDO {
     return this.#tileGateway.fetchSnapshot(tileKey);
   }
 
+  async #fetchTileOpsSince(
+    tileKey: string,
+    fromVer: number,
+    limit: number
+  ): Promise<{
+    tile: string;
+    fromVer: number;
+    toVer: number;
+    currentVer: number;
+    gap: boolean;
+    ops: Array<[number, 0 | 1]>;
+  } | null> {
+    return this.#tileGateway.fetchTileOpsSince(tileKey, fromVer, limit);
+  }
+
   async #setTileCell(payload: TileSetCellRequest): Promise<TileSetCellResponse | null> {
     return this.#tileGateway.setTileCell(payload);
   }
@@ -593,6 +642,7 @@ export class ConnectionShardDO {
       tile: tileKey,
       ver: snapshot.ver,
     });
+    this.#recordTileVersion(tileKey, snapshot.ver);
     this.#sendServerMessage(client, snapshot);
   }
 
@@ -618,25 +668,6 @@ export class ConnectionShardDO {
 
   #peerShardNames(currentShard: string): string[] {
     return peerShardNames(currentShard);
-  }
-
-  async #relayCursorBatchToPeers(peerShards: string[], body: string): Promise<void> {
-    await Promise.all(
-      peerShards.map(async (peerShard) => {
-        const stub = this.#env.CONNECTION_SHARD.getByName(peerShard);
-        await stub.fetch("https://connection-shard.internal/cursor-batch", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-          },
-          body,
-        });
-      })
-    );
-  }
-
-  #deferCursorRelayTask(task: () => Promise<unknown>): void {
-    this.#deferDetachedTask(task);
   }
 
   #deferClientSetCellTask(task: () => Promise<unknown>): void {
@@ -689,6 +720,8 @@ export class ConnectionShardDO {
     await disconnectClientFromShard(context, uid);
     this.#setCellQueue.clear(uid);
     this.#cursorCoordinator.onClientDisconnected(uid);
+    this.#refreshTilePullSchedule();
+    this.#refreshCursorPullSchedule();
   }
 
   #receiveCursorBatch(batch: CursorRelayBatch): void {
@@ -742,5 +775,230 @@ export class ConnectionShardDO {
       shard: this.#currentShardName(),
       ...fields,
     });
+  }
+
+  #recordTileVersion(tileKey: string, ver: number): void {
+    const previous = this.#tileKnownVersionByTile.get(tileKey);
+    this.#tileKnownVersionByTile.set(tileKey, previous === undefined ? ver : Math.max(previous, ver));
+  }
+
+  #refreshTilePullSchedule(): void {
+    if (this.#tileToClients.size === 0) {
+      this.#clearTilePullTimer();
+      this.#tilePullInFlight.clear();
+      this.#tileKnownVersionByTile.clear();
+      return;
+    }
+
+    this.#scheduleTilePullTick(0);
+  }
+
+  #refreshCursorPullSchedule(): void {
+    if (this.#clients.size === 0) {
+      this.#clearCursorPullTimer();
+      this.#cursorPullInFlight = false;
+      return;
+    }
+
+    if (this.#peerShardNames(this.#currentShardName()).length === 0) {
+      this.#clearCursorPullTimer();
+      return;
+    }
+
+    this.#scheduleCursorPullTick(0);
+  }
+
+  #scheduleTilePullTick(delayMs: number = TILE_PULL_INTERVAL_MS): void {
+    if (this.#tilePullTimer || this.#tileToClients.size === 0) {
+      return;
+    }
+
+    this.#tilePullTimer = setTimeout(() => {
+      this.#tilePullTimer = null;
+      void this.#runTilePullTick();
+    }, Math.max(0, delayMs));
+    this.#maybeUnrefTimer(this.#tilePullTimer);
+  }
+
+  #scheduleCursorPullTick(delayMs: number = CURSOR_PULL_INTERVAL_MS): void {
+    if (this.#cursorPullTimer || this.#clients.size === 0) {
+      return;
+    }
+
+    this.#cursorPullTimer = setTimeout(() => {
+      this.#cursorPullTimer = null;
+      void this.#runCursorPullTick();
+    }, Math.max(0, delayMs));
+    this.#maybeUnrefTimer(this.#cursorPullTimer);
+  }
+
+  #clearTilePullTimer(): void {
+    if (!this.#tilePullTimer) {
+      return;
+    }
+
+    clearTimeout(this.#tilePullTimer);
+    this.#tilePullTimer = null;
+  }
+
+  #clearCursorPullTimer(): void {
+    if (!this.#cursorPullTimer) {
+      return;
+    }
+
+    clearTimeout(this.#cursorPullTimer);
+    this.#cursorPullTimer = null;
+  }
+
+  async #runTilePullTick(): Promise<void> {
+    const activeTiles = Array.from(this.#tileToClients.keys());
+    if (activeTiles.length === 0) {
+      return;
+    }
+
+    await Promise.all(activeTiles.map((tileKey) => this.#pollTileIfNeeded(tileKey)));
+    this.#pruneStaleTilePullState();
+    this.#scheduleTilePullTick(TILE_PULL_INTERVAL_MS);
+  }
+
+  async #runCursorPullTick(): Promise<void> {
+    if (this.#clients.size === 0 || this.#cursorPullInFlight) {
+      return;
+    }
+
+    this.#cursorPullInFlight = true;
+    try {
+      await this.#pollPeerCursorStates();
+    } finally {
+      this.#cursorPullInFlight = false;
+      this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MS);
+    }
+  }
+
+  #pruneStaleTilePullState(): void {
+    for (const tileKey of Array.from(this.#tileKnownVersionByTile.keys())) {
+      if (this.#tileToClients.has(tileKey)) {
+        continue;
+      }
+      this.#tileKnownVersionByTile.delete(tileKey);
+      this.#tilePullInFlight.delete(tileKey);
+    }
+  }
+
+  async #pollPeerCursorStates(): Promise<void> {
+    const peers = this.#peerShardNames(this.#currentShardName());
+    if (peers.length === 0) {
+      this.#cursorCoordinator.onCursorPollTick();
+      return;
+    }
+
+    await Promise.all(peers.map((peerShard) => this.#pollPeerCursorState(peerShard)));
+    this.#cursorCoordinator.onCursorPollTick();
+  }
+
+  async #pollPeerCursorState(peerShard: string): Promise<void> {
+    try {
+      const stub = this.#env.CONNECTION_SHARD.getByName(peerShard);
+      const response = await stub.fetch("https://connection-shard.internal/cursor-state");
+      if (!response.ok) {
+        return;
+      }
+
+      const batch = await readJson<CursorRelayBatch>(response);
+      if (!batch || !isValidCursorRelayBatch(batch)) {
+        return;
+      }
+
+      this.#cursorBatchIngressDepth += 1;
+      try {
+        this.#receiveCursorBatch(batch);
+      } finally {
+        this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
+      }
+    } catch {
+      // Cursor pull is best-effort.
+    }
+  }
+
+  async #pollTileIfNeeded(tileKey: string): Promise<void> {
+    if (!this.#tileToClients.has(tileKey) || this.#tilePullInFlight.has(tileKey)) {
+      return;
+    }
+
+    this.#tilePullInFlight.add(tileKey);
+    try {
+      await this.#pollTileDeltas(tileKey);
+    } finally {
+      this.#tilePullInFlight.delete(tileKey);
+    }
+  }
+
+  async #pollTileDeltas(tileKey: string): Promise<void> {
+    let fromVer = this.#tileKnownVersionByTile.get(tileKey) ?? 0;
+
+    for (let page = 0; page < TILE_PULL_MAX_PAGES_PER_TICK; page += 1) {
+      const response = await this.#fetchTileOpsSince(tileKey, fromVer, TILE_PULL_PAGE_LIMIT);
+      if (!response || response.tile !== tileKey) {
+        return;
+      }
+
+      if (response.gap) {
+        await this.#resyncTileViaSnapshot(tileKey);
+        return;
+      }
+
+      if (response.ops.length === 0) {
+        this.#recordTileVersion(tileKey, response.toVer);
+        return;
+      }
+
+      const expectedToVer = fromVer + response.ops.length;
+      if (response.toVer !== expectedToVer) {
+        await this.#resyncTileViaSnapshot(tileKey);
+        return;
+      }
+
+      this.#receiveTileBatch({
+        t: "cellUpBatch",
+        tile: tileKey,
+        fromVer: fromVer + 1,
+        toVer: response.toVer,
+        ops: response.ops,
+      });
+      fromVer = response.toVer;
+
+      if (response.toVer >= response.currentVer) {
+        return;
+      }
+    }
+  }
+
+  async #resyncTileViaSnapshot(tileKey: string): Promise<void> {
+    const snapshot = await this.#fetchTileSnapshot(tileKey);
+    if (!snapshot) {
+      return;
+    }
+
+    this.#recordTileVersion(tileKey, snapshot.ver);
+    this.#fanoutSnapshotToSubscribers(snapshot);
+    this.#logEvent("tile_pull_gap_resync", {
+      tile: tileKey,
+      ver: snapshot.ver,
+    });
+  }
+
+  #fanoutSnapshotToSubscribers(snapshot: Extract<ServerMessage, { t: "tileSnap" }>): void {
+    const subscribers = this.#tileToClients.get(snapshot.tile);
+    if (!subscribers || subscribers.size === 0) {
+      return;
+    }
+
+    for (const uid of subscribers) {
+      const client = this.#clients.get(uid);
+      if (!client) {
+        continue;
+      }
+      this.#sendServerMessage(client, snapshot);
+    }
   }
 }

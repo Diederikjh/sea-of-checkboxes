@@ -1,7 +1,6 @@
 import { TILE_CELL_COUNT, isCellIndexValid } from "@sea/domain";
 import {
   decodeRle64,
-  type ServerMessage,
 } from "@sea/protocol";
 
 import {
@@ -10,6 +9,7 @@ import {
   readJson,
   type DurableObjectStateLike,
   type Env,
+  type TileOpsSinceResponse,
   type TileSetCellRequest,
   type TileCellLastEditResponse,
   type TileSetCellResponse,
@@ -30,24 +30,19 @@ const TILE_READONLY_WATCHER_THRESHOLD = 8;
 const TILE_DENY_WATCHER_THRESHOLD = 12;
 const TILE_SNAPSHOT_MAX_AGE_MS = 5_000;
 const TILE_SNAPSHOT_MAX_OPS = 500;
-const TILE_WAL_FLUSH_MS = 50;
-const TILE_WAL_MAX_BATCH_OPS = 128;
-const TILE_BATCH_TRACE_ID_HEADER = "x-sea-trace-id";
-const TILE_BATCH_TRACE_HOP_HEADER = "x-sea-trace-hop";
-const TILE_BATCH_TRACE_ORIGIN_HEADER = "x-sea-trace-origin";
+const TILE_OP_HISTORY_LIMIT = 2_048;
+const TILE_OPS_SINCE_DEFAULT_LIMIT = 256;
+const TILE_OPS_SINCE_MAX_LIMIT = 1_024;
 
 export class TileOwnerDO {
-  #env: Env;
   #doId: string;
   #tileOwner: TileOwner;
   #tileKey: string | null;
   #subscriberShards: Set<string>;
   #loaded: boolean;
   #persistence: TileOwnerPersistence;
-  #pendingBatchOps: Array<[number, 0 | 1]>;
-  #pendingBatchFromVer: number | null;
-  #pendingBatchToVer: number | null;
-  #walFlushTimer: ReturnType<typeof setTimeout> | null;
+  #recentTileOps: Array<{ ver: number; op: [number, 0 | 1] }>;
+  #opHistoryLimit: number;
   #opsSinceSnapshot: number;
   #lastSnapshotAtMs: number;
   #snapshotFlushTimer: ReturnType<typeof setTimeout> | null;
@@ -59,18 +54,16 @@ export class TileOwnerDO {
     env: Env,
     options: {
       persistence?: TileOwnerPersistence;
+      opHistoryLimit?: number;
     } = {}
   ) {
-    this.#env = env;
     this.#doId = state.id.toString();
     this.#tileOwner = new TileOwner("0:0");
     this.#tileKey = null;
     this.#subscriberShards = new Set();
     this.#loaded = false;
-    this.#pendingBatchOps = [];
-    this.#pendingBatchFromVer = null;
-    this.#pendingBatchToVer = null;
-    this.#walFlushTimer = null;
+    this.#recentTileOps = [];
+    this.#opHistoryLimit = Math.max(1, options.opHistoryLimit ?? TILE_OP_HISTORY_LIMIT);
     this.#opsSinceSnapshot = 0;
     this.#lastSnapshotAtMs = 0;
     this.#snapshotFlushTimer = null;
@@ -145,6 +138,26 @@ export class TileOwnerDO {
       return jsonResponse(this.#tileOwner.getSnapshotMessage());
     }
 
+    if (url.pathname === "/ops-since" && request.method === "GET") {
+      const tileKey = url.searchParams.get("tile");
+      const rawFromVer = url.searchParams.get("fromVer");
+      const rawLimit = url.searchParams.get("limit");
+      if (!tileKey || !isValidTileKey(tileKey) || !rawFromVer || !/^\d+$/.test(rawFromVer)) {
+        return new Response("Invalid tile or fromVer", { status: 400 });
+      }
+
+      const fromVer = Number.parseInt(rawFromVer, 10);
+      const parsedLimit =
+        typeof rawLimit === "string" && /^\d+$/.test(rawLimit)
+          ? Number.parseInt(rawLimit, 10)
+          : TILE_OPS_SINCE_DEFAULT_LIMIT;
+      const limit = Math.max(1, Math.min(TILE_OPS_SINCE_MAX_LIMIT, parsedLimit));
+
+      await this.#ensureLoaded(tileKey);
+      const body = this.#tileOpsSinceResponse(tileKey, fromVer, limit);
+      return jsonResponse(body);
+    }
+
     if (url.pathname === "/setCell" && request.method === "POST") {
       const startMs = Date.now();
       const payload = await readJson<TileSetCellRequest>(request);
@@ -194,9 +207,7 @@ export class TileOwnerDO {
       const afterValue = this.#tileOwner.getCellValue(payload.i);
 
       if (result.changed) {
-        if (this.#subscriberShards.size > 1) {
-          this.#enqueueWalOperation(payload.i, payload.v, result.ver);
-        }
+        this.#recordRecentTileOp(result.ver, payload.i, payload.v);
         await this.#recordSnapshotOperation();
       }
 
@@ -261,15 +272,12 @@ export class TileOwnerDO {
       return;
     }
 
-    this.#clearWalFlushTimer();
     this.#clearSnapshotFlushTimer();
     this.#tileKey = tileKey;
     this.#tileOwner = new TileOwner(tileKey);
     this.#subscriberShards.clear();
     this.#loaded = false;
-    this.#pendingBatchOps = [];
-    this.#pendingBatchFromVer = null;
-    this.#pendingBatchToVer = null;
+    this.#recentTileOps = [];
     this.#opsSinceSnapshot = 0;
     this.#lastSnapshotAtMs = 0;
     this.#snapshotPersistInFlight = false;
@@ -306,217 +314,6 @@ export class TileOwnerDO {
 
   async #persistSubscribers(): Promise<void> {
     await this.#persistence.saveSubscribers(this.#activeTileKey(), Array.from(this.#subscriberShards));
-  }
-
-  #enqueueWalOperation(index: number, value: 0 | 1, ver: number): void {
-    if (this.#pendingBatchOps.length === 0) {
-      this.#pendingBatchFromVer = ver;
-    }
-
-    this.#pendingBatchToVer = ver;
-    this.#pendingBatchOps.push([index, value]);
-
-    if (this.#pendingBatchOps.length >= TILE_WAL_MAX_BATCH_OPS) {
-      this.#flushWalBatch();
-      return;
-    }
-
-    this.#scheduleWalFlush();
-  }
-
-  #scheduleWalFlush(): void {
-    if (this.#walFlushTimer) {
-      return;
-    }
-
-    this.#walFlushTimer = setTimeout(() => {
-      this.#walFlushTimer = null;
-      this.#flushWalBatch();
-    }, TILE_WAL_FLUSH_MS);
-    this.#maybeUnrefTimer(this.#walFlushTimer);
-  }
-
-  #clearWalFlushTimer(): void {
-    if (!this.#walFlushTimer) {
-      return;
-    }
-
-    clearTimeout(this.#walFlushTimer);
-    this.#walFlushTimer = null;
-  }
-
-  #flushWalBatch(): void {
-    if (
-      this.#pendingBatchOps.length === 0 ||
-      this.#pendingBatchFromVer === null ||
-      this.#pendingBatchToVer === null
-    ) {
-      return;
-    }
-
-    this.#clearWalFlushTimer();
-
-    const tile = this.#activeTileKey();
-    const batch: Extract<ServerMessage, { t: "cellUpBatch" }> = {
-      t: "cellUpBatch",
-      tile,
-      fromVer: this.#pendingBatchFromVer,
-      toVer: this.#pendingBatchToVer,
-      ops: this.#pendingBatchOps,
-    };
-
-    this.#pendingBatchOps = [];
-    this.#pendingBatchFromVer = null;
-    this.#pendingBatchToVer = null;
-
-    const subscribers = Array.from(this.#subscriberShards);
-    const traceId = this.#nextTileBatchTraceId(tile, batch.toVer);
-    const traceHop = 1;
-    const traceOrigin = `tile-owner:${tile}`;
-    const fanoutStartMs = Date.now();
-    if (subscribers.length === 0) {
-      this.#logEvent("broadcast", {
-        tile,
-        batch_size: batch.ops.length,
-        from_ver: batch.fromVer,
-        to_ver: batch.toVer,
-        trace_id: traceId,
-        trace_hop: traceHop,
-        trace_origin: traceOrigin,
-        ops_preview: batch.ops.slice(0, 4),
-        watcher_count: 0,
-        failed_count: 0,
-        duration_ms: elapsedMs(fanoutStartMs),
-      });
-      return;
-    }
-
-    // Do not await fanout here to avoid circular waits:
-    // shard -> tile owner -> shard (same shard may be in subscribers).
-    void this.#fanoutWalBatch({
-      subscribers,
-      batch,
-      traceId,
-      traceHop,
-      traceOrigin,
-      fanoutStartMs,
-    }).catch(() => {
-      this.#logEvent("broadcast", {
-        tile,
-        batch_size: batch.ops.length,
-        from_ver: batch.fromVer,
-        to_ver: batch.toVer,
-        trace_id: traceId,
-        trace_hop: traceHop,
-        trace_origin: traceOrigin,
-        ops_preview: batch.ops.slice(0, 4),
-        watcher_count: subscribers.length,
-        failed_count: subscribers.length,
-        stale_count: 0,
-        duration_ms: elapsedMs(fanoutStartMs),
-      });
-    });
-  }
-
-  async #fanoutWalBatch({
-    subscribers,
-    batch,
-    traceId,
-    traceHop,
-    traceOrigin,
-    fanoutStartMs,
-  }: {
-    subscribers: string[];
-    batch: Extract<ServerMessage, { t: "cellUpBatch" }>;
-    traceId: string;
-    traceHop: number;
-    traceOrigin: string;
-    fanoutStartMs: number;
-  }): Promise<void> {
-    const settled = await Promise.allSettled(
-      subscribers.map(async (shardId) => {
-        const stub = this.#env.CONNECTION_SHARD.getByName(shardId);
-        const response = await stub.fetch("https://connection-shard.internal/tile-batch", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            [TILE_BATCH_TRACE_ID_HEADER]: traceId,
-            [TILE_BATCH_TRACE_HOP_HEADER]: String(traceHop),
-            [TILE_BATCH_TRACE_ORIGIN_HEADER]: traceOrigin,
-          },
-          body: JSON.stringify(batch),
-        });
-
-        if (response.status === 410) {
-          return {
-            shardId,
-            status: "stale" as const,
-          };
-        }
-
-        return {
-          shardId,
-          status: response.ok ? ("ok" as const) : ("failed" as const),
-        };
-      })
-    );
-
-    let failedCount = 0;
-    const staleShards: string[] = [];
-    for (const result of settled) {
-      if (result.status === "rejected") {
-        failedCount += 1;
-        continue;
-      }
-
-      if (result.value.status === "stale") {
-        staleShards.push(result.value.shardId);
-        continue;
-      }
-
-      if (result.value.status === "failed") {
-        failedCount += 1;
-      }
-    }
-
-    if (staleShards.length > 0) {
-      const removed = this.#pruneStaleSubscribers(staleShards);
-      if (removed.length > 0) {
-        await this.#persistSubscribers();
-        this.#logEvent("stale_watchers_pruned", {
-          tile: this.#activeTileKey(),
-          removed_count: removed.length,
-          removed_preview: removed.slice(0, 4),
-          watcher_count: this.#subscriberShards.size,
-        });
-      }
-    }
-
-    this.#logEvent("broadcast", {
-      tile: batch.tile,
-      batch_size: batch.ops.length,
-      from_ver: batch.fromVer,
-      to_ver: batch.toVer,
-      trace_id: traceId,
-      trace_hop: traceHop,
-      trace_origin: traceOrigin,
-      ops_preview: batch.ops.slice(0, 4),
-      watcher_count: subscribers.length,
-      failed_count: failedCount,
-      stale_count: staleShards.length,
-      duration_ms: elapsedMs(fanoutStartMs),
-    });
-  }
-
-  #pruneStaleSubscribers(shardIds: string[]): string[] {
-    const removed: string[] = [];
-    for (const shardId of shardIds) {
-      if (!this.#subscriberShards.delete(shardId)) {
-        continue;
-      }
-      removed.push(shardId);
-    }
-    return removed;
   }
 
   async #recordSnapshotOperation(): Promise<void> {
@@ -605,8 +402,63 @@ export class TileOwnerDO {
     return this.#tileKey;
   }
 
-  #nextTileBatchTraceId(tile: string, toVer: number): string {
-    return `${tile}:${toVer}:${crypto.randomUUID().slice(0, 8)}`;
+  #recordRecentTileOp(ver: number, index: number, value: 0 | 1): void {
+    this.#recentTileOps.push({
+      ver,
+      op: [index, value],
+    });
+
+    if (this.#recentTileOps.length <= this.#opHistoryLimit) {
+      return;
+    }
+
+    const overflow = this.#recentTileOps.length - this.#opHistoryLimit;
+    if (overflow > 0) {
+      this.#recentTileOps.splice(0, overflow);
+    }
+  }
+
+  #tileOpsSinceResponse(
+    tileKey: string,
+    fromVer: number,
+    limit: number
+  ): TileOpsSinceResponse {
+    const currentVer = this.#tileOwner.getVersion();
+    if (fromVer >= currentVer) {
+      return {
+        tile: tileKey,
+        fromVer,
+        toVer: currentVer,
+        currentVer,
+        gap: false,
+        ops: [],
+      };
+    }
+
+    const firstKnown = this.#recentTileOps[0];
+    if (!firstKnown || fromVer + 1 < firstKnown.ver) {
+      return {
+        tile: tileKey,
+        fromVer,
+        toVer: currentVer,
+        currentVer,
+        gap: true,
+        ops: [],
+      };
+    }
+
+    const selected = this.#recentTileOps
+      .filter((entry) => entry.ver > fromVer)
+      .slice(0, limit);
+    const toVer = selected.length > 0 ? selected[selected.length - 1]!.ver : fromVer;
+    return {
+      tile: tileKey,
+      fromVer,
+      toVer,
+      currentVer,
+      gap: false,
+      ops: selected.map((entry) => entry.op),
+    };
   }
 
   #logEvent(event: string, fields: Record<string, unknown>): void {

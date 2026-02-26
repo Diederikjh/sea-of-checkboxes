@@ -3,6 +3,7 @@ import type { ServerMessage } from "@sea/protocol";
 import {
   readJson,
   type DurableObjectNamespaceLike,
+  type TileOpsSinceResponse,
   type TileSetCellRequest,
   type TileSetCellResponse,
   type TileWatchRequest,
@@ -78,6 +79,22 @@ export class ConnectionShardTileGateway {
     }
 
     return readJson<TileSetCellResponse>(response);
+  }
+
+  async fetchTileOpsSince(
+    tileKey: string,
+    fromVer: number,
+    limit: number
+  ): Promise<TileOpsSinceResponse | null> {
+    const response = await this.#tileOwnerStub(tileKey).fetch(
+      `https://tile-owner.internal/ops-since?tile=${encodeURIComponent(tileKey)}&fromVer=${fromVer}&limit=${limit}`
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return readJson<TileOpsSinceResponse>(response);
   }
 
   #tileOwnerStub(tileKey: string) {

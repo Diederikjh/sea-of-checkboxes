@@ -45,6 +45,7 @@ interface CursorCoordinatorOptions {
   canRelayNow?: () => boolean;
   onRelaySuppressed?: (suppression: CursorRelaySuppression) => void;
   sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
+  relayEnabled?: boolean;
 }
 
 export class CursorCoordinator {
@@ -57,10 +58,12 @@ export class CursorCoordinator {
   #canRelayNow: () => boolean;
   #onRelaySuppressed: (suppression: CursorRelaySuppression) => void;
   #sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
+  #relayEnabled: boolean;
 
   #cursorByUid: Map<string, CursorPresence>;
   #cursorTileIndex: Map<string, Set<string>>;
   #localCursorSeqByUid: Map<string, number>;
+  #localCursorUids: Set<string>;
   #pendingCursorRelays: Map<string, CursorPresence>;
   #cursorRelayFlushTimer: ReturnType<typeof setTimeout> | null;
   #cursorRelayInFlight: boolean;
@@ -79,10 +82,12 @@ export class CursorCoordinator {
     this.#canRelayNow = options.canRelayNow ?? (() => true);
     this.#onRelaySuppressed = options.onRelaySuppressed ?? (() => {});
     this.#sendServerMessage = options.sendServerMessage;
+    this.#relayEnabled = options.relayEnabled ?? true;
 
     this.#cursorByUid = new Map();
     this.#cursorTileIndex = new Map();
     this.#localCursorSeqByUid = new Map();
+    this.#localCursorUids = new Set();
     this.#pendingCursorRelays = new Map();
     this.#cursorRelayFlushTimer = null;
     this.#cursorRelayInFlight = false;
@@ -133,9 +138,14 @@ export class CursorCoordinator {
       tileKey: tileKeyFromWorld(x, y),
     };
     this.#upsertCursor(state);
+    this.#localCursorUids.add(client.uid);
     this.#markCursorSelectionDirty();
     this.#refreshCursorSelections(false);
     this.#sendCursorToSubscribedClients(state);
+
+    if (!this.#relayEnabled) {
+      return;
+    }
 
     if (nowMs < this.#relaySuppressedUntilMs) {
       this.#emitRelaySuppressed(1, "post_ingress_cooldown");
@@ -158,6 +168,9 @@ export class CursorCoordinator {
 
     let hadChanges = false;
     for (const update of batch.updates) {
+      if (this.#localCursorUids.has(update.uid)) {
+        continue;
+      }
       const existing = this.#cursorByUid.get(update.uid);
       if (existing && existing.seq >= update.seq) {
         continue;
@@ -178,6 +191,28 @@ export class CursorCoordinator {
       this.#relaySuppressedUntilMs,
       this.#clock.nowMs() + CURSOR_RELAY_INGRESS_SUPPRESSION_MS
     );
+  }
+
+  localCursorSnapshot(): CursorPresence[] {
+    const nowMs = this.#clock.nowMs();
+    this.#pruneTransientState(nowMs);
+
+    const updates: CursorPresence[] = [];
+    for (const uid of Array.from(this.#localCursorUids)) {
+      const cursor = this.#cursorByUid.get(uid);
+      if (!cursor || nowMs - cursor.seenAt > CURSOR_TTL_MS) {
+        this.#localCursorUids.delete(uid);
+        continue;
+      }
+      updates.push(cursor);
+    }
+
+    return updates;
+  }
+
+  onCursorPollTick(): void {
+    this.#markCursorSelectionDirty();
+    this.#refreshCursorSelections(false);
   }
 
   #scheduleCursorRelayFlush(delayMs: number = CURSOR_RELAY_FLUSH_MS): void {
@@ -281,6 +316,7 @@ export class CursorCoordinator {
     }
 
     this.#cursorByUid.delete(uid);
+    this.#localCursorUids.delete(uid);
   }
 
   #markCursorSelectionDirty(): void {
