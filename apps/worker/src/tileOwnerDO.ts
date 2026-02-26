@@ -30,6 +30,8 @@ const TILE_READONLY_WATCHER_THRESHOLD = 8;
 const TILE_DENY_WATCHER_THRESHOLD = 12;
 const TILE_SNAPSHOT_MAX_AGE_MS = 5_000;
 const TILE_SNAPSHOT_MAX_OPS = 500;
+const TILE_SNAPSHOT_RETRY_BASE_MS = 250;
+const TILE_SNAPSHOT_RETRY_MAX_MS = 5_000;
 const TILE_OP_HISTORY_LIMIT = 2_048;
 const TILE_OPS_SINCE_DEFAULT_LIMIT = 256;
 const TILE_OPS_SINCE_MAX_LIMIT = 1_024;
@@ -48,6 +50,7 @@ export class TileOwnerDO {
   #snapshotFlushTimer: ReturnType<typeof setTimeout> | null;
   #snapshotPersistInFlight: boolean;
   #snapshotDirty: boolean;
+  #snapshotRetryDelayMs: number;
 
   constructor(
     state: DurableObjectStateLike,
@@ -69,6 +72,7 @@ export class TileOwnerDO {
     this.#snapshotFlushTimer = null;
     this.#snapshotPersistInFlight = false;
     this.#snapshotDirty = false;
+    this.#snapshotRetryDelayMs = TILE_SNAPSHOT_RETRY_BASE_MS;
     this.#persistence =
       options.persistence ??
       (env.TILE_SNAPSHOTS
@@ -282,6 +286,7 @@ export class TileOwnerDO {
     this.#lastSnapshotAtMs = 0;
     this.#snapshotPersistInFlight = false;
     this.#snapshotDirty = false;
+    this.#snapshotRetryDelayMs = TILE_SNAPSHOT_RETRY_BASE_MS;
   }
 
   async #ensureLoaded(tileKey: string): Promise<void> {
@@ -338,13 +343,28 @@ export class TileOwnerDO {
 
     const elapsedSinceLastSnapshot = nowMs - this.#lastSnapshotAtMs;
     const delayMs = Math.max(1, TILE_SNAPSHOT_MAX_AGE_MS - elapsedSinceLastSnapshot);
+    this.#scheduleSnapshotPersistIn(delayMs);
+  }
+
+  #scheduleSnapshotPersistIn(delayMs: number): void {
+    this.#clearSnapshotFlushTimer();
     this.#snapshotFlushTimer = setTimeout(() => {
       this.#snapshotFlushTimer = null;
       void this.#persistSnapshotManaged().catch(() => {
-        // Persistence layer already logs failures.
+        // Persistence retries are scheduled internally.
       });
-    }, delayMs);
+    }, Math.max(1, delayMs));
     this.#maybeUnrefTimer(this.#snapshotFlushTimer);
+  }
+
+  #scheduleSnapshotRetry(): void {
+    this.#snapshotDirty = true;
+    const retryDelayMs = this.#snapshotRetryDelayMs;
+    this.#snapshotRetryDelayMs = Math.min(
+      TILE_SNAPSHOT_RETRY_MAX_MS,
+      Math.max(TILE_SNAPSHOT_RETRY_BASE_MS, this.#snapshotRetryDelayMs * 2)
+    );
+    this.#scheduleSnapshotPersistIn(retryDelayMs);
   }
 
   #clearSnapshotFlushTimer(): void {
@@ -368,6 +388,16 @@ export class TileOwnerDO {
       await this.#persistSnapshot();
       this.#lastSnapshotAtMs = Date.now();
       this.#opsSinceSnapshot = Math.max(0, this.#opsSinceSnapshot - opsAtPersistStart);
+      this.#snapshotRetryDelayMs = TILE_SNAPSHOT_RETRY_BASE_MS;
+    } catch (error) {
+      this.#logEvent("snapshot_write_deferred", {
+        reason: "persist_failed",
+        pending_ops: this.#opsSinceSnapshot,
+        retry_in_ms: this.#snapshotRetryDelayMs,
+        error_message: this.#errorMessage(error),
+      });
+      this.#scheduleSnapshotRetry();
+      return;
     } finally {
       this.#snapshotPersistInFlight = false;
     }
@@ -386,6 +416,13 @@ export class TileOwnerDO {
     }
 
     this.#scheduleSnapshotFlush(nowMs);
+  }
+
+  #errorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return "unknown_error";
   }
 
   #maybeUnrefTimer(timer: ReturnType<typeof setTimeout>): void {

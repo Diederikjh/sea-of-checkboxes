@@ -29,6 +29,9 @@ const SNAPSHOT_KEY = "snapshot";
 const SUBSCRIBERS_KEY = "subscribers";
 const SNAPSHOT_OBJECT_VERSION = "v1";
 const SNAPSHOT_READ_SUCCESS_SAMPLE_RATE = 0.02;
+const SNAPSHOT_R2_WRITE_MAX_ATTEMPTS = 3;
+const SNAPSHOT_R2_WRITE_RETRY_BASE_MS = 100;
+const SNAPSHOT_R2_WRITE_RETRY_MAX_MS = 1_000;
 
 function snapshotObjectKey(tileKey: string): string {
   const [tx = "0", ty = "0"] = tileKey.split(":");
@@ -37,6 +40,12 @@ function snapshotObjectKey(tileKey: string): string {
 
 function shouldSampleSnapshotRead(): boolean {
   return Math.random() < SNAPSHOT_READ_SUCCESS_SAMPLE_RATE;
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(1, delayMs));
+  });
 }
 
 function isValidSnapshotRecord(value: unknown): value is TileSnapshotRecord {
@@ -196,7 +205,11 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
     }
 
     if (legacy.snapshot) {
-      await this.#saveSnapshotToR2(tileKey, legacy.snapshot, "migration");
+      try {
+        await this.#saveSnapshotToR2(tileKey, legacy.snapshot, "migration");
+      } catch {
+        // Migration write is best-effort; keep serving legacy snapshot.
+      }
       return legacy;
     }
 
@@ -204,10 +217,37 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
   }
 
   async saveSnapshot(tileKey: string, snapshot: TileSnapshotRecord): Promise<void> {
-    await this.#saveSnapshotToR2(tileKey, snapshot, "normal");
-    if (this.#dualWriteLegacy) {
-      await this.#legacy.saveSnapshot(tileKey, snapshot);
+    let r2Error: unknown = null;
+    let legacyError: unknown = null;
+    try {
+      await this.#saveSnapshotToR2(tileKey, snapshot, "normal");
+    } catch (error) {
+      r2Error = error;
     }
+
+    if (this.#dualWriteLegacy || r2Error) {
+      try {
+        await this.#legacy.saveSnapshot(tileKey, snapshot);
+      } catch (error) {
+        legacyError = error;
+      }
+    }
+
+    if (!r2Error && !legacyError) {
+      return;
+    }
+
+    logStructuredEvent("tile_owner_persistence", "snapshot_write", {
+      do_id: this.#doId,
+      tile: tileKey,
+      source: "composite",
+      error: true,
+      r2_error: Boolean(r2Error),
+      legacy_error: Boolean(legacyError),
+      r2_error_message: r2Error instanceof Error ? r2Error.message : undefined,
+      legacy_error_message: legacyError instanceof Error ? legacyError.message : undefined,
+      mode: "normal",
+    });
   }
 
   async saveSubscribers(tileKey: string, subscribers: string[]): Promise<void> {
@@ -272,30 +312,45 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
     const startMs = Date.now();
     const key = snapshotObjectKey(tileKey);
     const payload = JSON.stringify(snapshot);
-    try {
-      await this.#bucket.put(key, payload);
-      logStructuredEvent("tile_owner_persistence", "snapshot_write", {
-        do_id: this.#doId,
-        tile: tileKey,
-        source: "r2",
-        mode,
-        key,
-        bytes: payload.length,
-        duration_ms: elapsedMs(startMs),
-      });
-    } catch (error) {
-      logStructuredEvent("tile_owner_persistence", "snapshot_write", {
-        do_id: this.#doId,
-        tile: tileKey,
-        source: "r2",
-        mode,
-        key,
-        bytes: payload.length,
-        error: true,
-        error_message: error instanceof Error ? error.message : "unknown_error",
-        duration_ms: elapsedMs(startMs),
-      });
-      throw error;
+    let retryDelayMs = SNAPSHOT_R2_WRITE_RETRY_BASE_MS;
+
+    for (let attempt = 1; attempt <= SNAPSHOT_R2_WRITE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await this.#bucket.put(key, payload);
+        logStructuredEvent("tile_owner_persistence", "snapshot_write", {
+          do_id: this.#doId,
+          tile: tileKey,
+          source: "r2",
+          mode,
+          key,
+          bytes: payload.length,
+          attempt,
+          duration_ms: elapsedMs(startMs),
+        });
+        return;
+      } catch (error) {
+        const finalAttempt = attempt >= SNAPSHOT_R2_WRITE_MAX_ATTEMPTS;
+        logStructuredEvent("tile_owner_persistence", "snapshot_write", {
+          do_id: this.#doId,
+          tile: tileKey,
+          source: "r2",
+          mode,
+          key,
+          bytes: payload.length,
+          error: true,
+          attempt,
+          final_attempt: finalAttempt,
+          error_message: error instanceof Error ? error.message : "unknown_error",
+          duration_ms: elapsedMs(startMs),
+        });
+
+        if (finalAttempt) {
+          throw error;
+        }
+
+        await sleep(retryDelayMs);
+        retryDelayMs = Math.min(SNAPSHOT_R2_WRITE_RETRY_MAX_MS, retryDelayMs * 2);
+      }
     }
   }
 }

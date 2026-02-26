@@ -75,6 +75,51 @@ class MemoryR2Bucket {
   }
 }
 
+class FlakyR2Bucket {
+  #objects: Map<string, string>;
+  #remainingPutFailures: number;
+  putAttempts: number;
+
+  constructor(failPutAttempts: number = 0) {
+    this.#objects = new Map();
+    this.#remainingPutFailures = Math.max(0, failPutAttempts);
+    this.putAttempts = 0;
+  }
+
+  async get(key: string): Promise<MemoryR2Object | null> {
+    const value = this.#objects.get(key);
+    return typeof value === "string" ? new MemoryR2Object(value) : null;
+  }
+
+  async put(key: string, value: string): Promise<void> {
+    this.putAttempts += 1;
+    if (this.#remainingPutFailures > 0) {
+      this.#remainingPutFailures -= 1;
+      throw new Error("simulated_r2_put_failure");
+    }
+    this.#objects.set(key, value);
+  }
+}
+
+class SnapshotWriteFailingStorage {
+  #data: Map<string, unknown>;
+
+  constructor() {
+    this.#data = new Map();
+  }
+
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.#data.get(key) as T | undefined;
+  }
+
+  async put<T>(key: string, value: T): Promise<void> {
+    if (key === "snapshot") {
+      throw new Error("simulated_legacy_snapshot_put_failure");
+    }
+    this.#data.set(key, value);
+  }
+}
+
 describe("TileOwnerDO propagation across restart", () => {
   it("keeps shard watchers across re-instantiation without shard push fanout", async () => {
     const harness = createTileOwnerHarness();
@@ -692,5 +737,180 @@ describe("TileOwnerDO propagation across restart", () => {
     };
     expect(secondSnapshot.ver).toBe(7);
     expect(decodeRle64(secondSnapshot.bits)[9]).toBe(1);
+  });
+
+  it("retries transient R2 snapshot write failures and still accepts setCell", async () => {
+    const storage = new MemoryStorage();
+    const r2 = new FlakyR2Bucket(2);
+    const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const env = {
+      CONNECTION_SHARD: shardNamespace,
+      TILE_OWNER: shardNamespace,
+      TILE_SNAPSHOTS: r2,
+    };
+    const state = {
+      id: { toString: () => "tile:0:0" },
+      storage,
+    };
+
+    const owner = new TileOwnerDO(state, env);
+    const response = await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 5,
+        v: 1,
+        op: "op_retry_r2",
+      })
+    );
+
+    expect(response.ok).toBe(true);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      ver: 1,
+    });
+    expect(r2.putAttempts).toBe(3);
+    expect(await r2.get("tiles/v1/tx=0/ty=0.json")).not.toBeNull();
+  });
+
+  it("falls back to legacy snapshot storage when R2 write retries are exhausted", async () => {
+    const storage = new MemoryStorage();
+    const r2 = new FlakyR2Bucket(20);
+    const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const env = {
+      CONNECTION_SHARD: shardNamespace,
+      TILE_OWNER: shardNamespace,
+      TILE_SNAPSHOTS: r2,
+    };
+    const state = {
+      id: { toString: () => "tile:0:0" },
+      storage,
+    };
+
+    const first = new TileOwnerDO(state, env);
+    const setCellResponse = await first.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 33,
+        v: 1,
+        op: "op_fallback_legacy",
+      })
+    );
+    expect(setCellResponse.ok).toBe(true);
+    await expect(setCellResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      ver: 1,
+    });
+    expect(r2.putAttempts).toBeGreaterThanOrEqual(3);
+
+    const second = new TileOwnerDO(state, env);
+    const snapshotResponse = await second.fetch(getJson("/snapshot?tile=0:0"));
+    expect(snapshotResponse.ok).toBe(true);
+    const snapshot = (await snapshotResponse.json()) as {
+      ver: number;
+      bits: string;
+    };
+    expect(snapshot.ver).toBe(1);
+    expect(decodeRle64(snapshot.bits)[33]).toBe(1);
+  });
+
+  it("accepts setCell even when both R2 and legacy snapshot writes fail", async () => {
+    const storage = new SnapshotWriteFailingStorage();
+    const r2 = new FlakyR2Bucket(20);
+    const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const env = {
+      CONNECTION_SHARD: shardNamespace,
+      TILE_OWNER: shardNamespace,
+      TILE_SNAPSHOTS: r2,
+    };
+    const state = {
+      id: { toString: () => "tile:0:0" },
+      storage,
+    };
+
+    const first = new TileOwnerDO(state, env);
+    const setCellResponse = await first.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 55,
+        v: 1,
+        op: "op_drop_allowed",
+      })
+    );
+    expect(setCellResponse.ok).toBe(true);
+    await expect(setCellResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      ver: 1,
+    });
+    expect(r2.putAttempts).toBeGreaterThanOrEqual(3);
+
+    // Snapshot durability is best-effort; a restart may lose this one write.
+    const second = new TileOwnerDO(state, env);
+    const snapshotResponse = await second.fetch(getJson("/snapshot?tile=0:0"));
+    expect(snapshotResponse.ok).toBe(true);
+    const snapshot = (await snapshotResponse.json()) as {
+      ver: number;
+    };
+    expect(snapshot.ver).toBe(0);
+  });
+
+  it("defers and retries snapshot persistence when adapter fails, without rejecting setCell", async () => {
+    let saveAttempts = 0;
+    let savedSnapshot: { bits: string; ver: number } | undefined;
+    const persistence: TileOwnerPersistence = {
+      async load() {
+        if (!savedSnapshot) {
+          return { subscribers: [] };
+        }
+        return {
+          snapshot: savedSnapshot,
+          subscribers: [],
+        };
+      },
+      async saveSnapshot(_tileKey, snapshot) {
+        saveAttempts += 1;
+        if (saveAttempts === 1) {
+          throw new Error("simulated_save_snapshot_failure");
+        }
+        savedSnapshot = snapshot;
+      },
+      async saveSubscribers() {
+        // no-op
+      },
+    };
+
+    const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const env = {
+      CONNECTION_SHARD: shardNamespace,
+      TILE_OWNER: shardNamespace,
+    };
+    const state = {
+      id: { toString: () => "tile:0:0" },
+      storage: new NullStorage(),
+    };
+
+    const owner = new TileOwnerDO(state, env, { persistence });
+    const response = await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 41,
+        v: 1,
+        op: "op_retry_adapter",
+      })
+    );
+
+    expect(response.ok).toBe(true);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      ver: 1,
+    });
+
+    await waitFor(() => {
+      expect(saveAttempts).toBeGreaterThanOrEqual(2);
+      expect(savedSnapshot?.ver).toBe(1);
+    }, { attempts: 120, delayMs: 10 });
   });
 });
