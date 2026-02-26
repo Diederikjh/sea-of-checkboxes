@@ -1,5 +1,5 @@
 export async function waitFor(
-  assertion: () => void,
+  assertion: () => void | Promise<void>,
   options: { attempts?: number; delayMs?: number } = {}
 ): Promise<void> {
   const attempts = options.attempts ?? 30;
@@ -8,7 +8,7 @@ export async function waitFor(
   let lastError: unknown;
   for (let index = 0; index < attempts; index += 1) {
     try {
-      assertion();
+      await assertion();
       return;
     } catch (error) {
       lastError = error;

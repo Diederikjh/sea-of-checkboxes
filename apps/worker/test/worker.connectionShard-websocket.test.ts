@@ -425,6 +425,38 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
+  it("preserves sub before setCell order when payloads are emitted back-to-back", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socket.emitMessage(
+      encodeClientMessageBinary({
+        t: "setCell",
+        tile: "0:0",
+        i: 21,
+        v: 1,
+        op: "op_sub_then_set",
+      })
+    );
+
+    await waitFor(() => {
+      const tileStub = harness.tileOwners.getByName("0:0");
+      expect(tileStub.watchRequests.length).toBe(1);
+      expect(tileStub.setCellRequests.length).toBe(1);
+      expect(tileStub.setCellRequests[0]?.op).toBe("op_sub_then_set");
+    });
+
+    const errors = decodeMessages(socket).filter(
+      (message): message is Extract<ServerMessage, { t: "err" }> => message.t === "err"
+    );
+    expect(errors.some((message) => message.code === "not_subscribed")).toBe(false);
+  });
+
   it("fans out tile batches only to subscribers", async () => {
     const harness = createHarness();
     const socketA = await connectClient(harness.shard, harness.socketPairFactory, {
@@ -1191,7 +1223,11 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(
         requests.some((entry) => {
           const url = new URL(entry.request.url);
-          return entry.request.method === "GET" && url.pathname === "/cursor-state";
+          return (
+            entry.request.method === "GET"
+            && url.pathname === "/cursor-state"
+            && entry.request.headers.get("x-sea-cursor-pull") === "1"
+          );
         })
       ).toBe(true);
     }

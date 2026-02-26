@@ -79,6 +79,7 @@ export class ConnectionShardDO {
   #tilePullTimer: ReturnType<typeof setTimeout> | null;
   #cursorPullInFlight: boolean;
   #cursorPullTimer: ReturnType<typeof setTimeout> | null;
+  #cursorStateIngressDepth: number;
 
   constructor(
     state: DurableObjectStateLike,
@@ -101,6 +102,7 @@ export class ConnectionShardDO {
     this.#tilePullTimer = null;
     this.#cursorPullInFlight = false;
     this.#cursorPullTimer = null;
+    this.#cursorStateIngressDepth = 0;
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
@@ -218,10 +220,15 @@ export class ConnectionShardDO {
     }
 
     if (url.pathname === "/cursor-state" && request.method === "GET") {
-      return jsonResponse({
-        from: this.#currentShardName(),
-        updates: this.#cursorCoordinator.localCursorSnapshot(),
-      } satisfies CursorRelayBatch);
+      this.#cursorStateIngressDepth += 1;
+      try {
+        return jsonResponse({
+          from: this.#currentShardName(),
+          updates: this.#cursorCoordinator.localCursorSnapshot(),
+        } satisfies CursorRelayBatch);
+      } finally {
+        this.#cursorStateIngressDepth = Math.max(0, this.#cursorStateIngressDepth - 1);
+      }
     }
 
     return new Response("Not found", { status: 404 });
@@ -862,7 +869,12 @@ export class ConnectionShardDO {
   }
 
   async #runCursorPullTick(): Promise<void> {
-    if (this.#clients.size === 0 || this.#cursorPullInFlight) {
+    if (this.#clients.size === 0) {
+      return;
+    }
+
+    if (this.#cursorPullInFlight || this.#cursorStateIngressDepth > 0) {
+      this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MS);
       return;
     }
 
@@ -899,7 +911,12 @@ export class ConnectionShardDO {
   async #pollPeerCursorState(peerShard: string): Promise<void> {
     try {
       const stub = this.#env.CONNECTION_SHARD.getByName(peerShard);
-      const response = await stub.fetch("https://connection-shard.internal/cursor-state");
+      const response = await stub.fetch("https://connection-shard.internal/cursor-state", {
+        method: "GET",
+        headers: {
+          "x-sea-cursor-pull": "1",
+        },
+      });
       if (!response.ok) {
         return;
       }
