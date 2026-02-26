@@ -424,7 +424,7 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "cellUpBatch")).toBe(false);
   });
 
-  it("defers re-entrant setCell messages emitted during tile-batch fanout", async () => {
+  it("defers re-entrant setCell messages emitted during tile-batch fanout until cooldown", async () => {
     const harness = createHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -473,6 +473,8 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(response.status).toBe(204);
 
     const tileStub = harness.tileOwners.getByName("0:0");
+    expect(tileStub.setCellRequests.length).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 80));
     expect(tileStub.setCellRequests.length).toBe(0);
 
     await waitFor(() => {
@@ -799,6 +801,64 @@ describe("ConnectionShardDO websocket handling", () => {
     await drainDeferred(harness);
     const afterRelayCount = countCursorRelaySubrequests(harness);
     expect(afterRelayCount).toBe(beforeRelayCount);
+  });
+
+  it("suppresses local cursor relay re-entry while processing inbound tile batches", async () => {
+    const harness = createRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await drainDeferred(harness);
+    const beforeRelayCount = countCursorRelaySubrequests(harness);
+
+    const originalSend = socket.send.bind(socket);
+    let reflectedCursor = false;
+    socket.send = (payload) => {
+      originalSend(payload);
+      if (reflectedCursor || typeof payload === "string") {
+        return;
+      }
+
+      const message = decodeServerMessageBinary(toUint8Array(payload));
+      if (message.t !== "cellUpBatch" || message.tile !== "0:0") {
+        return;
+      }
+
+      reflectedCursor = true;
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 1.5 }));
+    };
+
+    const response = await postTileBatch(harness.shard, {
+      t: "cellUpBatch",
+      tile: "0:0",
+      fromVer: 1,
+      toVer: 1,
+      ops: [[10, 1]],
+    });
+    expect(response.status).toBe(204);
+
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    await drainDeferred(harness);
+    const duringCooldownRelayCount = countCursorRelaySubrequests(harness);
+    expect(duringCooldownRelayCount).toBe(beforeRelayCount);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 2.5 }));
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await drainDeferred(harness);
+    const afterRelayCount = countCursorRelaySubrequests(harness);
+    expect(afterRelayCount - beforeRelayCount).toBe(SHARD_COUNT - 1);
   });
 
   it("resumes local cursor relay after inbound suppression cooldown", async () => {

@@ -47,6 +47,12 @@ import {
 const TILE_BATCH_TRACE_ID_HEADER = "x-sea-trace-id";
 const TILE_BATCH_TRACE_HOP_HEADER = "x-sea-trace-hop";
 const TILE_BATCH_TRACE_ORIGIN_HEADER = "x-sea-trace-origin";
+const TILE_BATCH_SETCELL_SUPPRESSION_MS = 120;
+const TILE_BATCH_SETCELL_RETRY_MS = 20;
+
+type SetCellSuppressionReason =
+  | "tile_batch_ingress_active"
+  | "tile_batch_cooldown";
 
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
@@ -61,6 +67,8 @@ export class ConnectionShardDO {
   #tileBatchOrderTracker: ConnectionShardTileBatchOrderTracker;
   #setCellQueue: ConnectionShardSetCellQueue;
   #cursorBatchIngressDepth: number;
+  #tileBatchIngressDepth: number;
+  #setCellSuppressedUntilMs: number;
 
   constructor(
     state: DurableObjectStateLike,
@@ -76,6 +84,8 @@ export class ConnectionShardDO {
     this.#clients = new Map();
     this.#tileToClients = new Map();
     this.#cursorBatchIngressDepth = 0;
+    this.#tileBatchIngressDepth = 0;
+    this.#setCellSuppressedUntilMs = 0;
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
@@ -94,12 +104,14 @@ export class ConnectionShardDO {
       cursorRelayTransport: {
         relayCursorBatch: (peerShards, body) => this.#relayCursorBatchToPeers(peerShards, body),
       },
-      canRelayNow: () => this.#cursorBatchIngressDepth === 0,
+      canRelayNow: () => this.#canRelayCursorNow(),
       onRelaySuppressed: ({ droppedCount, reason }) => {
         this.#logEvent("cursor_relay_suppressed", {
           dropped_count: droppedCount,
           reason,
           cursor_batch_ingress_depth: this.#cursorBatchIngressDepth,
+          tile_batch_ingress_depth: this.#tileBatchIngressDepth,
+          setcell_suppressed_remaining_ms: Math.max(0, this.#setCellSuppressedUntilMs - this.#nowMs()),
         });
       },
       sendServerMessage: (client, message) => {
@@ -162,7 +174,16 @@ export class ConnectionShardDO {
         return new Response(null, { status: 410 });
       }
 
-      this.#receiveTileBatch(batch);
+      this.#tileBatchIngressDepth += 1;
+      try {
+        this.#receiveTileBatch(batch);
+      } finally {
+        this.#tileBatchIngressDepth = Math.max(0, this.#tileBatchIngressDepth - 1);
+        this.#setCellSuppressedUntilMs = Math.max(
+          this.#setCellSuppressedUntilMs,
+          this.#nowMs() + TILE_BATCH_SETCELL_SUPPRESSION_MS
+        );
+      }
       return new Response(null, { status: 204 });
     }
 
@@ -402,8 +423,24 @@ export class ConnectionShardDO {
     }
   }
 
-  async #enqueueSetCellPayload(uid: string, socket: SocketLike, payload: Uint8Array): Promise<void> {
-    await this.#setCellQueue.enqueue(uid, () => this.#receiveClientPayload(uid, socket, payload));
+  async #enqueueSetCellPayload(
+    uid: string,
+    socket: SocketLike,
+    payload: Uint8Array,
+    client: ConnectedClient
+  ): Promise<void> {
+    await this.#setCellQueue.enqueue(uid, async () => {
+      const suppressionReason = await this.#waitForSetCellSuppressionWindow(uid, socket);
+      if (suppressionReason) {
+        this.#logEvent("setcell_suppressed", {
+          uid: client.uid,
+          reason: suppressionReason,
+          cursor_batch_ingress_depth: this.#cursorBatchIngressDepth,
+          tile_batch_ingress_depth: this.#tileBatchIngressDepth,
+        });
+      }
+      await this.#receiveClientPayload(uid, socket, payload);
+    });
   }
 
   #dispatchClientPayload(
@@ -415,7 +452,7 @@ export class ConnectionShardDO {
     if (this.#isSetCellBinaryPayload(payload)) {
       this.#deferClientSetCellTask(async () => {
         try {
-          await this.#enqueueSetCellPayload(uid, socket, payload);
+          await this.#enqueueSetCellPayload(uid, socket, payload, client);
         } catch {
           this.#sendError(client, "internal", "Failed to process client payload");
         }
@@ -430,6 +467,65 @@ export class ConnectionShardDO {
 
   #isSetCellBinaryPayload(payload: Uint8Array): boolean {
     return payload[0] === CLIENT_BINARY_TAG.setCell;
+  }
+
+  #canRelayCursorNow(): boolean {
+    if (this.#cursorBatchIngressDepth > 0) {
+      return false;
+    }
+
+    if (this.#tileBatchIngressDepth > 0) {
+      return false;
+    }
+
+    return this.#nowMs() >= this.#setCellSuppressedUntilMs;
+  }
+
+  async #waitForSetCellSuppressionWindow(
+    uid: string,
+    socket: SocketLike
+  ): Promise<SetCellSuppressionReason | null> {
+    let suppressionReason: SetCellSuppressionReason | null = null;
+    while (true) {
+      const suppression = this.#setCellSuppressionState();
+      if (!suppression) {
+        return suppressionReason;
+      }
+
+      suppressionReason = suppression.reason;
+      await this.#sleep(suppression.delayMs);
+
+      const current = this.#clients.get(uid);
+      if (!current || current.socket !== socket) {
+        return suppressionReason;
+      }
+    }
+  }
+
+  #setCellSuppressionState(): { reason: SetCellSuppressionReason; delayMs: number } | null {
+    if (this.#tileBatchIngressDepth > 0) {
+      return {
+        reason: "tile_batch_ingress_active",
+        delayMs: TILE_BATCH_SETCELL_RETRY_MS,
+      };
+    }
+
+    const remainingMs = this.#setCellSuppressedUntilMs - this.#nowMs();
+    if (remainingMs > 0) {
+      return {
+        reason: "tile_batch_cooldown",
+        delayMs: Math.max(1, Math.min(remainingMs, TILE_BATCH_SETCELL_RETRY_MS)),
+      };
+    }
+
+    return null;
+  }
+
+  #sleep(delayMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(), Math.max(1, delayMs));
+      this.#maybeUnrefTimer(timer);
+    });
   }
 
   #receiveTileBatch(message: Extract<ServerMessage, { t: "cellUpBatch" }>): void {
