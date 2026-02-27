@@ -225,4 +225,41 @@ describe("render loop cursor dirty patching", () => {
 
     expect(observedSubscribedSizes).toEqual([0, 0]);
   });
+
+  it("rebuilds subscriptions from an empty baseline on explicit lifecycle resync", () => {
+    const { app, tick } = createAppHarness();
+    const camera = { x: 0, y: 0, cellPixelSize: 16 };
+    const observedSubscribedSizes = [];
+    const transport = { send: vi.fn() };
+
+    mocks.reconcileSubscriptions.mockImplementation(({ subscribedTiles }) => {
+      observedSubscribedSizes.push(subscribedTiles.size);
+      return {
+        visibleTiles: [{ tileKey: "0:0", tx: 0, ty: 0 }],
+        subscribedTiles: new Set(["0:0"]),
+      };
+    });
+
+    const loop = createRenderLoop({
+      app,
+      graphics: {},
+      camera,
+      tileStore: {},
+      heatStore: {
+        decay: () => false,
+      },
+      cursors: new Map(),
+      cursorLabels: { update: vi.fn() },
+      transport,
+      setStatus: () => {},
+    });
+
+    expect(observedSubscribedSizes).toEqual([0]);
+
+    loop.forceSubscriptionRebuild();
+    tick();
+
+    expect(observedSubscribedSizes).toEqual([0, 1]);
+    expect(transport.send).toHaveBeenCalledWith({ t: "sub", tiles: ["0:0"] });
+  });
 });

@@ -60,11 +60,25 @@ export function createRenderLoop({
   let previousCursorDraw = new Map();
   let needsSubscriptionRefresh = true;
   let needsRender = true;
+  let forceResubscribeVisibleTiles = false;
   const dirtyTileCells = new Map();
 
-  const markNeedsFullRefresh = () => {
+  const requestSubscriptionRefresh = ({
+    resetSubscribedTiles = false,
+    resubscribeVisibleTiles = false,
+  } = {}) => {
+    if (resetSubscribedTiles) {
+      subscribedTiles = new Set();
+    }
+    if (resubscribeVisibleTiles) {
+      forceResubscribeVisibleTiles = true;
+    }
     needsSubscriptionRefresh = true;
     needsRender = true;
+  };
+
+  const markNeedsFullRefresh = () => {
+    requestSubscriptionRefresh();
   };
 
   const markVisualDirty = () => {
@@ -169,6 +183,13 @@ export function createRenderLoop({
 
     visibleTiles = updated.visibleTiles;
     subscribedTiles = updated.subscribedTiles;
+    if (forceResubscribeVisibleTiles) {
+      const tiles = Array.from(updated.subscribedTiles);
+      if (tiles.length > 0) {
+        transport.send({ t: "sub", tiles });
+      }
+      forceResubscribeVisibleTiles = false;
+    }
     needsSubscriptionRefresh = false;
   };
 
@@ -251,9 +272,12 @@ export function createRenderLoop({
     markTileCellsDirty,
     markTransportReconnected() {
       // Rebuild shard-side subscriptions after WS reconnect or worker upgrade.
-      subscribedTiles = new Set();
-      needsSubscriptionRefresh = true;
-      needsRender = true;
+      requestSubscriptionRefresh({ resetSubscribedTiles: true });
+    },
+    forceSubscriptionRebuild() {
+      // Re-assert visible tile subscriptions when browser lifecycle events
+      // (focus/visibility/pageshow) might have drifted shard watch state.
+      requestSubscriptionRefresh({ resubscribeVisibleTiles: true });
     },
     handleResize: markNeedsFullRefresh,
     dispose() {

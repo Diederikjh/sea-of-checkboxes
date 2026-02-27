@@ -429,6 +429,29 @@ export async function startApp() {
   const onResize = () => {
     renderLoop.handleResize();
   };
+  const forceSubscriptionRebuild = (reason) => {
+    renderLoop.forceSubscriptionRebuild();
+    logOther("ws subscription_rebuild", {
+      reason,
+      transportOnline,
+      visibilityState:
+        typeof document !== "undefined" && typeof document.visibilityState === "string"
+          ? document.visibilityState
+          : undefined,
+    });
+  };
+  const onWindowFocus = () => {
+    forceSubscriptionRebuild("focus");
+  };
+  const onPageShow = () => {
+    forceSubscriptionRebuild("pageshow");
+  };
+  const onDocumentVisibilityChange = () => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") {
+      return;
+    }
+    forceSubscriptionRebuild("visibilitychange");
+  };
   const onBrowserOffline = () => {
     handleConnectionLost();
   };
@@ -438,13 +461,23 @@ export async function startApp() {
     }
   };
   window.addEventListener("resize", onResize);
+  window.addEventListener("focus", onWindowFocus);
+  window.addEventListener("pageshow", onPageShow);
   window.addEventListener("offline", onBrowserOffline);
   window.addEventListener("online", onBrowserOnline);
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("visibilitychange", onDocumentVisibilityChange);
+  }
 
   return () => {
     window.removeEventListener("resize", onResize);
+    window.removeEventListener("focus", onWindowFocus);
+    window.removeEventListener("pageshow", onPageShow);
     window.removeEventListener("offline", onBrowserOffline);
     window.removeEventListener("online", onBrowserOnline);
+    if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
+      document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
+    }
     if (perfProbe.enabled) {
       canvas.removeEventListener("webglcontextlost", onWebGlContextLost);
       canvas.removeEventListener("webglcontextrestored", onWebGlContextRestored);

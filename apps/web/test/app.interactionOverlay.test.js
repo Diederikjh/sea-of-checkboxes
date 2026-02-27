@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   teardownInputHandlers: vi.fn(),
   windowAddEventListener: vi.fn(),
   windowRemoveEventListener: vi.fn(),
+  documentAddEventListener: vi.fn(),
+  documentRemoveEventListener: vi.fn(),
+  forceSubscriptionRebuild: vi.fn(),
   markTransportReconnected: vi.fn(),
 }));
 
@@ -112,6 +115,7 @@ vi.mock("../src/renderLoop", () => ({
     markVisualDirty: vi.fn(),
     markTileCellsDirty: vi.fn(),
     markTransportReconnected: mocks.markTransportReconnected,
+    forceSubscriptionRebuild: mocks.forceSubscriptionRebuild,
     handleResize: vi.fn(),
     dispose: vi.fn(),
   }),
@@ -173,6 +177,7 @@ function createRequiredElements() {
 
 describe("app interaction overlays", () => {
   const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -182,8 +187,11 @@ describe("app interaction overlays", () => {
     mocks.outboundMessages.length = 0;
     mocks.inputHandlerArgs = null;
     mocks.markTransportReconnected.mockReset();
+    mocks.forceSubscriptionRebuild.mockReset();
     mocks.windowAddEventListener.mockClear();
     mocks.windowRemoveEventListener.mockClear();
+    mocks.documentAddEventListener.mockClear();
+    mocks.documentRemoveEventListener.mockClear();
 
     globalThis.window = {
       setTimeout: globalThis.setTimeout.bind(globalThis),
@@ -191,11 +199,17 @@ describe("app interaction overlays", () => {
       addEventListener: mocks.windowAddEventListener,
       removeEventListener: mocks.windowRemoveEventListener,
     };
+    globalThis.document = {
+      visibilityState: "visible",
+      addEventListener: mocks.documentAddEventListener,
+      removeEventListener: mocks.documentRemoveEventListener,
+    };
   });
 
   afterEach(() => {
     vi.useRealTimers();
     globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
   });
 
   it("shows deny and readonly overlays for matching server errors and auto-hides", async () => {
@@ -305,6 +319,45 @@ describe("app interaction overlays", () => {
     expect(mocks.outboundMessages[1]).toMatchObject({ t: "setCell", tile: "0:0", i: 1, v: 1 });
 
     teardown();
+  });
+
+  it("forces a subscription rebuild on focus/pageshow and visible lifecycle transitions", async () => {
+    const teardown = await startApp();
+
+    const focusHandler = mocks.windowAddEventListener.mock.calls.find(
+      ([eventName]) => eventName === "focus"
+    )?.[1];
+    const pageShowHandler = mocks.windowAddEventListener.mock.calls.find(
+      ([eventName]) => eventName === "pageshow"
+    )?.[1];
+    const visibilityHandler = mocks.documentAddEventListener.mock.calls.find(
+      ([eventName]) => eventName === "visibilitychange"
+    )?.[1];
+
+    if (typeof focusHandler !== "function") {
+      throw new Error("Expected focus event handler registration");
+    }
+    if (typeof pageShowHandler !== "function") {
+      throw new Error("Expected pageshow event handler registration");
+    }
+    if (typeof visibilityHandler !== "function") {
+      throw new Error("Expected visibilitychange event handler registration");
+    }
+
+    focusHandler();
+    pageShowHandler();
+    globalThis.document.visibilityState = "hidden";
+    visibilityHandler();
+    globalThis.document.visibilityState = "visible";
+    visibilityHandler();
+
+    expect(mocks.forceSubscriptionRebuild).toHaveBeenCalledTimes(3);
+
+    teardown();
+    expect(mocks.documentRemoveEventListener).toHaveBeenCalledWith(
+      "visibilitychange",
+      expect.any(Function)
+    );
   });
 
   it("shows offline banner from browser offline event even before websocket close", async () => {
