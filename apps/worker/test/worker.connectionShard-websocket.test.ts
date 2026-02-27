@@ -536,6 +536,7 @@ describe("ConnectionShardDO websocket handling", () => {
     });
 
     socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
     await waitFor(() => {
       const messages = decodeMessages(socket);
       expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
@@ -1006,23 +1007,6 @@ describe("ConnectionShardDO websocket handling", () => {
     await drainDeferred(harness);
     const beforeRelayCount = countCursorRelaySubrequests(harness);
 
-    const originalSend = socket.send.bind(socket);
-    let reflectedCursor = false;
-    socket.send = (payload) => {
-      originalSend(payload);
-      if (reflectedCursor || typeof payload === "string") {
-        return;
-      }
-
-      const message = decodeServerMessageBinary(toUint8Array(payload));
-      if (message.t !== "curUp" || message.uid !== "u_remote") {
-        return;
-      }
-
-      reflectedCursor = true;
-      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 1.5 }));
-    };
-
     const response = await postCursorBatch(harness.shard, {
       from: "shard-1",
       updates: [
@@ -1048,6 +1032,51 @@ describe("ConnectionShardDO websocket handling", () => {
     await drainDeferred(harness);
     const afterRelayCount = countCursorRelaySubrequests(harness);
     expect(afterRelayCount).toBe(beforeRelayCount);
+  });
+
+  it("suppresses cursor hub publishes during inbound cursor-batch processing and resumes after cooldown", async () => {
+    const harness = createRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await drainDeferred(harness);
+    const beforeHubPublishCount = countCursorHubPublishes(harness);
+
+    const response = await postCursorBatch(harness.shard, {
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.5,
+          y: 1.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+    expect(response.status).toBe(204);
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 1.5 }));
+
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    await drainDeferred(harness);
+    const duringCooldownHubPublishCount = countCursorHubPublishes(harness);
+    expect(duringCooldownHubPublishCount).toBe(beforeHubPublishCount);
+
+    await waitFor(() => {
+      expect(countCursorHubPublishes(harness)).toBeGreaterThan(beforeHubPublishCount);
+    }, { attempts: 120, delayMs: 10 });
   });
 
   it("suppresses cursor hub publishes during inbound tile-batch processing and resumes after cooldown", async () => {

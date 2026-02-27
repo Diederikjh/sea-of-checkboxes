@@ -57,6 +57,7 @@ const TILE_PULL_PAGE_LIMIT = 256;
 const TILE_PULL_MAX_PAGES_PER_TICK = 4;
 const CURSOR_PULL_INTERVAL_MS = 75;
 const CURSOR_HUB_NAME = "global";
+const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
 
 type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
@@ -83,6 +84,7 @@ export class ConnectionShardDO {
   #cursorPullInFlight: boolean;
   #cursorPullTimer: ReturnType<typeof setTimeout> | null;
   #cursorStateIngressDepth: number;
+  #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubController: ConnectionShardCursorHubController;
 
   constructor(
@@ -107,6 +109,7 @@ export class ConnectionShardDO {
     this.#cursorPullInFlight = false;
     this.#cursorPullTimer = null;
     this.#cursorStateIngressDepth = 0;
+    this.#cursorHubPublishSuppressedUntilMs = 0;
     const cursorHubGateway = this.#env.CURSOR_HUB
       ? new ConnectionShardCursorHubGateway({
           namespace: this.#env.CURSOR_HUB,
@@ -551,6 +554,10 @@ export class ConnectionShardDO {
       return false;
     }
 
+    if (this.#nowMs() < this.#cursorHubPublishSuppressedUntilMs) {
+      return false;
+    }
+
     return this.#nowMs() >= this.#setCellSuppressedUntilMs;
   }
 
@@ -775,6 +782,10 @@ export class ConnectionShardDO {
       this.#receiveCursorBatch(batch);
     } finally {
       this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
+      this.#cursorHubPublishSuppressedUntilMs = Math.max(
+        this.#cursorHubPublishSuppressedUntilMs,
+        this.#nowMs() + CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS
+      );
     }
   }
 
