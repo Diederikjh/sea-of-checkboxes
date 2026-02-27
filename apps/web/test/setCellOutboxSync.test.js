@@ -95,4 +95,34 @@ describe("setCell outbox sync", () => {
 
     expect(sync.getPendingSetCellOpsForTile("0:-1")).toEqual([{ i: 7, v: 1 }]);
   });
+
+  it("drops all pending intents for a tile on snapshot authority", () => {
+    const { sync } = createHarness();
+
+    sync.trackOutgoingClientMessage({
+      t: "setCell",
+      tile: "0:-1",
+      i: 7,
+      v: 1,
+      op: "op_1",
+    });
+    sync.trackOutgoingClientMessage({
+      t: "setCell",
+      tile: "0:-1",
+      i: 8,
+      v: 1,
+      op: "op_2",
+    });
+    sync.trackOutgoingClientMessage({
+      t: "setCell",
+      tile: "0:0",
+      i: 1,
+      v: 1,
+      op: "op_3",
+    });
+
+    expect(sync.dropPendingSetCellOpsForTile("0:-1")).toBe(2);
+    expect(sync.getPendingSetCellOpsForTile("0:-1")).toEqual([]);
+    expect(sync.getPendingSetCellOpsForTile("0:0")).toEqual([{ i: 1, v: 1 }]);
+  });
 });

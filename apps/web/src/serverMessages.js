@@ -103,6 +103,7 @@ export function createServerMessageHandler({
   setInteractionRestriction = () => {},
   onIdentityReceived = () => {},
   getPendingSetCellOpsForTile = () => [],
+  dropPendingSetCellOpsForTile = () => 0,
 }) {
   const readTile = typeof tileStore.get === "function" ? tileStore.get.bind(tileStore) : () => null;
 
@@ -126,10 +127,21 @@ export function createServerMessageHandler({
             pendingOps: pendingOps.length,
           });
           if (message.ver < localBefore.ver) {
-            logger.protocol("tileSnap_stale_overwrite", {
+            logger.protocol("tileSnap_stale_ignored", {
               tile: message.tile,
               incomingVer: message.ver,
               localVer: localBefore.ver,
+            });
+            break;
+          }
+          if (pendingOps.length > 0) {
+            const droppedPending = dropPendingSetCellOpsForTile(message.tile);
+            logger.protocol("tileSnap_pending_dropped", {
+              tile: message.tile,
+              incomingVer: message.ver,
+              localVer: localBefore.ver,
+              pendingOps: pendingOps.length,
+              droppedPending,
             });
           }
         } else {

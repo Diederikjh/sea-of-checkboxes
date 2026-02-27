@@ -6,12 +6,14 @@ import { createServerMessageHandler } from "../src/serverMessages";
 
 function createHarness({
   getPendingSetCellOpsForTile = () => [],
+  dropPendingSetCellOpsForTile = () => 0,
 } = {}) {
   const identityEl = { textContent: "" };
   const statuses = [];
   const restrictions = [];
 
   const tileStore = {
+    get: vi.fn(() => null),
     setSnapshot: vi.fn(),
     applyOptimistic: vi.fn(),
     applySingle: vi.fn(),
@@ -44,6 +46,7 @@ function createHarness({
     onVisualStateChanged,
     onIdentityReceived,
     getPendingSetCellOpsForTile,
+    dropPendingSetCellOpsForTile,
   });
 
   return {
@@ -122,6 +125,60 @@ describe("server message handling", () => {
     expect(harness.tileStore.setSnapshot).toHaveBeenCalledTimes(1);
     expect(harness.tileStore.applyOptimistic).toHaveBeenNthCalledWith(1, "0:0", 7, 1);
     expect(harness.tileStore.applyOptimistic).toHaveBeenNthCalledWith(2, "0:0", 8, 0);
+  });
+
+  it("ignores stale tile snapshots older than local version", () => {
+    const harness = createHarness();
+    harness.tileStore.get.mockReturnValue({
+      ver: 8,
+      bits: new Uint8Array(TILE_CELL_COUNT),
+    });
+    const bits = new Uint8Array(TILE_CELL_COUNT);
+    bits[7] = 1;
+
+    harness.handler({
+      t: "tileSnap",
+      tile: "0:0",
+      ver: 7,
+      enc: "rle64",
+      bits: encodeRle64(bits),
+    });
+
+    expect(harness.tileStore.setSnapshot).not.toHaveBeenCalled();
+    expect(harness.tileStore.applyOptimistic).not.toHaveBeenCalled();
+    expect(harness.heatStore.ensureTile).not.toHaveBeenCalled();
+  });
+
+  it("drops pending outbox ops when applying authoritative snapshot over local cache", () => {
+    let pending = [
+      { i: 7, v: 1 },
+      { i: 8, v: 0 },
+    ];
+    const dropPendingSetCellOpsForTile = vi.fn(() => {
+      const dropped = pending.length;
+      pending = [];
+      return dropped;
+    });
+    const harness = createHarness({
+      dropPendingSetCellOpsForTile,
+      getPendingSetCellOpsForTile: (tileKey) => (tileKey === "0:0" ? pending : []),
+    });
+    harness.tileStore.get.mockReturnValue({
+      ver: 8,
+      bits: new Uint8Array(TILE_CELL_COUNT),
+    });
+
+    harness.handler({
+      t: "tileSnap",
+      tile: "0:0",
+      ver: 9,
+      enc: "rle64",
+      bits: encodeRle64(new Uint8Array(TILE_CELL_COUNT)),
+    });
+
+    expect(dropPendingSetCellOpsForTile).toHaveBeenCalledWith("0:0");
+    expect(harness.tileStore.applyOptimistic).not.toHaveBeenCalled();
+    expect(harness.tileStore.setSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it("reapplies pending outbox value after single-cell update for same index", () => {

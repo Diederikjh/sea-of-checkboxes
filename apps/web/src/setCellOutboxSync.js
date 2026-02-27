@@ -180,6 +180,21 @@ export function createSetCellOutboxSync({
       return pending;
     },
 
+    dropPendingSetCellOpsForTile(tileKey) {
+      let dropped = 0;
+      for (const [key, entry] of setCellOutbox.entries()) {
+        if (entry.message.tile !== tileKey) {
+          continue;
+        }
+        setCellOutbox.delete(key);
+        dropped += 1;
+      }
+      if (dropped > 0 && !offlineBannerEl.hidden) {
+        refreshOfflineBannerText();
+      }
+      return dropped;
+    },
+
     handleConnectionOpen() {
       hideOfflineBanner();
       clearOutboxReplayTimer();

@@ -387,6 +387,7 @@ export async function startApp() {
         writeStoredIdentity({ uid, name, token });
       },
       getPendingSetCellOpsForTile: setCellOutboxSync.getPendingSetCellOpsForTile,
+      dropPendingSetCellOpsForTile: setCellOutboxSync.dropPendingSetCellOpsForTile,
     }),
     {
       onOpen: ({ reconnected }) => {
@@ -429,6 +430,8 @@ export async function startApp() {
   const onResize = () => {
     renderLoop.handleResize();
   };
+  const isDocumentVisible = () =>
+    typeof document === "undefined" || document.visibilityState === "visible";
   const forceSubscriptionRebuild = (reason) => {
     renderLoop.forceSubscriptionRebuild();
     logOther("ws subscription_rebuild", {
@@ -441,13 +444,19 @@ export async function startApp() {
     });
   };
   const onWindowFocus = () => {
+    if (!isDocumentVisible()) {
+      return;
+    }
     forceSubscriptionRebuild("focus");
   };
   const onPageShow = () => {
+    if (!isDocumentVisible()) {
+      return;
+    }
     forceSubscriptionRebuild("pageshow");
   };
   const onDocumentVisibilityChange = () => {
-    if (typeof document === "undefined" || document.visibilityState !== "visible") {
+    if (!isDocumentVisible()) {
       return;
     }
     forceSubscriptionRebuild("visibilitychange");

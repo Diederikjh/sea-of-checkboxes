@@ -344,6 +344,10 @@ describe("app interaction overlays", () => {
       throw new Error("Expected visibilitychange event handler registration");
     }
 
+    globalThis.document.visibilityState = "hidden";
+    focusHandler();
+    pageShowHandler();
+    globalThis.document.visibilityState = "visible";
     focusHandler();
     pageShowHandler();
     globalThis.document.visibilityState = "hidden";
