@@ -98,10 +98,9 @@ export function createSetCellOutboxSync({
     }
   };
 
-  const clearSetCellOutboxEntryIfAckMatches = (tile, index, value) => {
+  const clearSetCellOutboxEntryForServerUpdate = (tile, index) => {
     const key = outboxKeyForSetCell(tile, index);
-    const entry = setCellOutbox.get(key);
-    if (entry?.message.v !== value) {
+    if (!setCellOutbox.has(key)) {
       return;
     }
 
@@ -151,7 +150,9 @@ export function createSetCellOutboxSync({
 
     handleServerMessage(message) {
       if (message.t === "cellUp") {
-        clearSetCellOutboxEntryIfAckMatches(message.tile, message.i, message.v);
+        // Server updates are authoritative; clear local pending intent for that cell
+        // even when value diverges, so stale outbox entries cannot override fresh state.
+        clearSetCellOutboxEntryForServerUpdate(message.tile, message.i);
         return;
       }
 
@@ -159,8 +160,8 @@ export function createSetCellOutboxSync({
         return;
       }
 
-      for (const [index, value] of message.ops) {
-        clearSetCellOutboxEntryIfAckMatches(message.tile, index, value);
+      for (const [index] of message.ops) {
+        clearSetCellOutboxEntryForServerUpdate(message.tile, index);
       }
     },
 
