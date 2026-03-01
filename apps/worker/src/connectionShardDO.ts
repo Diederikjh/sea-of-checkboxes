@@ -52,7 +52,9 @@ const TILE_BATCH_TRACE_HOP_HEADER = "x-sea-trace-hop";
 const TILE_BATCH_TRACE_ORIGIN_HEADER = "x-sea-trace-origin";
 const TILE_BATCH_SETCELL_SUPPRESSION_MS = 120;
 const TILE_BATCH_SETCELL_RETRY_MS = 20;
-const TILE_PULL_INTERVAL_MS = 75;
+const TILE_PULL_INTERVAL_MIN_MS = 200;
+const TILE_PULL_INTERVAL_MAX_MS = 1000;
+const TILE_PULL_INTERVAL_BACKOFF_STEP_MS = 200;
 const TILE_PULL_PAGE_LIMIT = 256;
 const TILE_PULL_MAX_PAGES_PER_TICK = 4;
 const CURSOR_PULL_INTERVAL_MS = 75;
@@ -81,6 +83,7 @@ export class ConnectionShardDO {
   #tileKnownVersionByTile: Map<string, number>;
   #tilePullInFlight: Set<string>;
   #tilePullTimer: ReturnType<typeof setTimeout> | null;
+  #tilePullIntervalMs: number;
   #cursorPullInFlight: boolean;
   #cursorPullTimer: ReturnType<typeof setTimeout> | null;
   #cursorStateIngressDepth: number;
@@ -106,6 +109,7 @@ export class ConnectionShardDO {
     this.#tileKnownVersionByTile = new Map();
     this.#tilePullInFlight = new Set();
     this.#tilePullTimer = null;
+    this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
     this.#cursorPullInFlight = false;
     this.#cursorPullTimer = null;
     this.#cursorStateIngressDepth = 0;
@@ -848,9 +852,11 @@ export class ConnectionShardDO {
       this.#clearTilePullTimer();
       this.#tilePullInFlight.clear();
       this.#tileKnownVersionByTile.clear();
+      this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
       return;
     }
 
+    this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
     this.#scheduleTilePullTick(0);
   }
 
@@ -879,7 +885,7 @@ export class ConnectionShardDO {
     this.#cursorHubController.refreshWatchState();
   }
 
-  #scheduleTilePullTick(delayMs: number = TILE_PULL_INTERVAL_MS): void {
+  #scheduleTilePullTick(delayMs: number = this.#tilePullIntervalMs): void {
     if (this.#tilePullTimer || this.#tileToClients.size === 0) {
       return;
     }
@@ -927,9 +933,24 @@ export class ConnectionShardDO {
       return;
     }
 
-    await Promise.all(activeTiles.map((tileKey) => this.#pollTileIfNeeded(tileKey)));
+    const deltaObserved = (
+      await Promise.all(activeTiles.map((tileKey) => this.#pollTileIfNeeded(tileKey)))
+    ).some(Boolean);
+    this.#updateTilePullInterval(deltaObserved);
     this.#pruneStaleTilePullState();
-    this.#scheduleTilePullTick(TILE_PULL_INTERVAL_MS);
+    this.#scheduleTilePullTick(this.#tilePullIntervalMs);
+  }
+
+  #updateTilePullInterval(deltaObserved: boolean): void {
+    if (deltaObserved) {
+      this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MIN_MS;
+      return;
+    }
+
+    this.#tilePullIntervalMs = Math.min(
+      TILE_PULL_INTERVAL_MAX_MS,
+      this.#tilePullIntervalMs + TILE_PULL_INTERVAL_BACKOFF_STEP_MS
+    );
   }
 
   async #runCursorPullTick(): Promise<void> {
@@ -1000,42 +1021,43 @@ export class ConnectionShardDO {
     }
   }
 
-  async #pollTileIfNeeded(tileKey: string): Promise<void> {
+  async #pollTileIfNeeded(tileKey: string): Promise<boolean> {
     if (!this.#tileToClients.has(tileKey) || this.#tilePullInFlight.has(tileKey)) {
-      return;
+      return false;
     }
 
     this.#tilePullInFlight.add(tileKey);
     try {
-      await this.#pollTileDeltas(tileKey);
+      return await this.#pollTileDeltas(tileKey);
     } finally {
       this.#tilePullInFlight.delete(tileKey);
     }
   }
 
-  async #pollTileDeltas(tileKey: string): Promise<void> {
+  async #pollTileDeltas(tileKey: string): Promise<boolean> {
     let fromVer = this.#tileKnownVersionByTile.get(tileKey) ?? 0;
+    let sawDelta = false;
 
     for (let page = 0; page < TILE_PULL_MAX_PAGES_PER_TICK; page += 1) {
       const response = await this.#fetchTileOpsSince(tileKey, fromVer, TILE_PULL_PAGE_LIMIT);
       if (!response || response.tile !== tileKey) {
-        return;
+        return sawDelta;
       }
 
       if (response.gap) {
-        await this.#resyncTileViaSnapshot(tileKey);
-        return;
+        const resynced = await this.#resyncTileViaSnapshot(tileKey);
+        return sawDelta || resynced;
       }
 
       if (response.ops.length === 0) {
         this.#recordTileVersion(tileKey, response.toVer);
-        return;
+        return sawDelta;
       }
 
       const expectedToVer = fromVer + response.ops.length;
       if (response.toVer !== expectedToVer) {
-        await this.#resyncTileViaSnapshot(tileKey);
-        return;
+        const resynced = await this.#resyncTileViaSnapshot(tileKey);
+        return sawDelta || resynced;
       }
 
       this.#receiveTileBatch({
@@ -1045,18 +1067,21 @@ export class ConnectionShardDO {
         toVer: response.toVer,
         ops: response.ops,
       });
+      sawDelta = true;
       fromVer = response.toVer;
 
       if (response.toVer >= response.currentVer) {
-        return;
+        return sawDelta;
       }
     }
+
+    return sawDelta;
   }
 
-  async #resyncTileViaSnapshot(tileKey: string): Promise<void> {
+  async #resyncTileViaSnapshot(tileKey: string): Promise<boolean> {
     const snapshot = await this.#fetchTileSnapshot(tileKey);
     if (!snapshot) {
-      return;
+      return false;
     }
 
     this.#recordTileVersion(tileKey, snapshot.ver);
@@ -1065,6 +1090,7 @@ export class ConnectionShardDO {
       tile: tileKey,
       ver: snapshot.ver,
     });
+    return true;
   }
 
   #fanoutSnapshotToSubscribers(snapshot: Extract<ServerMessage, { t: "tileSnap" }>): void {

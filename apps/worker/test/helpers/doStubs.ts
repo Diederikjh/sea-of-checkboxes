@@ -128,6 +128,7 @@ interface TileSnapshotMessage {
 
 export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
   readonly name: string;
+  readonly requests: RecordedRequest[];
   readonly watchRequests: TileWatchRequest[];
   readonly setCellRequests: TileSetCellRequest[];
   #versions: Map<string, number>;
@@ -138,6 +139,7 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
 
   constructor(name: string) {
     this.name = name;
+    this.requests = [];
     this.watchRequests = [];
     this.setCellRequests = [];
     this.#versions = new Map();
@@ -162,6 +164,18 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
     const request = toRequest(input, init);
     const url = new URL(request.url);
     const body = await request.text();
+    const method = request.method.toUpperCase();
+    const requestInit: RequestInit = {
+      method,
+      headers: new Headers(request.headers),
+    };
+    if (method !== "GET" && method !== "HEAD" && body.length > 0) {
+      requestInit.body = body;
+    }
+    this.requests.push({
+      request: new Request(request.url, requestInit),
+      body,
+    });
 
     if (url.pathname === "/watch" && request.method === "POST") {
       const payload = JSON.parse(body) as TileWatchRequest;

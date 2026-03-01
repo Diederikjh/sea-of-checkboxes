@@ -186,6 +186,18 @@ function countCursorHubPublishes(harness: RelayHarness): number {
   });
 }
 
+function countTileOpsSinceRequests(harness: ReturnType<typeof createHarness>): number {
+  let total = 0;
+  for (const stub of harness.tileOwners.stubs.values()) {
+    total += stub.requests.filter((entry) => {
+      const url = new URL(entry.request.url);
+      return entry.request.method.toUpperCase() === "GET" && url.pathname === "/ops-since";
+    }).length;
+  }
+
+  return total;
+}
+
 async function drainDeferred(harness: RelayHarness): Promise<void> {
   void harness;
   await Promise.resolve();
@@ -916,6 +928,74 @@ describe("ConnectionShardDO websocket handling", () => {
 
     const messagesB = decodeMessages(socketB);
     expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(false);
+  });
+
+  it("polls tile ops-since at ~1s cadence when idle", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-a",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(0);
+      const baseline = countTileOpsSinceRequests(harness);
+      expect(baseline).toBeGreaterThan(0);
+
+      await vi.advanceTimersByTimeAsync(900);
+      expect(countTileOpsSinceRequests(harness)).toBe(baseline);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(countTileOpsSinceRequests(harness)).toBe(baseline + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accelerates tile ops-since polling to 200ms on deltas and backs off when quiet", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-a",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(0);
+      const initial = countTileOpsSinceRequests(harness);
+      expect(initial).toBeGreaterThan(0);
+
+      const tileStub = harness.tileOwners.getByName("0:0");
+      tileStub.injectOp("0:0", 7, 1);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(countTileOpsSinceRequests(harness)).toBe(initial + 1);
+
+      await vi.advanceTimersByTimeAsync(199);
+      expect(countTileOpsSinceRequests(harness)).toBe(initial + 1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(countTileOpsSinceRequests(harness)).toBe(initial + 2);
+
+      await vi.advanceTimersByTimeAsync(399);
+      expect(countTileOpsSinceRequests(harness)).toBe(initial + 2);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(countTileOpsSinceRequests(harness)).toBe(initial + 3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("exposes local cursor state via cursor-state endpoint", async () => {
