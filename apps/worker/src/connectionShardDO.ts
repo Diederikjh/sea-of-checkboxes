@@ -465,10 +465,11 @@ export class ConnectionShardDO {
           if (
             setCellResult.accepted &&
             setCellResult.changed &&
-            setCellResult.watcherCount === 1 &&
             typeof setCellResult.ver === "number"
           ) {
-            // For single-watcher tiles, avoid a DO->DO broadcast roundtrip and fan out locally.
+            // Always fan out accepted local writes to this shard's subscribers.
+            // Remote shards rely on ops-since polling; this local fanout keeps same-shard
+            // clients in sync even when tile owner watcher_count is > 1.
             this.#receiveTileBatch({
               t: "cellUpBatch",
               tile: message.tile,

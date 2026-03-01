@@ -409,6 +409,66 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
+  it("locally fans out setCell updates even when tile owner watcher count is greater than one", async () => {
+    const harness = createHarness();
+    const socketA = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+    const socketB = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_b",
+      name: "Bob",
+      shard: "shard-a",
+    });
+
+    socketA.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    socketB.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+
+    await waitFor(() => {
+      const tileStub = harness.tileOwners.getByName("0:0");
+      expect(tileStub.watchRequests.length).toBe(1);
+    });
+
+    const tileStub = harness.tileOwners.getByName("0:0");
+    const remoteWatchResponse = await tileStub.fetch("https://tile-owner.internal/watch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        tile: "0:0",
+        shard: "shard-remote",
+        action: "sub",
+      }),
+    });
+    expect(remoteWatchResponse.status).toBe(204);
+
+    socketA.emitMessage(
+      encodeClientMessageBinary({
+        t: "setCell",
+        tile: "0:0",
+        i: 42,
+        v: 1,
+        op: "op_local_fanout_multi_watcher",
+      })
+    );
+
+    await waitFor(() => {
+      const messagesB = decodeMessages(socketB);
+      expect(
+        messagesB.some(
+          (message) =>
+            message.t === "cellUpBatch"
+            && message.tile === "0:0"
+            && message.fromVer === 1
+            && message.toVer === 1
+            && message.ops.some(([index, value]) => index === 42 && value === 1)
+        )
+      ).toBe(true);
+    });
+  });
+
   it("processes same-client setCell messages in send order under variable latency", async () => {
     const harness = createHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
