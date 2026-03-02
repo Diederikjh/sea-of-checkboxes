@@ -161,25 +161,18 @@ function parseArgs(argv) {
   return options;
 }
 
-async function waitForDebugPort(userDataDir, timeoutMs) {
-  const start = Date.now();
-  const devToolsPortFile = path.join(userDataDir, "DevToolsActivePort");
-
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const content = await fs.promises.readFile(devToolsPortFile, "utf8");
-      const [portLine] = content.split(/\r?\n/);
-      const port = Number.parseInt((portLine ?? "").trim(), 10);
-      if (Number.isInteger(port) && port > 0) {
-        return port;
-      }
-    } catch {
-      // Ignore while Chrome is still starting up.
+async function fetchJsonOnce(url, timeoutMs = 1_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${url}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
   }
-
-  throw new Error(`Timed out waiting for Chrome DevTools port file: ${devToolsPortFile}`);
 }
 
 function makeUrl(rawUrl, forceAppLogs) {
@@ -231,11 +224,7 @@ async function fetchJsonWithRetry(url, timeoutMs) {
 
   while (Date.now() - start < timeoutMs) {
     try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return await response.json();
-      }
-      lastError = new Error(`HTTP ${response.status} for ${url}`);
+      return await fetchJsonOnce(url, 1_200);
     } catch (error) {
       lastError = error;
     }
@@ -243,6 +232,58 @@ async function fetchJsonWithRetry(url, timeoutMs) {
   }
 
   throw new Error(`Timed out waiting for ${url}: ${lastError?.message ?? "unknown error"}`);
+}
+
+async function waitForDebugEndpoint(options) {
+  const {
+    userDataDir,
+    timeoutMs,
+    getBrowserExitInfo,
+    getBrowserStderrTail,
+  } = options;
+  const start = Date.now();
+  const devToolsPortFile = path.join(userDataDir, "DevToolsActivePort");
+  let lastPort = null;
+  let lastError = null;
+
+  while (Date.now() - start < timeoutMs) {
+    const exitInfo = getBrowserExitInfo();
+    if (exitInfo) {
+      const stderrTail = getBrowserStderrTail();
+      const stderrHint = stderrTail.length > 0 ? `\nRecent browser stderr:\n${stderrTail.join("\n")}` : "";
+      throw new Error(
+        `Browser exited before DevTools became available (code=${exitInfo.code ?? "null"}, signal=${exitInfo.signal ?? "null"}). ` +
+          `If another Chrome instance is locking this profile, close it or run with --private.` +
+          stderrHint
+      );
+    }
+
+    try {
+      const content = await fs.promises.readFile(devToolsPortFile, "utf8");
+      const [portLine] = content.split(/\r?\n/);
+      const port = Number.parseInt((portLine ?? "").trim(), 10);
+      if (Number.isInteger(port) && port > 0) {
+        lastPort = port;
+        const browserVersion = await fetchJsonOnce(
+          `http://127.0.0.1:${port}/json/version`,
+          1_200
+        );
+        return { port, browserVersion };
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  const suffix =
+    lastPort === null
+      ? `DevToolsActivePort file was never readable: ${devToolsPortFile}`
+      : `Last discovered DevTools port was ${lastPort}, but it was not reachable.`;
+  throw new Error(
+    `Timed out waiting for Chrome DevTools endpoint. ${suffix} ${lastError ? `Last error: ${lastError.message}` : ""}`.trim()
+  );
 }
 
 async function findPageTargetWithRetry(debugPort, timeoutMs, launchUrl) {
@@ -326,6 +367,7 @@ async function main() {
   } else {
     fs.mkdirSync(userDataDir, { recursive: true });
   }
+  await fs.promises.rm(path.join(userDataDir, "DevToolsActivePort"), { force: true });
 
   const headerLines = [
     `# started_at=${new Date().toISOString()}`,
@@ -360,6 +402,14 @@ async function main() {
   console.log(options.private ? "Private mode: enabled" : "Private mode: disabled");
   console.log("Press Ctrl+C to stop.\n");
 
+  let pageWs;
+  let shuttingDown = false;
+  let pendingMessages = new Map();
+  let nextMessageId = 1;
+  let browserExitInfo = null;
+  const browserStderrTail = [];
+  let captureReady = false;
+
   const browserProcess = spawn(browserPath, browserArgs, {
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
@@ -372,12 +422,17 @@ async function main() {
   browserProcess.stderr.on("data", (chunk) => {
     const text = chunk.toString();
     output.write(formatLine("browser.stderr", text.trimEnd()));
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      browserStderrTail.push(trimmed);
+      if (browserStderrTail.length > 25) {
+        browserStderrTail.shift();
+      }
+    }
   });
-
-  let pageWs;
-  let shuttingDown = false;
-  let pendingMessages = new Map();
-  let nextMessageId = 1;
 
   function closeOutputAndExit(code) {
     output.write(`\n# ended_at=${new Date().toISOString()}\n`);
@@ -407,87 +462,97 @@ async function main() {
   process.on("SIGTERM", () => cleanupAndExit(0));
 
   browserProcess.on("exit", (code, signal) => {
+    browserExitInfo = { code, signal };
     output.write(
       formatLine(
         "browser.exit",
         `code=${code ?? "null"} signal=${signal ?? "null"}`
       )
     );
-    if (!shuttingDown) {
+    if (!shuttingDown && captureReady) {
       closeOutputAndExit(typeof code === "number" ? code : 0);
     }
   });
-
-  const debugPort = await waitForDebugPort(userDataDir, options.timeoutMs);
-  const browserVersion = await fetchJsonWithRetry(
-    `http://127.0.0.1:${debugPort}/json/version`,
-    options.timeoutMs
-  );
-  output.write(formatLine("browser.version", JSON.stringify(browserVersion)));
-  const pageTarget = await findPageTargetWithRetry(debugPort, options.timeoutMs, launchUrl);
-  output.write(formatLine("target.page", JSON.stringify({ id: pageTarget.id, url: pageTarget.url })));
-  pageWs = new WebSocket(pageTarget.webSocketDebuggerUrl);
-
-  await new Promise((resolve, reject) => {
-    pageWs.addEventListener("open", resolve, { once: true });
-    pageWs.addEventListener("error", reject, { once: true });
-  });
-
-  pageWs.addEventListener("message", (event) => {
-    let payload;
-    try {
-      payload = JSON.parse(String(event.data));
-    } catch {
-      output.write(formatLine("cdp.parse_error", String(event.data)));
-      return;
-    }
-
-    if (typeof payload.id === "number" && pendingMessages.has(payload.id)) {
-      const { resolve, reject } = pendingMessages.get(payload.id);
-      pendingMessages.delete(payload.id);
-      if (payload.error) {
-        reject(new Error(payload.error.message ?? "Unknown CDP error"));
-      } else {
-        resolve(payload.result);
+  try {
+    const { port: debugPort, browserVersion } = await waitForDebugEndpoint(
+      {
+        userDataDir,
+        timeoutMs: options.timeoutMs,
+        getBrowserExitInfo: () => browserExitInfo,
+        getBrowserStderrTail: () => browserStderrTail,
       }
-      return;
-    }
+    );
+    output.write(formatLine("browser.version", JSON.stringify(browserVersion)));
+    const pageTarget = await findPageTargetWithRetry(debugPort, options.timeoutMs, launchUrl);
+    output.write(formatLine("target.page", JSON.stringify({ id: pageTarget.id, url: pageTarget.url })));
+    pageWs = new WebSocket(pageTarget.webSocketDebuggerUrl);
 
-    if (payload.method === "Runtime.consoleAPICalled") {
-      const type = payload.params?.type ?? "log";
-      const args = Array.isArray(payload.params?.args) ? payload.params.args : [];
-      const text = args.map(formatRemoteObject).join(" ");
-      output.write(formatLine(`console.${type}`, text));
-      return;
-    }
-
-    if (payload.method === "Runtime.exceptionThrown") {
-      const details = payload.params?.exceptionDetails;
-      output.write(formatLine("runtime.exception", JSON.stringify(details)));
-      return;
-    }
-
-    if (payload.method === "Log.entryAdded") {
-      const entry = payload.params?.entry ?? {};
-      const text = `${entry.level ?? "info"} ${entry.source ?? "unknown"} ${entry.text ?? ""}`.trim();
-      output.write(formatLine("browser.log", text));
-    }
-  });
-
-  function sendCdp(method, params = {}) {
-    const id = nextMessageId;
-    nextMessageId += 1;
-    return new Promise((resolve, reject) => {
-      pendingMessages.set(id, { resolve, reject });
-      pageWs.send(JSON.stringify({ id, method, params }));
+    await new Promise((resolve, reject) => {
+      pageWs.addEventListener("open", resolve, { once: true });
+      pageWs.addEventListener("error", reject, { once: true });
     });
+
+    pageWs.addEventListener("message", (event) => {
+      let payload;
+      try {
+        payload = JSON.parse(String(event.data));
+      } catch {
+        output.write(formatLine("cdp.parse_error", String(event.data)));
+        return;
+      }
+
+      if (typeof payload.id === "number" && pendingMessages.has(payload.id)) {
+        const { resolve, reject } = pendingMessages.get(payload.id);
+        pendingMessages.delete(payload.id);
+        if (payload.error) {
+          reject(new Error(payload.error.message ?? "Unknown CDP error"));
+        } else {
+          resolve(payload.result);
+        }
+        return;
+      }
+
+      if (payload.method === "Runtime.consoleAPICalled") {
+        const type = payload.params?.type ?? "log";
+        const args = Array.isArray(payload.params?.args) ? payload.params.args : [];
+        const text = args.map(formatRemoteObject).join(" ");
+        output.write(formatLine(`console.${type}`, text));
+        return;
+      }
+
+      if (payload.method === "Runtime.exceptionThrown") {
+        const details = payload.params?.exceptionDetails;
+        output.write(formatLine("runtime.exception", JSON.stringify(details)));
+        return;
+      }
+
+      if (payload.method === "Log.entryAdded") {
+        const entry = payload.params?.entry ?? {};
+        const text = `${entry.level ?? "info"} ${entry.source ?? "unknown"} ${entry.text ?? ""}`.trim();
+        output.write(formatLine("browser.log", text));
+      }
+    });
+
+    function sendCdp(method, params = {}) {
+      const id = nextMessageId;
+      nextMessageId += 1;
+      return new Promise((resolve, reject) => {
+        pendingMessages.set(id, { resolve, reject });
+        pageWs.send(JSON.stringify({ id, method, params }));
+      });
+    }
+
+    await sendCdp("Runtime.enable");
+    await sendCdp("Log.enable");
+    await sendCdp("Page.enable");
+
+    captureReady = true;
+    output.write(formatLine("ready", "Console capture started"));
+  } catch (error) {
+    output.write(formatLine("capture.error", error.message));
+    console.error(error.message);
+    cleanupAndExit(1);
   }
-
-  await sendCdp("Runtime.enable");
-  await sendCdp("Log.enable");
-  await sendCdp("Page.enable");
-
-  output.write(formatLine("ready", "Console capture started"));
 }
 
 main().catch((error) => {
