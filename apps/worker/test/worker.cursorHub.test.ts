@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CursorHubDO } from "../src/worker";
 import {
@@ -68,6 +68,10 @@ async function postPublish(
 }
 
 describe("CursorHubDO", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("fans out published updates to subscribed shards except the origin shard", async () => {
     const harness = createHarness();
 
@@ -220,5 +224,144 @@ describe("CursorHubDO", () => {
       }),
     ]);
     expect(resolvedQuickly).toBe(true);
+  });
+
+  it("dedupes updates for the same uid within a single fanout flush window", async () => {
+    vi.useFakeTimers();
+
+    const harness = createHarness();
+    await postWatch(harness.hub, "shard-a", "sub");
+    await postWatch(harness.hub, "shard-b", "sub");
+
+    await postPublish(harness.hub, "shard-a", [
+      {
+        uid: "u_a",
+        name: "Alice",
+        x: 1.5,
+        y: 2.5,
+        seenAt: Date.now(),
+        seq: 1,
+        tileKey: "0:0",
+      },
+    ]);
+    await postPublish(harness.hub, "shard-a", [
+      {
+        uid: "u_a",
+        name: "Alice",
+        x: 3.5,
+        y: 4.5,
+        seenAt: Date.now() + 1,
+        seq: 2,
+        tileKey: "0:0",
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(30);
+
+    const shardBRequests = harness.shardNamespace.getByName("shard-b").requests;
+    expect(shardBRequests.length).toBe(1);
+    await expect(shardBRequests[0]?.request.json()).resolves.toEqual({
+      from: "shard-a",
+      updates: [
+        {
+          uid: "u_a",
+          name: "Alice",
+          x: 3.5,
+          y: 4.5,
+          seenAt: expect.any(Number),
+          seq: 2,
+          tileKey: "0:0",
+        },
+      ],
+    });
+  });
+
+  it("requeues fanout when new updates arrive while a flush is in-flight", async () => {
+    vi.useFakeTimers();
+
+    const harness = createHarness();
+    await postWatch(harness.hub, "shard-a", "sub");
+    await postWatch(harness.hub, "shard-b", "sub");
+
+    const shardBStub = harness.shardNamespace.getByName("shard-b");
+    const originalFetch = shardBStub.fetch.bind(shardBStub);
+    let releaseFirstFanout: (() => void) | null = null;
+
+    shardBStub.fetch = (async (input: Request | string, init?: RequestInit): Promise<Response> => {
+      const request = typeof input === "string" ? new Request(input, init) : input;
+      if (new URL(request.url).pathname === "/cursor-batch" && releaseFirstFanout === null) {
+        await new Promise<void>((resolve) => {
+          releaseFirstFanout = resolve;
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof shardBStub.fetch;
+
+    await postPublish(harness.hub, "shard-a", [
+      {
+        uid: "u_a",
+        name: "Alice",
+        x: 1.5,
+        y: 2.5,
+        seenAt: Date.now(),
+        seq: 1,
+        tileKey: "0:0",
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(30);
+    expect(shardBStub.requests.length).toBe(0);
+
+    await postPublish(harness.hub, "shard-a", [
+      {
+        uid: "u_b",
+        name: "Bob",
+        x: 4.5,
+        y: 5.5,
+        seenAt: Date.now() + 1,
+        seq: 1,
+        tileKey: "0:0",
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(30);
+    expect(shardBStub.requests.length).toBe(0);
+
+    releaseFirstFanout?.();
+    await vi.runAllTimersAsync();
+
+    await waitFor(() => {
+      expect(shardBStub.requests.length).toBe(2);
+    });
+
+    await expect(shardBStub.requests[0]?.request.json()).resolves.toEqual({
+      from: "shard-a",
+      updates: [
+        {
+          uid: "u_a",
+          name: "Alice",
+          x: 1.5,
+          y: 2.5,
+          seenAt: expect.any(Number),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+
+    await expect(shardBStub.requests[1]?.request.json()).resolves.toEqual({
+      from: "shard-a",
+      updates: [
+        {
+          uid: "u_b",
+          name: "Bob",
+          x: 4.5,
+          y: 5.5,
+          seenAt: expect.any(Number),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
   });
 });
