@@ -26,6 +26,9 @@ import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
 import { resolveApiBaseUrl } from "./transportConfig";
 import { createWireTransport } from "./wireTransport";
+import { CURSOR_TTL_MS } from "./cursorRenderConfig";
+
+const CURSOR_VIEWPORT_MARGIN_PX = 24;
 
 function formatByteCount(bytes) {
   if (bytes < 1024) {
@@ -323,6 +326,36 @@ export async function startApp() {
   };
   const cursors = new Map();
   const selfIdentity = { uid: null };
+  const getActiveVisibleRemoteCursorCount = () => {
+    const nowMs = Date.now();
+    const viewportWidth = app.renderer.width;
+    const viewportHeight = app.renderer.height;
+    let count = 0;
+
+    for (const cursor of cursors.values()) {
+      if (nowMs - cursor.seenAt >= CURSOR_TTL_MS) {
+        continue;
+      }
+
+      const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
+      const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
+      const screenX = (worldX - camera.x) * camera.cellPixelSize + viewportWidth / 2;
+      const screenY = (worldY - camera.y) * camera.cellPixelSize + viewportHeight / 2;
+
+      if (
+        screenX < -CURSOR_VIEWPORT_MARGIN_PX
+        || screenX > viewportWidth + CURSOR_VIEWPORT_MARGIN_PX
+        || screenY < -CURSOR_VIEWPORT_MARGIN_PX
+        || screenY > viewportHeight + CURSOR_VIEWPORT_MARGIN_PX
+      ) {
+        continue;
+      }
+
+      count += 1;
+    }
+
+    return count;
+  };
 
   const setStatus = (value) => {
     statusEl.textContent = value;
@@ -425,6 +458,7 @@ export async function startApp() {
     apiBaseUrl,
     onViewportChanged: renderLoop.markViewportDirty,
     onTileCellsChanged: renderLoop.markTileCellsDirty,
+    getActiveVisibleRemoteCursorCount,
   });
 
   const onResize = () => {

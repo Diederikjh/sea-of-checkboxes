@@ -8,6 +8,15 @@ import { toWorldCell } from "./coords";
 import { updateZoomReadout } from "./dom";
 import { logger } from "./logger";
 
+const CURSOR_EMIT_INTERVAL_IDLE_MS = 220;
+const CURSOR_EMIT_INTERVAL_NORMAL_MS = 160;
+const CURSOR_EMIT_INTERVAL_BUSY_MS = 120;
+const CURSOR_EMIT_INTERVAL_CROWDED_MS = 80;
+const CURSOR_EMIT_HEARTBEAT_MS = 2_000;
+const CURSOR_EMIT_VISIBLE_BUSY = 3;
+const CURSOR_EMIT_VISIBLE_CROWDED = 8;
+const CURSOR_ACTIVITY_SAMPLE_MS = 250;
+
 function createOpId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -88,12 +97,38 @@ export function setupInputHandlers({
   fetchImpl = typeof fetch === "function" ? fetch.bind(globalThis) : undefined,
   onViewportChanged,
   onTileCellsChanged = () => {},
+  getActiveVisibleRemoteCursorCount = () => 0,
 }) {
   let dragging = false;
   let dragStart = null;
   let pendingSetCell = null;
   let lastCursorSent = 0;
+  let lastCursorBoardX = Number.NaN;
+  let lastCursorBoardY = Number.NaN;
   let inspectModeEnabled = false;
+  let lastCursorActivitySampleAt = 0;
+  let cachedVisibleRemoteCursors = 0;
+
+  const sampledVisibleRemoteCursorCount = (now) => {
+    if (now - lastCursorActivitySampleAt >= CURSOR_ACTIVITY_SAMPLE_MS) {
+      cachedVisibleRemoteCursors = Math.max(0, getActiveVisibleRemoteCursorCount());
+      lastCursorActivitySampleAt = now;
+    }
+    return cachedVisibleRemoteCursors;
+  };
+
+  const resolveCursorEmitIntervalMs = (activeVisibleRemoteCursors) => {
+    if (activeVisibleRemoteCursors >= CURSOR_EMIT_VISIBLE_CROWDED) {
+      return CURSOR_EMIT_INTERVAL_CROWDED_MS;
+    }
+    if (activeVisibleRemoteCursors >= CURSOR_EMIT_VISIBLE_BUSY) {
+      return CURSOR_EMIT_INTERVAL_BUSY_MS;
+    }
+    if (activeVisibleRemoteCursors > 0) {
+      return CURSOR_EMIT_INTERVAL_NORMAL_MS;
+    }
+    return CURSOR_EMIT_INTERVAL_IDLE_MS;
+  };
 
   const setInspectMode = (enabled) => {
     inspectModeEnabled = enabled;
@@ -201,15 +236,37 @@ export function setupInputHandlers({
     }
 
     const now = performance.now();
-    if (now - lastCursorSent <= 80) {
+    const visibleRemoteCursors = sampledVisibleRemoteCursorCount(now);
+    const intervalMs = resolveCursorEmitIntervalMs(visibleRemoteCursors);
+    if (now - lastCursorSent <= intervalMs) {
+      return;
+    }
+
+    const { width, height } = getViewportSize();
+    const world = toWorldCell(event.clientX, event.clientY, camera, width, height);
+    const boardX = world.x + 0.5;
+    const boardY = world.y + 0.5;
+    const boardChanged =
+      !Number.isFinite(lastCursorBoardX)
+      || !Number.isFinite(lastCursorBoardY)
+      || boardX !== lastCursorBoardX
+      || boardY !== lastCursorBoardY;
+    const heartbeatDue = now - lastCursorSent >= CURSOR_EMIT_HEARTBEAT_MS;
+    if (!boardChanged && !heartbeatDue) {
       return;
     }
 
     lastCursorSent = now;
-    const { width, height } = getViewportSize();
-    const world = toWorldCell(event.clientX, event.clientY, camera, width, height);
-    const payload = { t: "cur", x: world.x + 0.5, y: world.y + 0.5 };
-    logger.ui("cursor_emit", buildWorldPointerContext(event, world));
+    lastCursorBoardX = boardX;
+    lastCursorBoardY = boardY;
+    const payload = { t: "cur", x: boardX, y: boardY };
+    logger.ui("cursor_emit", {
+      ...buildWorldPointerContext(event, world),
+      boardChanged,
+      heartbeatDue,
+      emitIntervalMs: intervalMs,
+      visibleRemoteCursors,
+    });
     transport.send(payload);
   };
 
