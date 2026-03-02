@@ -285,11 +285,11 @@ describe("CursorHubDO", () => {
 
     const shardBStub = harness.shardNamespace.getByName("shard-b");
     const originalFetch = shardBStub.fetch.bind(shardBStub);
-    let releaseFirstFanout: (() => void) | null = null;
+    let releaseFirstFanout: (() => void) | undefined;
 
     shardBStub.fetch = (async (input: Request | string, init?: RequestInit): Promise<Response> => {
       const request = typeof input === "string" ? new Request(input, init) : input;
-      if (new URL(request.url).pathname === "/cursor-batch" && releaseFirstFanout === null) {
+      if (new URL(request.url).pathname === "/cursor-batch" && !releaseFirstFanout) {
         await new Promise<void>((resolve) => {
           releaseFirstFanout = resolve;
         });
@@ -327,7 +327,10 @@ describe("CursorHubDO", () => {
     await vi.advanceTimersByTimeAsync(30);
     expect(shardBStub.requests.length).toBe(0);
 
-    releaseFirstFanout?.();
+    if (!releaseFirstFanout) {
+      throw new Error("Expected first fanout to be in-flight");
+    }
+    releaseFirstFanout();
     await vi.runAllTimersAsync();
 
     await waitFor(() => {
