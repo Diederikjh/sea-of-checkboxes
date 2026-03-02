@@ -25,6 +25,12 @@ We use CloudFlare's Durable Objects for the workers, R2 for peristence and Pages
 
 One design goal was to have many users concurrently on the app, while keeping the costs low.
 
+## Debugging log capture
+
+To capture server and client logs during a test session, see [docs/debug-log-capture.md](docs/debug-log-capture.md).
+
+To understand and prevent Durable Object event storms, see [docs/storm-prevention.md](docs/storm-prevention.md).
+
 ## FAQ
 
 Q: OK, but why?
