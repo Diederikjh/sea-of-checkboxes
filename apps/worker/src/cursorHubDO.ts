@@ -17,6 +17,7 @@ import {
 const CURSOR_TTL_MS = 5_000;
 const CURSOR_HUB_INTERNAL_SHARD = "cursor-hub";
 const CURSOR_HUB_SHARD_HEADER = "x-sea-cursor-hub";
+const CURSOR_HUB_FANOUT_FLUSH_MS = 25;
 
 interface CursorHubWatchRequest {
   shard: string;
@@ -63,12 +64,18 @@ export class CursorHubDO {
   #doId: string;
   #subscribers: Set<string>;
   #cursorByUid: Map<string, StoredCursor>;
+  #pendingFanoutByOrigin: Map<string, Map<string, CursorPresence>>;
+  #fanoutFlushTimer: ReturnType<typeof setTimeout> | null;
+  #fanoutInFlight: boolean;
 
   constructor(state: DurableObjectStateLike, env: Env) {
     this.#env = env;
     this.#doId = state.id.toString();
     this.#subscribers = new Set();
     this.#cursorByUid = new Map();
+    this.#pendingFanoutByOrigin = new Map();
+    this.#fanoutFlushTimer = null;
+    this.#fanoutInFlight = false;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -136,7 +143,7 @@ export class CursorHubDO {
     }
 
     if (acceptedUpdates.length > 0) {
-      await this.#fanoutCursorUpdates(payload.from, acceptedUpdates);
+      this.#enqueueFanout(payload.from, acceptedUpdates);
     }
 
     this.#logEvent("publish", {
@@ -170,6 +177,66 @@ export class CursorHubDO {
     }
   }
 
+  #enqueueFanout(originShard: string, updates: CursorPresence[]): void {
+    if (updates.length === 0) {
+      return;
+    }
+
+    let pendingByUid = this.#pendingFanoutByOrigin.get(originShard);
+    if (!pendingByUid) {
+      pendingByUid = new Map();
+      this.#pendingFanoutByOrigin.set(originShard, pendingByUid);
+    }
+
+    for (const update of updates) {
+      const existing = pendingByUid.get(update.uid);
+      if (existing && existing.seq >= update.seq) {
+        continue;
+      }
+      pendingByUid.set(update.uid, update);
+    }
+
+    this.#scheduleFanoutFlush();
+  }
+
+  #scheduleFanoutFlush(delayMs: number = CURSOR_HUB_FANOUT_FLUSH_MS): void {
+    if (this.#fanoutFlushTimer) {
+      return;
+    }
+
+    this.#fanoutFlushTimer = setTimeout(() => {
+      this.#fanoutFlushTimer = null;
+      void this.#flushFanoutQueue();
+    }, Math.max(0, delayMs));
+    this.#maybeUnrefTimer(this.#fanoutFlushTimer);
+  }
+
+  async #flushFanoutQueue(): Promise<void> {
+    if (this.#fanoutInFlight || this.#pendingFanoutByOrigin.size === 0) {
+      return;
+    }
+
+    this.#fanoutInFlight = true;
+    const pending = Array.from(this.#pendingFanoutByOrigin.entries()).map(([originShard, updatesByUid]) => ({
+      originShard,
+      updates: Array.from(updatesByUid.values()),
+    }));
+    this.#pendingFanoutByOrigin.clear();
+
+    try {
+      await Promise.all(
+        pending.map(async ({ originShard, updates }) => {
+          await this.#fanoutCursorUpdates(originShard, updates);
+        })
+      );
+    } finally {
+      this.#fanoutInFlight = false;
+      if (this.#pendingFanoutByOrigin.size > 0) {
+        this.#scheduleFanoutFlush(0);
+      }
+    }
+  }
+
   async #fanoutCursorUpdates(originShard: string, updates: CursorPresence[]): Promise<void> {
     const targetShards = Array.from(this.#subscribers).filter((shard) => shard !== originShard);
     if (targetShards.length === 0 || updates.length === 0) {
@@ -198,6 +265,13 @@ export class CursorHubDO {
         }
       })
     );
+  }
+
+  #maybeUnrefTimer(timer: ReturnType<typeof setTimeout>): void {
+    const unref = (timer as unknown as { unref?: () => void }).unref;
+    if (typeof unref === "function") {
+      unref.call(timer);
+    }
   }
 
   #logEvent(event: string, fields: Record<string, unknown>): void {

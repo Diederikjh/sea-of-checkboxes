@@ -60,6 +60,7 @@ const TILE_PULL_MAX_PAGES_PER_TICK = 4;
 const CURSOR_PULL_INTERVAL_MS = 75;
 const CURSOR_HUB_NAME = "global";
 const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
+const CURSOR_HUB_SOURCE_HEADER = "x-sea-cursor-hub";
 
 type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
@@ -233,12 +234,30 @@ export class ConnectionShardDO {
     }
 
     if (url.pathname === "/cursor-batch" && request.method === "POST") {
-      const batch = await readJson<CursorRelayBatch>(request);
-      if (!batch || !isValidCursorRelayBatch(batch)) {
-        return new Response("Invalid cursor batch payload", { status: 400 });
+      if (this.#cursorBatchIngressDepth > 0) {
+        this.#logEvent("cursor_batch_reentrant_drop", {
+          ingress_depth: this.#cursorBatchIngressDepth,
+          from_hub: request.headers.get(CURSOR_HUB_SOURCE_HEADER) === "1",
+          path: "/cursor-batch",
+        });
+        return new Response(null, { status: 204 });
       }
-      this.#ingestCursorBatchWithIngress(batch);
-      return new Response(null, { status: 204 });
+
+      this.#cursorBatchIngressDepth += 1;
+      try {
+        const batch = await readJson<CursorRelayBatch>(request);
+        if (!batch || !isValidCursorRelayBatch(batch)) {
+          return new Response("Invalid cursor batch payload", { status: 400 });
+        }
+        this.#receiveCursorBatch(batch);
+        return new Response(null, { status: 204 });
+      } finally {
+        this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
+        this.#cursorHubPublishSuppressedUntilMs = Math.max(
+          this.#cursorHubPublishSuppressedUntilMs,
+          this.#nowMs() + CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS
+        );
+      }
     }
 
     if (url.pathname === "/cursor-state" && request.method === "GET") {

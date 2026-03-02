@@ -990,6 +990,69 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(false);
   });
 
+  it("drops re-entrant cursor-batch requests while ingress is active", async () => {
+    const harness = createHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      let releaseFirstBody!: () => void;
+      const holdFirstBody = new Promise<void>((resolve) => {
+        releaseFirstBody = () => resolve();
+      });
+      const encoder = new TextEncoder();
+      const firstBody = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('{"from":"shard-1","updates":'));
+          void holdFirstBody.then(() => {
+            controller.enqueue(encoder.encode("[]}"));
+            controller.close();
+          });
+        },
+      });
+      const firstRequestInit: RequestInit & { duplex?: "half" } = {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-sea-cursor-hub": "1",
+        },
+        body: firstBody,
+        duplex: "half",
+      };
+
+      const firstResponsePromise = harness.shard.fetch(
+        new Request("https://connection-shard.internal/cursor-batch", firstRequestInit)
+      );
+
+      let firstSettled = false;
+      void firstResponsePromise.then(() => {
+        firstSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(firstSettled).toBe(false);
+
+      const nestedResponse = await postCursorBatch(harness.shard, {
+        from: "shard-2",
+        updates: [],
+      });
+      expect(nestedResponse.status).toBe(204);
+
+      releaseFirstBody();
+      const firstResponse = await firstResponsePromise;
+      expect(firstResponse.status).toBe(204);
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "cursor_batch_reentrant_drop"
+            && event.path === "/cursor-batch"
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it("polls tile ops-since at ~1s cadence when idle", async () => {
     vi.useFakeTimers();
     try {

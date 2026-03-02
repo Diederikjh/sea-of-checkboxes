@@ -6,6 +6,7 @@ import {
   StubNamespace,
 } from "./helpers/doStubs";
 import { NullStorage } from "./helpers/storageMocks";
+import { waitFor } from "./helpers/waitFor";
 
 function createHarness() {
   const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
@@ -100,7 +101,9 @@ describe("CursorHubDO", () => {
     const shardAStub = harness.shardNamespace.getByName("shard-a");
     const shardBStub = harness.shardNamespace.getByName("shard-b");
     expect(shardAStub.requests.length).toBe(0);
-    expect(shardBStub.requests.length).toBe(1);
+    await waitFor(() => {
+      expect(shardBStub.requests.length).toBe(1);
+    });
 
     const fanoutRequest = shardBStub.requests[0]?.request;
     expect(fanoutRequest?.method).toBe("POST");
@@ -139,7 +142,9 @@ describe("CursorHubDO", () => {
         tileKey: "0:0",
       },
     ]);
-    expect(harness.shardNamespace.getByName("shard-b").requests.length).toBe(1);
+    await waitFor(() => {
+      expect(harness.shardNamespace.getByName("shard-b").requests.length).toBe(1);
+    });
 
     await postPublish(harness.hub, "shard-a", [
       {
@@ -186,5 +191,34 @@ describe("CursorHubDO", () => {
     expect(subD.status).toBe(200);
     const snapshotD = (await subD.json()) as { updates: Array<{ uid: string }> };
     expect(snapshotD.updates.some((update) => update.uid === "u_stale")).toBe(false);
+  });
+
+  it("returns from publish without waiting for downstream shard fanout", async () => {
+    const harness = createHarness();
+    await postWatch(harness.hub, "shard-a", "sub");
+    await postWatch(harness.hub, "shard-b", "sub");
+
+    const shardBStub = harness.shardNamespace.getByName("shard-b");
+    shardBStub.setNeverResolvePath("/cursor-batch", true);
+
+    const publishPromise = postPublish(harness.hub, "shard-a", [
+      {
+        uid: "u_a",
+        name: "Alice",
+        x: 1.5,
+        y: 2.5,
+        seenAt: Date.now(),
+        seq: 1,
+        tileKey: "0:0",
+      },
+    ]);
+
+    const resolvedQuickly = await Promise.race([
+      publishPromise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        setTimeout(() => resolve(false), 20);
+      }),
+    ]);
+    expect(resolvedQuickly).toBe(true);
   });
 });
