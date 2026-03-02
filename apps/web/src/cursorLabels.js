@@ -3,7 +3,7 @@ import {
   TextStyle,
 } from "pixi.js";
 
-import { toScreenPoint } from "./coords";
+import { cursorWorldPosition, worldToScreenPoint } from "./cursorGeometry";
 
 const cursorLabelStyle = new TextStyle({
   fontFamily: "IBM Plex Sans",
@@ -33,9 +33,8 @@ export function createCursorLabels(stage) {
 
     for (const cursor of activeCursors) {
       const label = ensure(cursor.uid, cursor.name);
-      const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
-      const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
-      const screen = toScreenPoint(worldX, worldY, camera, viewportWidth, viewportHeight);
+      const world = cursorWorldPosition(cursor);
+      const screen = worldToScreenPoint(world.x, world.y, camera, viewportWidth, viewportHeight);
       label.x = screen.x + 6;
       label.y = screen.y - 6;
       label.visible = true;

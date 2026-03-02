@@ -1,5 +1,11 @@
 import { MAX_REMOTE_CURSORS, TILE_SIZE } from "@sea/domain";
 import { CURSOR_TTL_MS, cursorRadiusPx } from "./cursorRenderConfig";
+import {
+  cursorWorldPosition,
+  isScreenCellInViewport,
+  isScreenCircleInViewport,
+  worldToScreenPoint,
+} from "./cursorGeometry";
 
 function heatToColor(heat) {
   if (heat < 0.05) {
@@ -40,22 +46,6 @@ function hslToHex(h, s, l) {
   const b = Math.round(255 * f(4));
 
   return (r << 16) | (g << 8) | b;
-}
-
-function toScreen(worldX, worldY, camera, viewportWidth, viewportHeight) {
-  return {
-    x: (worldX - camera.x) * camera.cellPixelSize + viewportWidth / 2,
-    y: (worldY - camera.y) * camera.cellPixelSize + viewportHeight / 2,
-  };
-}
-
-function isCellOnScreen(screen, cellPx, viewportWidth, viewportHeight) {
-  return !(
-    screen.x + cellPx < 0
-    || screen.x > viewportWidth
-    || screen.y + cellPx < 0
-    || screen.y > viewportHeight
-  );
 }
 
 function drawBackground(graphics, viewportWidth, viewportHeight) {
@@ -156,8 +146,8 @@ function drawTileCells({
     const worldX = tileWorldX + localX;
     const worldY = tileWorldY + localY;
 
-    const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
-    if (!isCellOnScreen(screen, cellPx, viewportWidth, viewportHeight)) {
+    const screen = worldToScreenPoint(worldX, worldY, camera, viewportWidth, viewportHeight);
+    if (!isScreenCellInViewport(screen.x, screen.y, cellPx, viewportWidth, viewportHeight)) {
       continue;
     }
 
@@ -213,15 +203,9 @@ function getActiveCursors(cursors, nowMs) {
 function drawCursors({ graphics, cursors, camera, viewportWidth, viewportHeight }) {
   const radiusPx = cursorRadiusPx(camera.cellPixelSize);
   for (const cursor of cursors) {
-    const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
-    const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
-    const screen = toScreen(worldX, worldY, camera, viewportWidth, viewportHeight);
-    if (
-      screen.x + radiusPx < 0
-      || screen.x - radiusPx > viewportWidth
-      || screen.y + radiusPx < 0
-      || screen.y - radiusPx > viewportHeight
-    ) {
+    const world = cursorWorldPosition(cursor);
+    const screen = worldToScreenPoint(world.x, world.y, camera, viewportWidth, viewportHeight);
+    if (!isScreenCircleInViewport(screen.x, screen.y, radiusPx, viewportWidth, viewportHeight)) {
       continue;
     }
     const color = stableCursorColor(cursor.uid);
