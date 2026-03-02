@@ -151,6 +151,7 @@ vi.mock("../src/wireTransport", () => ({
 }));
 
 import { startApp } from "../src/app";
+import { CURSOR_TTL_MS } from "../src/cursorRenderConfig";
 
 function createRequiredElements() {
   return {
@@ -254,6 +255,54 @@ describe("app interaction overlays", () => {
 
     teardown();
     expect(mocks.windowRemoveEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
+  });
+
+  it("wires visible remote cursor counter into input handlers and filters self/offscreen/stale cursors", async () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const teardown = await startApp();
+    const receiveServerPayload = mocks.inboundMessageHandler;
+    const inputArgs = mocks.inputHandlerArgs;
+    if (!receiveServerPayload || !inputArgs) {
+      throw new Error("Expected server message handler and input handler args");
+    }
+
+    expect(typeof inputArgs.getActiveVisibleRemoteCursorCount).toBe("function");
+
+    receiveServerPayload({
+      t: "hello",
+      uid: "u_self",
+      name: "Self",
+      token: "token_self",
+    });
+    receiveServerPayload({
+      t: "curUp",
+      uid: "u_self",
+      name: "Self",
+      x: 1.5,
+      y: 1.5,
+    });
+    receiveServerPayload({
+      t: "curUp",
+      uid: "u_visible",
+      name: "Visible",
+      x: 2.5,
+      y: 2.5,
+    });
+    receiveServerPayload({
+      t: "curUp",
+      uid: "u_offscreen",
+      name: "Offscreen",
+      x: 100.5,
+      y: 2.5,
+    });
+
+    expect(inputArgs.getActiveVisibleRemoteCursorCount()).toBe(1);
+
+    vi.advanceTimersByTime(CURSOR_TTL_MS);
+    expect(inputArgs.getActiveVisibleRemoteCursorCount()).toBe(0);
+
+    teardown();
   });
 
   it("shows offline banner with unsynced count after 30s disconnected and hides on reconnect", async () => {
