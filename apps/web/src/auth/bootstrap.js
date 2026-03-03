@@ -92,3 +92,22 @@ export async function upgradeAuthSessionWithGoogle({
     forceRefresh: true,
   });
 }
+
+export async function removeGoogleLinkFromSession({
+  identityProvider,
+  sessionExchangeClient,
+  readStoredIdentity,
+  writeStoredIdentity,
+} = {}) {
+  assertAuthIdentityProvider(identityProvider);
+  await identityProvider.unlinkGoogle();
+
+  return bootstrapAuthSession({
+    identityProvider,
+    sessionExchangeClient,
+    readStoredIdentity,
+    writeStoredIdentity,
+    allowLegacyFallback: false,
+    forceRefresh: true,
+  });
+}

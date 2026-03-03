@@ -36,11 +36,9 @@ function toPrincipal(user) {
 }
 
 async function loadFirebaseSdk() {
-  const appModuleName = "firebase/app";
-  const authModuleName = "firebase/auth";
   const [{ getApp, getApps, initializeApp }, auth] = await Promise.all([
-    import(/* @vite-ignore */ appModuleName),
-    import(/* @vite-ignore */ authModuleName),
+    import("firebase/app"),
+    import("firebase/auth"),
   ]);
 
   return {
@@ -52,6 +50,8 @@ async function loadFirebaseSdk() {
     getIdToken: auth.getIdToken,
     GoogleAuthProvider: auth.GoogleAuthProvider,
     linkWithPopup: auth.linkWithPopup,
+    onAuthStateChanged: auth.onAuthStateChanged,
+    unlink: auth.unlink,
     signOut: auth.signOut,
   };
 }
@@ -78,6 +78,7 @@ export function createFirebaseAuthIdentityProvider({
 
   let sdkPromise = null;
   let authInstance = null;
+  let authReadyPromise = null;
 
   const ensureAuth = async () => {
     if (!sdkPromise) {
@@ -96,8 +97,49 @@ export function createFirebaseAuthIdentityProvider({
     };
   };
 
+  const waitForAuthStateReady = async (sdk, auth) => {
+    if (!authReadyPromise) {
+      const authWithReady = auth;
+      if (typeof authWithReady.authStateReady === "function") {
+        authReadyPromise = authWithReady.authStateReady().catch(() => undefined);
+      } else {
+        authReadyPromise = new Promise((resolve) => {
+          let unsubscribed = false;
+          let unsubscribe = () => {
+            unsubscribed = true;
+          };
+
+          try {
+            unsubscribe = sdk.onAuthStateChanged(
+              auth,
+              () => {
+                if (!unsubscribed) {
+                  unsubscribe();
+                  unsubscribed = true;
+                }
+                resolve();
+              },
+              () => {
+                if (!unsubscribed) {
+                  unsubscribe();
+                  unsubscribed = true;
+                }
+                resolve();
+              }
+            );
+          } catch {
+            resolve();
+          }
+        });
+      }
+    }
+
+    await authReadyPromise;
+  };
+
   const ensureUser = async () => {
     const { sdk, auth } = await ensureAuth();
+    await waitForAuthStateReady(sdk, auth);
     if (!auth.currentUser) {
       await sdk.signInAnonymously(auth);
     }
@@ -139,6 +181,28 @@ export function createFirebaseAuthIdentityProvider({
       const result = await sdk.linkWithPopup(auth.currentUser, provider);
       const user = result?.user ?? auth.currentUser;
       return toPrincipal(user);
+    },
+
+    async unlinkGoogle() {
+      const { sdk, auth } = await ensureUser();
+      if (!auth.currentUser) {
+        throw new Error("Missing firebase user for google unlink");
+      }
+
+      try {
+        const user = await sdk.unlink(auth.currentUser, "google.com");
+        return toPrincipal(user ?? auth.currentUser);
+      } catch (error) {
+        const code =
+          typeof error === "object" && error && "code" in error && typeof error.code === "string"
+            ? error.code
+            : "";
+        // Treat "already unlinked" as success for idempotent UX.
+        if (code === "auth/no-such-provider") {
+          return toPrincipal(auth.currentUser);
+        }
+        throw error;
+      }
     },
 
     async signOut() {

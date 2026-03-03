@@ -67,7 +67,7 @@ export function assertAuthIdentityProvider(provider) {
     throw new Error("Invalid auth identity provider");
   }
 
-  const required = ["initAnonymousSession", "getAssertionToken", "linkGoogle", "signOut"];
+  const required = ["initAnonymousSession", "getAssertionToken", "linkGoogle", "unlinkGoogle", "signOut"];
   for (const method of required) {
     if (typeof provider[method] !== "function") {
       throw new Error(`AuthIdentityProvider missing method: ${method}`);

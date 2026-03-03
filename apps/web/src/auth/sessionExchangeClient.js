@@ -44,7 +44,8 @@ export function createAuthSessionExchangeClient({
 
       if (!response.ok) {
         const message = typeof payload?.msg === "string" ? payload.msg : `Auth session exchange failed (${response.status})`;
-        throw new Error(message);
+        const detail = typeof payload?.detail === "string" ? payload.detail.trim() : "";
+        throw new Error(detail.length > 0 ? `${message} (${detail})` : message);
       }
 
       const normalizedSession = normalizeAppSession(payload);

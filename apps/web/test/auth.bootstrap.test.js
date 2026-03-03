@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { bootstrapAuthSession, upgradeAuthSessionWithGoogle } from "../src/auth/bootstrap";
+import {
+  bootstrapAuthSession,
+  removeGoogleLinkFromSession,
+  upgradeAuthSessionWithGoogle,
+} from "../src/auth/bootstrap";
 
 describe("auth bootstrap orchestration", () => {
   it("exchanges firebase assertion with legacy token and persists app session", async () => {
@@ -17,6 +21,7 @@ describe("auth bootstrap orchestration", () => {
         initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_1", isAnonymous: true }),
         getAssertionToken: vi.fn().mockResolvedValue("firebase-id-token"),
         linkGoogle: vi.fn(),
+        unlinkGoogle: vi.fn(),
         signOut: vi.fn(),
       },
       sessionExchangeClient: {
@@ -55,6 +60,7 @@ describe("auth bootstrap orchestration", () => {
         initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_2", isAnonymous: true }),
         getAssertionToken: vi.fn().mockResolvedValue("firebase-id-token"),
         linkGoogle: vi.fn(),
+        unlinkGoogle: vi.fn(),
         signOut: vi.fn(),
       },
       sessionExchangeClient: {
@@ -80,6 +86,7 @@ describe("auth bootstrap orchestration", () => {
       initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_3", isAnonymous: true }),
       getAssertionToken: vi.fn().mockResolvedValue("firebase-id-token-google"),
       linkGoogle: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_3", isAnonymous: false }),
+      unlinkGoogle: vi.fn(),
       signOut: vi.fn(),
     };
 
@@ -115,6 +122,7 @@ describe("auth bootstrap orchestration", () => {
         initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_4", isAnonymous: true }),
         getAssertionToken: vi.fn().mockResolvedValue("firebase-id-token"),
         linkGoogle: vi.fn(),
+        unlinkGoogle: vi.fn(),
         signOut: vi.fn(),
       },
       sessionExchangeClient: {
@@ -127,5 +135,39 @@ describe("auth bootstrap orchestration", () => {
 
     expect(result.usedLegacyFallback).toBe(true);
     expect(result.session.token).toBe("tok_old");
+  });
+
+  it("preserves uid after unlinking google from current firebase user", async () => {
+    const identityProvider = {
+      initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_3", isAnonymous: true }),
+      getAssertionToken: vi.fn().mockResolvedValue("firebase-id-token-anon"),
+      linkGoogle: vi.fn(),
+      unlinkGoogle: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_3", isAnonymous: true }),
+      signOut: vi.fn(),
+    };
+
+    const exchange = vi.fn().mockResolvedValue({
+      uid: "u_saved123",
+      name: "BriskOtter001",
+      token: "tok_after_unlink",
+      migration: "none",
+    });
+
+    const result = await removeGoogleLinkFromSession({
+      identityProvider,
+      sessionExchangeClient: { exchange },
+      readStoredIdentity: () => ({ uid: "u_saved123", name: "BriskOtter001", token: "tok_old" }),
+      writeStoredIdentity: vi.fn(),
+    });
+
+    expect(identityProvider.unlinkGoogle).toHaveBeenCalledTimes(1);
+    expect(exchange).toHaveBeenCalledWith(
+      {
+        provider: "firebase",
+        idToken: "firebase-id-token-anon",
+      },
+      "tok_old"
+    );
+    expect(result.session.uid).toBe("u_saved123");
   });
 });

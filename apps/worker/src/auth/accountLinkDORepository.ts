@@ -95,7 +95,16 @@ export class AccountLinkDORepository implements AccountLinkRepository {
       return null;
     }
 
-    const payload = (await response.json()) as ResolveResponse;
+    let payload: ResolveResponse;
+    try {
+      payload = (await response.json()) as ResolveResponse;
+    } catch (error) {
+      throw new Error(
+        `Account-link resolve response was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
     if (!payload.found) {
       return null;
     }
@@ -116,10 +125,22 @@ export class AccountLinkDORepository implements AccountLinkRepository {
       return null;
     }
 
-    const payload = (await response.json()) as {
+    let payload: {
       found: boolean;
       record?: { provider?: unknown; providerUserId?: unknown };
     };
+    try {
+      payload = (await response.json()) as {
+        found: boolean;
+        record?: { provider?: unknown; providerUserId?: unknown };
+      };
+    } catch (error) {
+      throw new Error(
+        `Account-link app resolve response was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
 
     if (!payload.found) {
       return null;
@@ -154,7 +175,16 @@ export class AccountLinkDORepository implements AccountLinkRepository {
       body: JSON.stringify(params),
     });
 
-    const payload = (await response.json()) as LinkResponse;
+    let payload: LinkResponse;
+    try {
+      payload = (await response.json()) as LinkResponse;
+    } catch (error) {
+      throw new Error(
+        `Account-link link response was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
     if (payload.ok && payload.linked) {
       const record = normalizeRecord(payload.linked);
       if (!record) {

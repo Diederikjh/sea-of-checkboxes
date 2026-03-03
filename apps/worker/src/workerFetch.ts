@@ -195,11 +195,16 @@ async function handleAuthSessionRequest(request: Request, env: Env): Promise<Res
       );
     }
 
+    const errorDetail = error instanceof Error ? error.message : String(error);
+    console.error("auth_session_unhandled_error", {
+      error: errorDetail,
+    });
     return withAuthSessionCors(
       jsonResponse(
         {
           code: "auth_unavailable",
           msg: "Unable to create auth session",
+          detail: errorDetail,
         },
         { status: 503 }
       )

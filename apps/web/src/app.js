@@ -14,7 +14,11 @@ import {
 import { createCamera } from "./camera";
 import { createCursorLabels } from "./cursorLabels";
 import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
-import { bootstrapAuthSession, upgradeAuthSessionWithGoogle } from "./auth/bootstrap";
+import {
+  bootstrapAuthSession,
+  removeGoogleLinkFromSession,
+  upgradeAuthSessionWithGoogle,
+} from "./auth/bootstrap";
 import {
   createFirebaseAuthIdentityProvider,
   resolveFirebaseConfigFromEnv,
@@ -157,11 +161,17 @@ export async function startApp() {
     inspectLabelEl,
     editInfoPopupEl,
     authGoogleUpgradeButtonEl,
+    authGoogleUnlinkButtonEl,
   } = getRequiredElements();
 
   applyBranding(titleEl);
   const setStatus = (value) => {
     statusEl.textContent = value;
+  };
+  const logOther = (...args) => {
+    if (typeof logger.other === "function") {
+      logger.other(...args);
+    }
   };
 
   const app = new Application({
@@ -204,15 +214,20 @@ export async function startApp() {
         setStatus("Auth unavailable; using existing session.");
       }
     } catch (error) {
-      logger.other("auth bootstrap_failed", {
-        error: error instanceof Error ? error.message : String(error),
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logOther("auth bootstrap_failed", {
+        error: errorMessage,
       });
-      setStatus("Sign-in failed; continuing with existing session.");
+      console.error("auth bootstrap_failed", { error: errorMessage });
+      setStatus(`Sign-in failed; continuing with existing session. (${errorMessage})`);
     }
   }
 
   if (authGoogleUpgradeButtonEl) {
     authGoogleUpgradeButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
+  }
+  if (authGoogleUnlinkButtonEl) {
+    authGoogleUnlinkButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
   }
   const perfProbe = createPerfProbe({
     enabled: isPerfProbeEnabled(),
@@ -240,11 +255,6 @@ export async function startApp() {
   let wsFirstSubLogged = false;
   let wsFirstSetCellLogged = false;
   const isTransportOnline = () => transportOnline;
-  const logOther = (...args) => {
-    if (typeof logger.other === "function") {
-      logger.other(...args);
-    }
-  };
 
   const beginWsSession = (reconnected) => {
     wsSessionId += 1;
@@ -562,10 +572,35 @@ export async function startApp() {
       });
       setStatus("Google account linked.");
     } catch (error) {
-      logger.other("auth google_link_failed", {
-        error: error instanceof Error ? error.message : String(error),
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logOther("auth google_link_failed", {
+        error: errorMessage,
       });
-      setStatus("Google link failed. Try again.");
+      console.error("auth google_link_failed", { error: errorMessage });
+      setStatus(`Google link failed. ${errorMessage}`);
+    }
+  };
+  const onGoogleUnlinkClick = async () => {
+    if (!authIdentityProvider || !authSessionExchangeClient) {
+      return;
+    }
+
+    try {
+      setStatus("Removing Google account link...");
+      await removeGoogleLinkFromSession({
+        identityProvider: authIdentityProvider,
+        sessionExchangeClient: authSessionExchangeClient,
+        readStoredIdentity,
+        writeStoredIdentity,
+      });
+      setStatus("Google account link removed.");
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logOther("auth google_unlink_failed", {
+        error: errorMessage,
+      });
+      console.error("auth google_unlink_failed", { error: errorMessage });
+      setStatus(`Google unlink failed. ${errorMessage}`);
     }
   };
   window.addEventListener("resize", onResize);
@@ -575,6 +610,9 @@ export async function startApp() {
   window.addEventListener("online", onBrowserOnline);
   if (authGoogleUpgradeButtonEl) {
     authGoogleUpgradeButtonEl.addEventListener("click", onGoogleUpgradeClick);
+  }
+  if (authGoogleUnlinkButtonEl) {
+    authGoogleUnlinkButtonEl.addEventListener("click", onGoogleUnlinkClick);
   }
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("visibilitychange", onDocumentVisibilityChange);
@@ -588,6 +626,9 @@ export async function startApp() {
     window.removeEventListener("online", onBrowserOnline);
     if (authGoogleUpgradeButtonEl) {
       authGoogleUpgradeButtonEl.removeEventListener("click", onGoogleUpgradeClick);
+    }
+    if (authGoogleUnlinkButtonEl) {
+      authGoogleUnlinkButtonEl.removeEventListener("click", onGoogleUnlinkClick);
     }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", onDocumentVisibilityChange);

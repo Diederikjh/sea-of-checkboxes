@@ -308,12 +308,30 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
       return this.#cachedKeys.get(kid) ?? null;
     }
 
-    const response = await this.#fetchFn(this.#jwkUrl);
+    let response: Response;
+    try {
+      response = await this.#fetchFn(this.#jwkUrl);
+    } catch (error) {
+      throw new Error(
+        `Unable to fetch firebase public keys: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
     if (!response.ok) {
       return null;
     }
 
-    const payload = (await response.json()) as { keys?: unknown };
+    let payload: { keys?: unknown };
+    try {
+      payload = (await response.json()) as { keys?: unknown };
+    } catch (error) {
+      throw new Error(
+        `Firebase public key response was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
     if (!Array.isArray(payload.keys)) {
       return null;
     }
