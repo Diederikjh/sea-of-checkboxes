@@ -7,6 +7,11 @@ import type {
 const DEFAULT_JWK_URL = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1_000;
 
+function defaultFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  // Cloudflare Workers requires fetch to be called with the correct global receiver.
+  return globalThis.fetch(input, init);
+}
+
 interface JwtHeader {
   alg?: unknown;
   kid?: unknown;
@@ -178,7 +183,7 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
     }) => Promise<boolean>;
   }) {
     this.#projectId = options.projectId.trim();
-    this.#fetchFn = options.fetchFn ?? fetch;
+    this.#fetchFn = options.fetchFn ?? defaultFetch;
     this.#jwkUrl = options.jwkUrl ?? DEFAULT_JWK_URL;
     this.#clock = options.clock ?? { nowMs: () => Date.now() };
     this.#signatureVerifier = options.signatureVerifier ?? null;
@@ -187,44 +192,70 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
   }
 
   async verify(assertion: ExternalAssertion): Promise<VerifiedExternalIdentity | null> {
-    if (assertion.provider !== "firebase") {
+    const reject = (reason: string, details: Record<string, unknown> = {}): null => {
+      console.warn("firebase_token_rejected", {
+        reason,
+        ...details,
+      });
       return null;
+    };
+
+    if (assertion.provider !== "firebase") {
+      return reject("unsupported_assertion_provider", { provider: assertion.provider });
     }
 
     const parsed = parseBearerJwt(assertion.idToken.trim());
     if (!parsed) {
-      return null;
+      return reject("jwt_parse_failed");
     }
 
     const nowMs = this.#clock.nowMs();
     const headerAlg = claimString(parsed.header.alg);
     const kid = claimString(parsed.header.kid);
     if (headerAlg !== "RS256" || !kid) {
-      return null;
+      return reject("invalid_header", {
+        alg: headerAlg,
+        hasKid: Boolean(kid),
+      });
     }
 
     const issuer = claimString(parsed.claims.iss);
     const audience = claimString(parsed.claims.aud);
     const exp = claimInt(parsed.claims.exp);
     if (!issuer || !audience || exp === null) {
-      return null;
+      return reject("missing_claims", {
+        hasIssuer: Boolean(issuer),
+        hasAudience: Boolean(audience),
+        hasExp: exp !== null,
+      });
     }
 
     if (issuer !== `https://securetoken.google.com/${this.#projectId}`) {
-      return null;
+      return reject("issuer_mismatch", {
+        issuer,
+        expectedIssuer: `https://securetoken.google.com/${this.#projectId}`,
+      });
     }
     if (audience !== this.#projectId) {
-      return null;
+      return reject("audience_mismatch", {
+        audience,
+        expectedAudience: this.#projectId,
+      });
     }
 
     const nowSeconds = Math.floor(nowMs / 1_000);
     if (exp < nowSeconds) {
-      return null;
+      return reject("token_expired", {
+        exp,
+        nowSeconds,
+      });
     }
 
     const provider = resolveProvider(parsed.claims);
     if (!provider) {
-      return null;
+      return reject("unsupported_sign_in_provider", {
+        signInProvider: claimString(parsed.claims.firebase?.sign_in_provider),
+      });
     }
 
     const signatureValid = this.#signatureVerifier
@@ -242,7 +273,9 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
         });
 
     if (!signatureValid) {
-      return null;
+      return reject("signature_invalid", {
+        kid,
+      });
     }
 
     return {
@@ -260,20 +293,25 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
     nowMs: number;
   }): Promise<boolean> {
     const key = await this.#keyForKid(params.kid, params.nowMs);
-    if (!key || key.kty !== "RSA" || typeof key.n !== "string" || typeof key.e !== "string") {
+    if (!key) {
+      console.warn("firebase_token_signature_key_missing", {
+        kid: params.kid,
+      });
+      return false;
+    }
+    if (key.kty !== "RSA" || typeof key.n !== "string" || typeof key.e !== "string") {
+      console.warn("firebase_token_signature_key_invalid", {
+        kid: params.kid,
+        kty: key.kty,
+        hasN: typeof key.n === "string",
+        hasE: typeof key.e === "string",
+      });
       return false;
     }
 
     let cryptoKey: CryptoKey;
     try {
-      const importKey = crypto.subtle.importKey as unknown as (
-        format: string,
-        keyData: JsonWebKey,
-        algorithm: AlgorithmIdentifier | RsaHashedImportParams,
-        extractable: boolean,
-        keyUsages: KeyUsage[]
-      ) => Promise<CryptoKey>;
-      cryptoKey = await importKey(
+      cryptoKey = await crypto.subtle.importKey(
         "jwk",
         {
           kty: "RSA",
@@ -284,28 +322,53 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
         },
         {
           name: "RSASSA-PKCS1-v1_5",
-          hash: "SHA-256",
+          hash: { name: "SHA-256" },
         },
         false,
         ["verify"]
       );
-    } catch {
+    } catch (error) {
+      console.warn("firebase_token_signature_import_failed", {
+        kid: params.kid,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return false;
     }
 
     const signature = new Uint8Array(params.signature.length);
     signature.set(params.signature);
-    return crypto.subtle.verify(
-      "RSASSA-PKCS1-v1_5",
-      cryptoKey,
-      signature,
-      new TextEncoder().encode(params.signingInput)
+    const signatureBuffer = signature.buffer.slice(
+      signature.byteOffset,
+      signature.byteOffset + signature.byteLength
     );
+    const payload = new TextEncoder().encode(params.signingInput);
+    const payloadBuffer = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
+
+    const isValid = await crypto.subtle.verify(
+      { name: "RSASSA-PKCS1-v1_5" },
+      cryptoKey,
+      signatureBuffer,
+      payloadBuffer
+    );
+    if (!isValid) {
+      console.warn("firebase_token_signature_verify_failed", {
+        kid: params.kid,
+      });
+    }
+    return isValid;
   }
 
   async #keyForKid(kid: string, nowMs: number): Promise<JwkKey | null> {
     if (nowMs < this.#keysExpireAtMs && this.#cachedKeys.size > 0) {
-      return this.#cachedKeys.get(kid) ?? null;
+      const cached = this.#cachedKeys.get(kid);
+      if (cached) {
+        return cached;
+      }
+      // Key ID can change before cache expiry; refresh once when cache misses.
+      console.warn("firebase_jwk_cache_miss_for_kid", {
+        kid,
+        cachedKidCount: this.#cachedKeys.size,
+      });
     }
 
     let response: Response;
@@ -333,6 +396,10 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
       );
     }
     if (!Array.isArray(payload.keys)) {
+      console.warn("firebase_jwk_payload_unexpected_shape", {
+        hasKeysArray: false,
+        payloadType: typeof payload,
+      });
       return null;
     }
 
@@ -351,6 +418,13 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
 
     this.#cachedKeys = next;
     this.#keysExpireAtMs = nowMs + parseCacheMaxAge(response.headers.get("cache-control"));
-    return this.#cachedKeys.get(kid) ?? null;
+    const matched = this.#cachedKeys.get(kid) ?? null;
+    if (!matched) {
+      console.warn("firebase_jwk_kid_not_found_after_refresh", {
+        kid,
+        fetchedKidCount: this.#cachedKeys.size,
+      });
+    }
+    return matched;
   }
 }

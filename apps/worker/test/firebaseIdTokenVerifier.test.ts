@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { FirebaseIdTokenVerifier } from "../src/auth/firebaseIdTokenVerifier";
 
@@ -15,6 +15,115 @@ function makeToken(payload: Record<string, unknown>, header: Record<string, unkn
 }
 
 describe("FirebaseIdTokenVerifier", () => {
+  it("calls subtle.importKey with the correct invocation context", async () => {
+    const originalImportKey = crypto.subtle.importKey;
+    let observedThis: unknown = null;
+    const importKeySpy = vi.spyOn(crypto.subtle, "importKey").mockImplementation(function (
+      this: SubtleCrypto,
+      ...args
+    ) {
+      observedThis = this;
+      return (originalImportKey as unknown as (...callArgs: unknown[]) => Promise<CryptoKey>).apply(
+        crypto.subtle,
+        args as unknown[]
+      );
+    });
+
+    const verifier = new FirebaseIdTokenVerifier({
+      projectId: "project-1",
+      fetchFn: async () =>
+        new Response(
+          JSON.stringify({
+            keys: [
+              {
+                kid: "kid_ctx",
+                kty: "RSA",
+                // Intentionally simple payload: we only need to pass importKey invocation.
+                n: "invalid-key-material",
+                e: "AQAB",
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "cache-control": "max-age=60",
+            },
+          }
+        ),
+    });
+
+    try {
+      const token = makeToken({
+        iss: "https://securetoken.google.com/project-1",
+        aud: "project-1",
+        sub: "firebase-user-importkey-this",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        firebase: { sign_in_provider: "anonymous" },
+      }, {
+        alg: "RS256",
+        kid: "kid_ctx",
+      });
+
+      await expect(verifier.verify({ provider: "firebase", idToken: token })).resolves.toBeNull();
+      expect(observedThis).toBe(crypto.subtle);
+    } finally {
+      importKeySpy.mockRestore();
+    }
+  });
+
+  it("uses global fetch with the correct invocation context", async () => {
+    const originalFetch = globalThis.fetch;
+    const guardedFetch = function guardedFetch(this: typeof globalThis) {
+      if (this !== globalThis) {
+        throw new Error("fetch called with incorrect this");
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            keys: [
+              {
+                kid: "kid_1",
+                kty: "RSA",
+                n: "invalid-key-material",
+                e: "AQAB",
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "cache-control": "max-age=60",
+            },
+          }
+        )
+      );
+    } as unknown as typeof fetch;
+
+    // Override for this test only to simulate Worker illegal-invocation behavior.
+    globalThis.fetch = guardedFetch;
+
+    try {
+      const verifier = new FirebaseIdTokenVerifier({
+        projectId: "project-1",
+      });
+
+      const token = makeToken({
+        iss: "https://securetoken.google.com/project-1",
+        aud: "project-1",
+        sub: "firebase-user-ctx",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        firebase: { sign_in_provider: "anonymous" },
+      });
+
+      await expect(verifier.verify({ provider: "firebase", idToken: token })).resolves.toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("rejects invalid issuer", async () => {
     const verifier = new FirebaseIdTokenVerifier({
       projectId: "project-1",

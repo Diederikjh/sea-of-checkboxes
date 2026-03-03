@@ -178,9 +178,21 @@ export function createFirebaseAuthIdentityProvider({
         throw new Error("Missing firebase user for google link");
       }
       const provider = new sdk.GoogleAuthProvider();
-      const result = await sdk.linkWithPopup(auth.currentUser, provider);
-      const user = result?.user ?? auth.currentUser;
-      return toPrincipal(user);
+      try {
+        const result = await sdk.linkWithPopup(auth.currentUser, provider);
+        const user = result?.user ?? auth.currentUser;
+        return toPrincipal(user);
+      } catch (error) {
+        const code =
+          typeof error === "object" && error && "code" in error && typeof error.code === "string"
+            ? error.code
+            : "";
+        // Treat "already linked" as success for retry-safe UX.
+        if (code === "auth/provider-already-linked") {
+          return toPrincipal(auth.currentUser);
+        }
+        throw error;
+      }
     },
 
     async unlinkGoogle() {
