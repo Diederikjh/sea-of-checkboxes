@@ -14,6 +14,7 @@
   "dependencies": {
     "@sea/domain": "workspace:*",
     "@sea/protocol": "workspace:*",
+    "firebase": "^12.2.1",
     "pixi.js": "^7.4.3"
   },
   "devDependencies": {

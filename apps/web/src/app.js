@@ -14,6 +14,12 @@ import {
 import { createCamera } from "./camera";
 import { createCursorLabels } from "./cursorLabels";
 import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
+import { bootstrapAuthSession, upgradeAuthSessionWithGoogle } from "./auth/bootstrap";
+import {
+  createFirebaseAuthIdentityProvider,
+  resolveFirebaseConfigFromEnv,
+} from "./auth/firebaseAuthProvider";
+import { createAuthSessionExchangeClient } from "./auth/sessionExchangeClient";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import { readStoredIdentity, writeStoredIdentity } from "./identityStore";
@@ -150,9 +156,13 @@ export async function startApp() {
     inspectToggleEl,
     inspectLabelEl,
     editInfoPopupEl,
+    authGoogleUpgradeButtonEl,
   } = getRequiredElements();
 
   applyBranding(titleEl);
+  const setStatus = (value) => {
+    statusEl.textContent = value;
+  };
 
   const app = new Application({
     view: canvas,
@@ -170,6 +180,40 @@ export async function startApp() {
   const tileStore = new TileStore(512);
   const heatStore = new HeatStore();
   const apiBaseUrl = resolveApiBaseUrl();
+  const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
+  const firebaseConfig = resolveFirebaseConfigFromEnv(env);
+  const authSessionExchangeClient = firebaseConfig
+    ? createAuthSessionExchangeClient({ apiBaseUrl })
+    : null;
+  const authIdentityProvider = firebaseConfig
+    ? createFirebaseAuthIdentityProvider({ config: firebaseConfig })
+    : null;
+
+  if (authIdentityProvider && authSessionExchangeClient) {
+    setStatus("Signing in...");
+    try {
+      const bootstrap = await bootstrapAuthSession({
+        identityProvider: authIdentityProvider,
+        sessionExchangeClient: authSessionExchangeClient,
+        readStoredIdentity,
+        writeStoredIdentity,
+        allowLegacyFallback: true,
+      });
+
+      if (bootstrap.usedLegacyFallback) {
+        setStatus("Auth unavailable; using existing session.");
+      }
+    } catch (error) {
+      logger.other("auth bootstrap_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      setStatus("Sign-in failed; continuing with existing session.");
+    }
+  }
+
+  if (authGoogleUpgradeButtonEl) {
+    authGoogleUpgradeButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
+  }
   const perfProbe = createPerfProbe({
     enabled: isPerfProbeEnabled(),
   });
@@ -187,6 +231,7 @@ export async function startApp() {
   }
 
   const wireTransport = createWireTransport({
+    env,
     identityProvider: readStoredIdentity,
   });
   let transportOnline = false;
@@ -360,10 +405,6 @@ export async function startApp() {
     return count;
   };
 
-  const setStatus = (value) => {
-    statusEl.textContent = value;
-  };
-
   const handleConnectionLost = () => {
     transportOnline = false;
     setCellOutboxSync.handleConnectionLost();
@@ -506,11 +547,35 @@ export async function startApp() {
       setStatus("Network restored; reconnecting...");
     }
   };
+  const onGoogleUpgradeClick = async () => {
+    if (!authIdentityProvider || !authSessionExchangeClient) {
+      return;
+    }
+
+    try {
+      setStatus("Linking Google account...");
+      await upgradeAuthSessionWithGoogle({
+        identityProvider: authIdentityProvider,
+        sessionExchangeClient: authSessionExchangeClient,
+        readStoredIdentity,
+        writeStoredIdentity,
+      });
+      setStatus("Google account linked.");
+    } catch (error) {
+      logger.other("auth google_link_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      setStatus("Google link failed. Try again.");
+    }
+  };
   window.addEventListener("resize", onResize);
   window.addEventListener("focus", onWindowFocus);
   window.addEventListener("pageshow", onPageShow);
   window.addEventListener("offline", onBrowserOffline);
   window.addEventListener("online", onBrowserOnline);
+  if (authGoogleUpgradeButtonEl) {
+    authGoogleUpgradeButtonEl.addEventListener("click", onGoogleUpgradeClick);
+  }
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("visibilitychange", onDocumentVisibilityChange);
   }
@@ -521,6 +586,9 @@ export async function startApp() {
     window.removeEventListener("pageshow", onPageShow);
     window.removeEventListener("offline", onBrowserOffline);
     window.removeEventListener("online", onBrowserOnline);
+    if (authGoogleUpgradeButtonEl) {
+      authGoogleUpgradeButtonEl.removeEventListener("click", onGoogleUpgradeClick);
+    }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
     }

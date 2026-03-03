@@ -3,6 +3,8 @@ import {
   parseTileKeyStrict,
 } from "@sea/domain";
 
+import type { ExternalIdentityVerifier } from "./auth/contracts";
+
 export interface DurableObjectStubLike {
   fetch(input: Request | string, init?: RequestInit): Promise<Response>;
 }
@@ -37,8 +39,12 @@ export interface Env {
   CONNECTION_SHARD: DurableObjectNamespaceLike;
   TILE_OWNER: DurableObjectNamespaceLike;
   CURSOR_HUB?: DurableObjectNamespaceLike;
+  ACCOUNT_LINK?: DurableObjectNamespaceLike;
   TILE_SNAPSHOTS?: R2BucketLike;
   IDENTITY_SIGNING_SECRET?: string;
+  FIREBASE_PROJECT_ID?: string;
+  AUTH_MODE?: string;
+  EXTERNAL_IDENTITY_VERIFIER?: ExternalIdentityVerifier;
 }
 
 export interface ConnectionIdentity {

@@ -22,6 +22,7 @@ export function getRequiredElements() {
   const inspectToggleEl = queryRequiredElement("#inspect-mode-toggle");
   const inspectLabelEl = queryRequiredElement("#inspect-mode-label");
   const editInfoPopupEl = queryRequiredElement("#edit-info-popup");
+  const authGoogleUpgradeButtonEl = document.querySelector("#auth-google-upgrade");
 
   return {
     canvas,
@@ -35,6 +36,7 @@ export function getRequiredElements() {
     inspectToggleEl,
     inspectLabelEl,
     editInfoPopupEl,
+    authGoogleUpgradeButtonEl,
   };
 }
 

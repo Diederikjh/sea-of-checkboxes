@@ -2,6 +2,7 @@ import {
   type Env,
   type ExecutionContextLike,
 } from "./doCommon";
+import { AccountLinkDO } from "./accountLinkDO";
 import { ConnectionShardDO } from "./connectionShardDO";
 import { CursorHubDO } from "./cursorHubDO";
 import { TileOwnerDO } from "./tileOwnerDO";
@@ -14,6 +15,7 @@ export default {
 };
 
 export {
+  AccountLinkDO,
   ConnectionShardDO,
   CursorHubDO,
   TileOwnerDO,
