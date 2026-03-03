@@ -27,6 +27,11 @@ import { TileStore } from "./tileStore";
 import { resolveApiBaseUrl } from "./transportConfig";
 import { createWireTransport } from "./wireTransport";
 import { CURSOR_TTL_MS } from "./cursorRenderConfig";
+import {
+  cursorWorldPosition,
+  isScreenPointInViewport,
+  worldToScreenPoint,
+} from "./cursorGeometry";
 
 const CURSOR_VIEWPORT_MARGIN_PX = 24;
 
@@ -337,17 +342,15 @@ export async function startApp() {
         continue;
       }
 
-      const worldX = Number.isFinite(cursor.drawX) ? cursor.drawX : cursor.x;
-      const worldY = Number.isFinite(cursor.drawY) ? cursor.drawY : cursor.y;
-      const screenX = (worldX - camera.x) * camera.cellPixelSize + viewportWidth / 2;
-      const screenY = (worldY - camera.y) * camera.cellPixelSize + viewportHeight / 2;
-
-      if (
-        screenX < -CURSOR_VIEWPORT_MARGIN_PX
-        || screenX > viewportWidth + CURSOR_VIEWPORT_MARGIN_PX
-        || screenY < -CURSOR_VIEWPORT_MARGIN_PX
-        || screenY > viewportHeight + CURSOR_VIEWPORT_MARGIN_PX
-      ) {
+      const world = cursorWorldPosition(cursor);
+      const screen = worldToScreenPoint(world.x, world.y, camera, viewportWidth, viewportHeight);
+      if (!isScreenPointInViewport(
+        screen.x,
+        screen.y,
+        viewportWidth,
+        viewportHeight,
+        CURSOR_VIEWPORT_MARGIN_PX
+      )) {
         continue;
       }
 
