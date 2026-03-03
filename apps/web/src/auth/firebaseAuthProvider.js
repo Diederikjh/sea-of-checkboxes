@@ -35,6 +35,14 @@ function toPrincipal(user) {
   return principal;
 }
 
+function firebaseErrorCode(error) {
+  if (!error || typeof error !== "object" || !("code" in error) || typeof error.code !== "string") {
+    return "";
+  }
+
+  return error.code;
+}
+
 async function loadFirebaseSdk() {
   const [{ getApp, getApps, initializeApp }, auth] = await Promise.all([
     import("firebase/app"),
@@ -183,10 +191,7 @@ export function createFirebaseAuthIdentityProvider({
         const user = result?.user ?? auth.currentUser;
         return toPrincipal(user);
       } catch (error) {
-        const code =
-          typeof error === "object" && error && "code" in error && typeof error.code === "string"
-            ? error.code
-            : "";
+        const code = firebaseErrorCode(error);
         // Treat "already linked" as success for retry-safe UX.
         if (code === "auth/provider-already-linked") {
           return toPrincipal(auth.currentUser);
@@ -205,10 +210,7 @@ export function createFirebaseAuthIdentityProvider({
         const user = await sdk.unlink(auth.currentUser, "google.com");
         return toPrincipal(user ?? auth.currentUser);
       } catch (error) {
-        const code =
-          typeof error === "object" && error && "code" in error && typeof error.code === "string"
-            ? error.code
-            : "";
+        const code = firebaseErrorCode(error);
         // Treat "already unlinked" as success for idempotent UX.
         if (code === "auth/no-such-provider") {
           return toPrincipal(auth.currentUser);

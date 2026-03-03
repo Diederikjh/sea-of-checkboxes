@@ -80,16 +80,12 @@ export async function upgradeAuthSessionWithGoogle({
   readStoredIdentity,
   writeStoredIdentity,
 } = {}) {
-  assertAuthIdentityProvider(identityProvider);
-  await identityProvider.linkGoogle();
-
-  return bootstrapAuthSession({
+  return refreshSessionAfterProviderAction({
     identityProvider,
     sessionExchangeClient,
     readStoredIdentity,
     writeStoredIdentity,
-    allowLegacyFallback: false,
-    forceRefresh: true,
+    action: (provider) => provider.linkGoogle(),
   });
 }
 
@@ -99,8 +95,27 @@ export async function removeGoogleLinkFromSession({
   readStoredIdentity,
   writeStoredIdentity,
 } = {}) {
+  return refreshSessionAfterProviderAction({
+    identityProvider,
+    sessionExchangeClient,
+    readStoredIdentity,
+    writeStoredIdentity,
+    action: (provider) => provider.unlinkGoogle(),
+  });
+}
+
+async function refreshSessionAfterProviderAction({
+  identityProvider,
+  sessionExchangeClient,
+  readStoredIdentity,
+  writeStoredIdentity,
+  action,
+}) {
   assertAuthIdentityProvider(identityProvider);
-  await identityProvider.unlinkGoogle();
+  if (typeof action !== "function") {
+    throw new Error("Missing provider action");
+  }
+  await action(identityProvider);
 
   return bootstrapAuthSession({
     identityProvider,

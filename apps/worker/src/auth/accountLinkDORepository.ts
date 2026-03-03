@@ -80,31 +80,19 @@ export class AccountLinkDORepository implements AccountLinkRepository {
   }
 
   async getByProviderUser(provider: ExternalProvider, providerUserId: string): Promise<AccountLinkRecord | null> {
-    const response = await this.#stub().fetch("https://account-link.internal/resolve", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        provider,
-        providerUserId,
-      }),
+    const response = await this.#post("/resolve", {
+      provider,
+      providerUserId,
     });
 
     if (!response.ok) {
       return null;
     }
 
-    let payload: ResolveResponse;
-    try {
-      payload = (await response.json()) as ResolveResponse;
-    } catch (error) {
-      throw new Error(
-        `Account-link resolve response was not valid JSON: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
+    const payload = await this.#readJson<ResolveResponse>(
+      response,
+      "Account-link resolve response was not valid JSON"
+    );
     if (!payload.found) {
       return null;
     }
@@ -113,34 +101,19 @@ export class AccountLinkDORepository implements AccountLinkRepository {
   }
 
   async getByAppUid(uid: string): Promise<{ provider: ExternalProvider; providerUserId: string } | null> {
-    const response = await this.#stub().fetch("https://account-link.internal/resolve-app", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ uid }),
-    });
+    const response = await this.#post("/resolve-app", { uid });
 
     if (!response.ok) {
       return null;
     }
 
-    let payload: {
+    const payload = await this.#readJson<{
       found: boolean;
       record?: { provider?: unknown; providerUserId?: unknown };
-    };
-    try {
-      payload = (await response.json()) as {
-        found: boolean;
-        record?: { provider?: unknown; providerUserId?: unknown };
-      };
-    } catch (error) {
-      throw new Error(
-        `Account-link app resolve response was not valid JSON: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
+    }>(
+      response,
+      "Account-link app resolve response was not valid JSON"
+    );
 
     if (!payload.found) {
       return null;
@@ -167,24 +140,11 @@ export class AccountLinkDORepository implements AccountLinkRepository {
     | { ok: true; linked: AccountLinkRecord }
     | { ok: false; code: "provider_conflict" | "app_uid_conflict"; existing?: AccountLinkRecord }
   > {
-    const response = await this.#stub().fetch("https://account-link.internal/link", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(params),
-    });
-
-    let payload: LinkResponse;
-    try {
-      payload = (await response.json()) as LinkResponse;
-    } catch (error) {
-      throw new Error(
-        `Account-link link response was not valid JSON: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
+    const response = await this.#post("/link", params);
+    const payload = await this.#readJson<LinkResponse>(
+      response,
+      "Account-link link response was not valid JSON"
+    );
     if (payload.ok && payload.linked) {
       const record = normalizeRecord(payload.linked);
       if (!record) {
@@ -207,5 +167,27 @@ export class AccountLinkDORepository implements AccountLinkRepository {
 
   #stub() {
     return this.#namespace.getByName(this.#name);
+  }
+
+  async #post(pathname: string, payload: unknown): Promise<Response> {
+    return this.#stub().fetch(`https://account-link.internal${pathname}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async #readJson<T>(response: Response, errorPrefix: string): Promise<T> {
+    try {
+      return (await response.json()) as T;
+    } catch (error) {
+      throw new Error(
+        `${errorPrefix}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
 }

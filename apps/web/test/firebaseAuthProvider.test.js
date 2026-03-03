@@ -125,4 +125,37 @@ describe("firebase auth identity provider", () => {
       isAnonymous: false,
     });
   });
+
+  it("treats no-such-provider as success during google unlink retries", async () => {
+    const auth = {
+      currentUser: {
+        uid: "firebase_existing_google",
+        isAnonymous: false,
+      },
+      authStateReady: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const provider = createFirebaseAuthIdentityProvider({
+      config: firebaseConfig(),
+      sdkLoader: async () => ({
+        getApp: vi.fn(),
+        getApps: vi.fn().mockReturnValue([]),
+        initializeApp: vi.fn().mockReturnValue({}),
+        getAuth: vi.fn().mockReturnValue(auth),
+        signInAnonymously: vi.fn(),
+        getIdToken: vi.fn().mockResolvedValue("token"),
+        GoogleAuthProvider: class GoogleAuthProvider {},
+        linkWithPopup: vi.fn(),
+        onAuthStateChanged: vi.fn(),
+        unlink: vi.fn().mockRejectedValue({ code: "auth/no-such-provider" }),
+        signOut: vi.fn(),
+      }),
+    });
+
+    await expect(provider.unlinkGoogle()).resolves.toEqual({
+      provider: "firebase",
+      providerUserId: "firebase_existing_google",
+      isAnonymous: false,
+    });
+  });
 });

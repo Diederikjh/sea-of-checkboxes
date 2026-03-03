@@ -1,8 +1,12 @@
 import { normalizeAppSession, normalizeExternalAssertion } from "./contracts";
 
+function defaultFetch(input, init) {
+  return globalThis.fetch(input, init);
+}
+
 export function createAuthSessionExchangeClient({
   apiBaseUrl,
-  fetchFn = typeof fetch === "function" ? fetch : null,
+  fetchFn = typeof fetch === "function" ? defaultFetch : null,
 } = {}) {
   if (typeof apiBaseUrl !== "string" || apiBaseUrl.trim().length === 0) {
     throw new Error("Missing apiBaseUrl for auth session exchange");

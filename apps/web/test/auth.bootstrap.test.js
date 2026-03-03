@@ -168,6 +168,29 @@ describe("auth bootstrap orchestration", () => {
       },
       "tok_old"
     );
+    expect(identityProvider.getAssertionToken).toHaveBeenCalledWith(true);
     expect(result.session.uid).toBe("u_saved123");
+  });
+
+  it("does not use legacy fallback during provider relink refresh", async () => {
+    const exchangeError = new Error("service unavailable");
+    const identityProvider = {
+      initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_7", isAnonymous: false }),
+      getAssertionToken: vi.fn().mockResolvedValue("firebase-id-token-google"),
+      linkGoogle: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_7", isAnonymous: false }),
+      unlinkGoogle: vi.fn(),
+      signOut: vi.fn(),
+    };
+
+    await expect(
+      upgradeAuthSessionWithGoogle({
+        identityProvider,
+        sessionExchangeClient: {
+          exchange: vi.fn().mockRejectedValue(exchangeError),
+        },
+        readStoredIdentity: () => ({ uid: "u_saved123", name: "BriskOtter001", token: "tok_old" }),
+        writeStoredIdentity: vi.fn(),
+      })
+    ).rejects.toBe(exchangeError);
   });
 });
