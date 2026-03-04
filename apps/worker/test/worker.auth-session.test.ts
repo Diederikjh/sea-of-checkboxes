@@ -306,4 +306,41 @@ describe("worker auth session endpoint", () => {
     expect(response.status).toBe(204);
     expect(connectionShard.requestedNames.length).toBe(1);
   });
+
+  it("returns actionable auth_unavailable detail when firebase verifier config is missing", async () => {
+    const identitySigningSecret = "test-worker-fetch-secret";
+    const connectionShard = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const tileOwner = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const accountLink = new StubNamespace((name) => new AccountLinkDurableObjectStub(name));
+    const env = {
+      CONNECTION_SHARD: connectionShard,
+      TILE_OWNER: tileOwner,
+      ACCOUNT_LINK: accountLink,
+      IDENTITY_SIGNING_SECRET: identitySigningSecret,
+      AUTH_MODE: "hybrid",
+    };
+
+    const response = await handleWorkerFetch(
+      workerRequest("/auth/session", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          assertion: {
+            provider: "firebase",
+            idToken: "token-existing",
+          },
+        }),
+      }),
+      env
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "auth_unavailable",
+      msg: "Firebase verifier is not configured",
+      detail: "Set FIREBASE_PROJECT_ID on the worker environment",
+    });
+  });
 });

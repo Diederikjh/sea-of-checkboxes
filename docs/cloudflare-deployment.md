@@ -31,7 +31,7 @@ pnpm dlx wrangler r2 bucket create sea-of-checkboxes-tiles
 pnpm dlx wrangler r2 bucket create sea-of-checkboxes-tiles-preview
 ```
 
-## 3. Set Required Secret
+## 3. Set Required Worker Auth Config
 
 Production must set `IDENTITY_SIGNING_SECRET` (do not rely on fallback dev secret):
 
@@ -40,6 +40,12 @@ pnpm dlx wrangler secret put IDENTITY_SIGNING_SECRET --config apps/worker/wrangl
 ```
 
 Use a long random value (at least 32 bytes of entropy).
+
+Set `FIREBASE_PROJECT_ID` for the worker auth verifier (must match your Firebase project):
+
+```bash
+pnpm dlx wrangler secret put FIREBASE_PROJECT_ID --config apps/worker/wrangler.jsonc
+```
 
 ## 4. Validate Before Deploy
 
@@ -51,7 +57,7 @@ pnpm test
 ## 5. Deploy Worker
 
 ```bash
-pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc
+pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc --var FIREBASE_PROJECT_ID:<project-id>
 ```
 
 After deploy, note the Worker host:
@@ -75,6 +81,10 @@ Create `apps/web/.env.production` from `apps/web/.env.example`:
 VITE_WS_URL=wss://<worker-host>/ws
 VITE_API_BASE_URL=https://<worker-host>
 VITE_USE_MOCK=0
+VITE_FIREBASE_API_KEY=<firebase-api-key>
+VITE_FIREBASE_AUTH_DOMAIN=<project-id>.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=<project-id>
+VITE_FIREBASE_APP_ID=<firebase-app-id>
 ```
 
 ## 7. Deploy Frontend to Cloudflare Pages
@@ -106,7 +116,7 @@ pnpm dlx wrangler pages deploy apps/web/dist --project-name sea-of-checkboxes-we
 For each release:
 
 1. `pnpm typecheck && pnpm test`
-2. `pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc`
+2. `pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc --var FIREBASE_PROJECT_ID:<project-id>`
 3. Deploy `apps/web` to Pages (dashboard or CLI)
 4. Run post-deploy verification checks
 
@@ -122,6 +132,9 @@ Required GitHub repository secrets:
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 
+Required GitHub repository variables:
+- `VITE_FIREBASE_PROJECT_ID` (used for worker deploy and web build)
+
 Create `CLOUDFLARE_API_TOKEN` as a User API token scoped to this account with permissions for:
 - Workers Scripts (Edit)
 - Workers R2 Storage (Edit)
@@ -133,7 +146,7 @@ Create `CLOUDFLARE_API_TOKEN` as a User API token scoped to this account with pe
 The workflow deploy step runs:
 
 ```bash
-pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc
+pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc --var FIREBASE_PROJECT_ID:${VITE_FIREBASE_PROJECT_ID}
 ```
 
 ## 11. GitHub Actions Pages Deploy
@@ -151,6 +164,10 @@ Required GitHub repository secrets:
 Required GitHub repository variables:
 - `VITE_WS_URL` (example: `wss://sea-of-checkboxes-worker.<account-subdomain>.workers.dev/ws`)
 - `VITE_API_BASE_URL` (example: `https://sea-of-checkboxes-worker.<account-subdomain>.workers.dev`)
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_APP_ID`
 
 Optional GitHub repository variables:
 - `CLOUDFLARE_PAGES_PROJECT` (defaults to `sea-of-checkboxes-web`)

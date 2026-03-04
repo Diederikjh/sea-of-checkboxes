@@ -26,6 +26,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
 
     steps:
       - name: Checkout
@@ -49,5 +50,12 @@ jobs:
       - name: Test worker
         run: pnpm --filter @sea/worker test
 
+      - name: Validate Firebase project ID
+        run: |
+          if [ -z "${FIREBASE_PROJECT_ID}" ]; then
+            echo "Missing repo variable: VITE_FIREBASE_PROJECT_ID"
+            exit 1
+          fi
+
       - name: Deploy worker
-        run: pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc
+        run: pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc --var FIREBASE_PROJECT_ID:${FIREBASE_PROJECT_ID}

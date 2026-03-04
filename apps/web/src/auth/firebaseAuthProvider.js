@@ -59,6 +59,7 @@ async function loadFirebaseSdk() {
     GoogleAuthProvider: auth.GoogleAuthProvider,
     linkWithPopup: auth.linkWithPopup,
     signInWithPopup: auth.signInWithPopup,
+    signInWithCredential: auth.signInWithCredential,
     onAuthStateChanged: auth.onAuthStateChanged,
     unlink: auth.unlink,
     deleteUser: auth.deleteUser,
@@ -202,7 +203,18 @@ export function createFirebaseAuthIdentityProvider({
         }
         // If Google already belongs to another Firebase user, sign in as that user.
         if (code === "auth/credential-already-in-use") {
-          const signInResult = await sdk.signInWithPopup(auth, provider);
+          const googleCredential =
+            typeof sdk.GoogleAuthProvider?.credentialFromError === "function"
+              ? sdk.GoogleAuthProvider.credentialFromError(error)
+              : null;
+
+          let signInResult;
+          if (googleCredential && typeof sdk.signInWithCredential === "function") {
+            signInResult = await sdk.signInWithCredential(auth, googleCredential);
+          } else {
+            signInResult = await sdk.signInWithPopup(auth, provider);
+          }
+
           const signedInUser = signInResult?.user ?? auth.currentUser;
           if (!signedInUser) {
             throw new Error("Missing firebase user after google sign-in");

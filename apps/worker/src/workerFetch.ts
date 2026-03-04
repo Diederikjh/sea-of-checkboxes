@@ -159,11 +159,16 @@ async function handleAuthSessionRequest(request: Request, env: Env): Promise<Res
     })();
 
   if (!verifier) {
+    console.error("auth_session_verifier_not_configured", {
+      hasExternalVerifier: Boolean(env.EXTERNAL_IDENTITY_VERIFIER),
+      hasFirebaseProjectId: typeof env.FIREBASE_PROJECT_ID === "string" && env.FIREBASE_PROJECT_ID.trim().length > 0,
+    });
     return withAuthSessionCors(
       jsonResponse(
         {
           code: "auth_unavailable",
           msg: "Firebase verifier is not configured",
+          detail: "Set FIREBASE_PROJECT_ID on the worker environment",
         },
         { status: 503 }
       )

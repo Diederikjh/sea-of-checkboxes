@@ -38,6 +38,7 @@ describe("firebase auth identity provider", () => {
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn(),
         signInWithPopup: vi.fn(),
+        signInWithCredential: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn(),
         deleteUser: vi.fn(),
@@ -81,6 +82,7 @@ describe("firebase auth identity provider", () => {
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn(),
         signInWithPopup: vi.fn(),
+        signInWithCredential: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn(),
         deleteUser: vi.fn(),
@@ -118,6 +120,7 @@ describe("firebase auth identity provider", () => {
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn().mockRejectedValue({ code: "auth/provider-already-linked" }),
         signInWithPopup: vi.fn(),
+        signInWithCredential: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn(),
         deleteUser: vi.fn(),
@@ -153,6 +156,7 @@ describe("firebase auth identity provider", () => {
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn(),
         signInWithPopup: vi.fn(),
+        signInWithCredential: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn().mockRejectedValue({ code: "auth/no-such-provider" }),
         deleteUser: vi.fn(),
@@ -184,7 +188,12 @@ describe("firebase auth identity provider", () => {
       auth.currentUser = googleUser;
       return { user: googleUser };
     });
+    const signInWithCredential = vi.fn().mockImplementation(async () => {
+      auth.currentUser = googleUser;
+      return { user: googleUser };
+    });
     const deleteUser = vi.fn().mockResolvedValue(undefined);
+    const googleCredential = { providerId: "google.com" };
 
     const provider = createFirebaseAuthIdentityProvider({
       config: firebaseConfig(),
@@ -195,9 +204,14 @@ describe("firebase auth identity provider", () => {
         getAuth: vi.fn().mockReturnValue(auth),
         signInAnonymously: vi.fn(),
         getIdToken: vi.fn().mockResolvedValue("token"),
-        GoogleAuthProvider: class GoogleAuthProvider {},
+        GoogleAuthProvider: class GoogleAuthProvider {
+          static credentialFromError() {
+            return googleCredential;
+          }
+        },
         linkWithPopup: vi.fn().mockRejectedValue({ code: "auth/credential-already-in-use" }),
         signInWithPopup,
+        signInWithCredential,
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn(),
         deleteUser,
@@ -210,7 +224,8 @@ describe("firebase auth identity provider", () => {
       providerUserId: "firebase_google_user",
       isAnonymous: false,
     });
-    expect(signInWithPopup).toHaveBeenCalledTimes(1);
+    expect(signInWithCredential).toHaveBeenCalledWith(auth, googleCredential);
+    expect(signInWithPopup).not.toHaveBeenCalled();
     expect(deleteUser).toHaveBeenCalledWith(anonymousSourceUser);
   });
 });

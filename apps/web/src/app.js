@@ -560,34 +560,66 @@ export async function startApp() {
       setStatus("Network restored; reconnecting...");
     }
   };
+  let authTransitionInFlight = false;
+  const setAuthControlsDisabled = (disabled) => {
+    if (authGoogleSignInButtonEl) {
+      authGoogleSignInButtonEl.disabled = disabled;
+    }
+    if (authGoogleLogoutButtonEl) {
+      authGoogleLogoutButtonEl.disabled = disabled;
+    }
+  };
+
   const onGoogleSignInClick = async () => {
     if (!authIdentityProvider || !authSessionExchangeClient) {
       return;
     }
+    if (authTransitionInFlight) {
+      logOther("auth transition_ignored_in_flight", { action: "google_signin" });
+      return;
+    }
 
-    await signInWithGoogleSessionTransition({
-      identityProvider: authIdentityProvider,
-      sessionExchangeClient: authSessionExchangeClient,
-      readStoredIdentity,
-      writeStoredIdentity,
-      setStatus,
-      logOther,
-      errorLogger: console,
-    });
+    authTransitionInFlight = true;
+    setAuthControlsDisabled(true);
+    try {
+      await signInWithGoogleSessionTransition({
+        identityProvider: authIdentityProvider,
+        sessionExchangeClient: authSessionExchangeClient,
+        readStoredIdentity,
+        writeStoredIdentity,
+        setStatus,
+        logOther,
+        errorLogger: console,
+      });
+    } finally {
+      authTransitionInFlight = false;
+      setAuthControlsDisabled(false);
+    }
   };
   const onGoogleLogoutClick = async () => {
     if (!authIdentityProvider || !authSessionExchangeClient) {
       return;
     }
+    if (authTransitionInFlight) {
+      logOther("auth transition_ignored_in_flight", { action: "google_logout" });
+      return;
+    }
 
-    await signOutToAnonymousSessionTransition({
-      identityProvider: authIdentityProvider,
-      sessionExchangeClient: authSessionExchangeClient,
-      writeStoredIdentity,
-      setStatus,
-      logOther,
-      errorLogger: console,
-    });
+    authTransitionInFlight = true;
+    setAuthControlsDisabled(true);
+    try {
+      await signOutToAnonymousSessionTransition({
+        identityProvider: authIdentityProvider,
+        sessionExchangeClient: authSessionExchangeClient,
+        writeStoredIdentity,
+        setStatus,
+        logOther,
+        errorLogger: console,
+      });
+    } finally {
+      authTransitionInFlight = false;
+      setAuthControlsDisabled(false);
+    }
   };
   window.addEventListener("resize", onResize);
   window.addEventListener("focus", onWindowFocus);
