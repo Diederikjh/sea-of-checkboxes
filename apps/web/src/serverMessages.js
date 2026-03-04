@@ -99,6 +99,7 @@ export function createServerMessageHandler({
   cursors,
   selfIdentity,
   onVisualStateChanged = () => {},
+  onSpawnReceived = () => {},
   onTileCellsChanged = () => {},
   setInteractionRestriction = () => {},
   onIdentityReceived = () => {},
@@ -112,6 +113,13 @@ export function createServerMessageHandler({
       case "hello": {
         selfIdentity.uid = message.uid;
         onIdentityReceived({ uid: message.uid, name: message.name, token: message.token });
+        if (
+          message.spawn
+          && Number.isFinite(message.spawn.x)
+          && Number.isFinite(message.spawn.y)
+        ) {
+          onSpawnReceived(message.spawn);
+        }
         identityEl.textContent = `You are ${message.name} (${message.uid})`;
         onVisualStateChanged();
         break;

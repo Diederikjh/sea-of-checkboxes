@@ -6,6 +6,18 @@ import { parseServerMessage } from "../src";
 describe("server message schema matrix", () => {
   it("parses all server message variants", () => {
     expect(parseServerMessage({ t: "hello", uid: "u_a", name: "Alice", token: "tok_1" }).t).toBe("hello");
+    expect(
+      parseServerMessage({
+        t: "hello",
+        uid: "u_b",
+        name: "Bob",
+        token: "tok_2",
+        spawn: {
+          x: 12.5,
+          y: -8.5,
+        },
+      }).t
+    ).toBe("hello");
 
     expect(
       parseServerMessage({
@@ -159,6 +171,19 @@ describe("server message schema matrix", () => {
   });
 
   it("rejects invalid cursor and err payloads", () => {
+    expect(() =>
+      parseServerMessage({
+        t: "hello",
+        uid: "u_a",
+        name: "Alice",
+        token: "tok_1",
+        spawn: {
+          x: WORLD_MAX + 1,
+          y: 0,
+        },
+      })
+    ).toThrow();
+
     expect(() =>
       parseServerMessage({
         t: "curUp",

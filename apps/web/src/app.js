@@ -3,6 +3,7 @@ import {
   Graphics,
 } from "pixi.js";
 import {
+  clampCameraCenter,
   parseTileKeyStrict,
   worldFromTileCell,
 } from "@sea/domain";
@@ -458,6 +459,7 @@ export async function startApp() {
     setStatus,
     perfProbe,
   });
+  let hasAppliedServerSpawn = false;
 
   updateZoomReadout(camera, zoomEl);
 
@@ -471,6 +473,16 @@ export async function startApp() {
       cursors,
       selfIdentity,
       onVisualStateChanged: renderLoop.markVisualDirty,
+      onSpawnReceived: (spawn) => {
+        if (hasAppliedServerSpawn) {
+          return;
+        }
+        const clamped = clampCameraCenter(spawn.x, spawn.y);
+        camera.x = clamped.x;
+        camera.y = clamped.y;
+        hasAppliedServerSpawn = true;
+        renderLoop.markViewportDirty();
+      },
       onTileCellsChanged: renderLoop.markTileCellsDirty,
       setInteractionRestriction,
       onIdentityReceived: ({ uid, name, token }) => {

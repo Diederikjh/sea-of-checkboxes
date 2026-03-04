@@ -18,6 +18,35 @@ export interface CursorHubPublishRequest {
   updates: CursorPresence[];
 }
 
+export interface CursorHubRecordActivityRequest {
+  from: string;
+  x: number;
+  y: number;
+  atMs: number;
+}
+
+export interface CursorHubSpawnSampleResponse {
+  x: number;
+  y: number;
+  source: "edit" | "cursor";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isValidSpawnSampleResponse(value: unknown): value is CursorHubSpawnSampleResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<CursorHubSpawnSampleResponse>;
+  if (!isFiniteNumber(candidate.x) || !isFiniteNumber(candidate.y)) {
+    return false;
+  }
+  return candidate.source === "edit" || candidate.source === "cursor";
+}
+
 export class ConnectionShardCursorHubGateway {
   #namespace: DurableObjectNamespaceLike;
   #hubName: string;
@@ -70,5 +99,32 @@ export class ConnectionShardCursorHubGateway {
         updates,
       } satisfies CursorHubPublishRequest),
     });
+  }
+
+  async publishRecentEdit(params: CursorHubRecordActivityRequest): Promise<void> {
+    await this.#namespace.getByName(this.#hubName).fetch("https://cursor-hub.internal/activity", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(params),
+    });
+  }
+
+  async sampleSpawnPoint(): Promise<CursorHubSpawnSampleResponse | null> {
+    const response = await this.#namespace.getByName(this.#hubName).fetch("https://cursor-hub.internal/spawn-sample", {
+      method: "GET",
+    });
+
+    if (!response.ok || response.status === 204) {
+      return null;
+    }
+
+    const payload = await readJson<CursorHubSpawnSampleResponse>(response);
+    if (!payload || !isValidSpawnSampleResponse(payload)) {
+      return null;
+    }
+
+    return payload;
   }
 }

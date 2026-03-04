@@ -67,6 +67,34 @@ async function postPublish(
   );
 }
 
+async function postActivity(
+  hub: CursorHubDO,
+  payload: {
+    from: string;
+    x: number;
+    y: number;
+    atMs: number;
+  }
+): Promise<Response> {
+  return hub.fetch(
+    new Request("https://cursor-hub.internal/activity", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+  );
+}
+
+async function getSpawnSample(hub: CursorHubDO): Promise<Response> {
+  return hub.fetch(
+    new Request("https://cursor-hub.internal/spawn-sample", {
+      method: "GET",
+    })
+  );
+}
+
 describe("CursorHubDO", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -365,6 +393,62 @@ describe("CursorHubDO", () => {
           tileKey: "0:0",
         },
       ],
+    });
+  });
+
+  it("returns 204 from spawn-sample when no recent activity exists", async () => {
+    const harness = createHarness();
+    const response = await getSpawnSample(harness.hub);
+    expect(response.status).toBe(204);
+  });
+
+  it("samples spawn near recent edit activity and tags source as edit", async () => {
+    const harness = createHarness();
+    const atMs = Date.now();
+    const response = await postActivity(harness.hub, {
+      from: "shard-a",
+      x: 100.5,
+      y: -42.5,
+      atMs,
+    });
+    expect(response.status).toBe(204);
+
+    const sampleResponse = await getSpawnSample(harness.hub);
+    expect(sampleResponse.status).toBe(200);
+    const sample = (await sampleResponse.json()) as {
+      x: number;
+      y: number;
+      source: "edit" | "cursor";
+    };
+    expect(sample.source).toBe("edit");
+    const dx = sample.x - 100.5;
+    const dy = sample.y - (-42.5);
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    expect(distance).toBeGreaterThanOrEqual(2);
+    expect(distance).toBeLessThanOrEqual(20);
+  });
+
+  it("falls back to cursor activity for spawn sampling when edits are absent", async () => {
+    const harness = createHarness();
+    await postWatch(harness.hub, "shard-a", "sub");
+    await postPublish(harness.hub, "shard-a", [
+      {
+        uid: "u_a",
+        name: "Alice",
+        x: 3.5,
+        y: 4.5,
+        seenAt: Date.now(),
+        seq: 1,
+        tileKey: "0:0",
+      },
+    ]);
+
+    const response = await getSpawnSample(harness.hub);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      x: expect.any(Number),
+      y: expect.any(Number),
+      source: "cursor",
     });
   });
 });

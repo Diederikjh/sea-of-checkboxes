@@ -33,6 +33,7 @@ function createHarness({
   const selfIdentity = { uid: null };
   const onVisualStateChanged = vi.fn();
   const onIdentityReceived = vi.fn();
+  const onSpawnReceived = vi.fn();
 
   const handler = createServerMessageHandler({
     identityEl,
@@ -44,6 +45,7 @@ function createHarness({
     cursors,
     selfIdentity,
     onVisualStateChanged,
+    onSpawnReceived,
     onIdentityReceived,
     getPendingSetCellOpsForTile,
     dropPendingSetCellOpsForTile,
@@ -60,6 +62,7 @@ function createHarness({
     cursors,
     selfIdentity,
     onVisualStateChanged,
+    onSpawnReceived,
     onIdentityReceived,
   };
 }
@@ -78,6 +81,26 @@ describe("server message handling", () => {
     });
     expect(harness.identityEl.textContent).toContain("u_self");
     expect(harness.onVisualStateChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes spawn payload from hello to callback", () => {
+    const harness = createHarness();
+
+    harness.handler({
+      t: "hello",
+      uid: "u_self",
+      name: "Alice",
+      token: "tok_abc",
+      spawn: {
+        x: 64.5,
+        y: -32.5,
+      },
+    });
+
+    expect(harness.onSpawnReceived).toHaveBeenCalledWith({
+      x: 64.5,
+      y: -32.5,
+    });
   });
 
   it("handles tileSnap and decodes bits", () => {

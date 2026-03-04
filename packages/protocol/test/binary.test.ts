@@ -24,6 +24,21 @@ describe("binary protocol codec", () => {
     expect(decoded).toEqual(message);
   });
 
+  it("roundtrips hello payloads with spawn", () => {
+    const message: ServerMessage = {
+      t: "hello",
+      uid: "u_abc",
+      name: "Alice",
+      token: "tok_abc",
+      spawn: {
+        x: 42.5,
+        y: -17.25,
+      },
+    };
+    const decoded = decodeServerMessageBinary(encodeServerMessageBinary(message));
+    expect(decoded).toEqual(message);
+  });
+
   it("roundtrips all client message variants", () => {
     const messages: ClientMessage[] = [
       { t: "sub", tiles: ["0:0", "-4:9"] },

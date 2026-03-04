@@ -310,6 +310,35 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(harness.upgradeResponseFactory.clientSockets.length).toBe(1);
   });
 
+  it("includes spawn in hello when cursor hub returns a spawn sample", async () => {
+    const harness = createHarness();
+    const hub = harness.cursorHub.getByName("global");
+    hub.setJsonPathResponse("/spawn-sample", {
+      x: 320.5,
+      y: -160.5,
+      source: "edit",
+    });
+
+    const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_spawn",
+      name: "Spawned",
+      shard: "shard-a",
+    });
+
+    const messages = decodeMessages(serverSocket);
+    expect(messages.length).toBe(1);
+    expect(messages[0]).toEqual({
+      t: "hello",
+      uid: "u_spawn",
+      name: "Spawned",
+      token: "test-token",
+      spawn: {
+        x: 320.5,
+        y: -160.5,
+      },
+    });
+  });
+
   it("subscribes tiles, registers watch, and returns snapshots", async () => {
     const harness = createHarness();
     const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {
@@ -362,6 +391,54 @@ describe("ConnectionShardDO websocket handling", () => {
 
     const tileStub = harness.tileOwners.getByName("0:0");
     expect(tileStub.setCellRequests.length).toBe(0);
+  });
+
+  it("publishes accepted edit activity to cursor hub for spawn sampling", async () => {
+    const harness = createHarness();
+    const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    serverSocket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const tileStub = harness.tileOwners.getByName("0:0");
+      expect(tileStub.watchRequests.length).toBe(1);
+    });
+
+    serverSocket.emitMessage(
+      encodeClientMessageBinary({
+        t: "setCell",
+        tile: "0:0",
+        i: 65,
+        v: 1,
+        op: "op_spawn_activity",
+      })
+    );
+
+    await waitFor(() => {
+      const hub = harness.cursorHub.getByName("global");
+      expect(
+        hub.requests.some(
+          (entry) =>
+            entry.request.method.toUpperCase() === "POST"
+            && new URL(entry.request.url).pathname === "/activity"
+        )
+      ).toBe(true);
+    });
+
+    const hub = harness.cursorHub.getByName("global");
+    const activityRequest = hub.requests.find((entry) => new URL(entry.request.url).pathname === "/activity");
+    expect(activityRequest).toBeDefined();
+    expect(activityRequest?.request.method.toUpperCase()).toBe("POST");
+    const body = activityRequest?.body ? (JSON.parse(activityRequest.body) as Record<string, unknown>) : {};
+    expect(body).toMatchObject({
+      from: "shard-a",
+      x: 1.5,
+      y: 1.5,
+    });
+    expect(typeof body.atMs).toBe("number");
   });
 
   it("locally fans out setCell updates when a tile has a single watcher shard", async () => {

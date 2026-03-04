@@ -86,6 +86,13 @@ export const helloMessageSchema = strictTaggedMessage("hello", {
   uid: z.string().min(1),
   name: z.string().min(1),
   token: z.string().min(1),
+  spawn: z
+    .object({
+      x: boundedWorldNumberSchema,
+      y: boundedWorldNumberSchema,
+    })
+    .strict()
+    .optional(),
 });
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */

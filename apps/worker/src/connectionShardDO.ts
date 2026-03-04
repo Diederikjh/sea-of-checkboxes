@@ -1,4 +1,8 @@
 import {
+  parseTileKeyStrict,
+  worldFromTileCell,
+} from "@sea/domain";
+import {
   CLIENT_BINARY_TAG,
   decodeClientMessageBinary,
   encodeServerMessageBinary,
@@ -89,6 +93,7 @@ export class ConnectionShardDO {
   #cursorPullTimer: ReturnType<typeof setTimeout> | null;
   #cursorStateIngressDepth: number;
   #cursorHubPublishSuppressedUntilMs: number;
+  #cursorHubGateway: ConnectionShardCursorHubGateway | null;
   #cursorHubController: ConnectionShardCursorHubController;
 
   constructor(
@@ -121,6 +126,7 @@ export class ConnectionShardDO {
           hubName: CURSOR_HUB_NAME,
         })
       : null;
+    this.#cursorHubGateway = cursorHubGateway;
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
@@ -347,7 +353,12 @@ export class ConnectionShardDO {
       uid: identity.uid,
       clients_connected: this.#clients.size,
     });
-    this.#sendServerMessage(client, { t: "hello", ...identity });
+    const spawn = await this.#resolveHelloSpawn();
+    this.#sendServerMessage(client, {
+      t: "hello",
+      ...identity,
+      ...(spawn ? { spawn } : {}),
+    });
     this.#cursorCoordinator.onClientConnected(client);
     this.#refreshCursorPullSchedule();
     this.#refreshCursorHubWatchState();
@@ -496,6 +507,7 @@ export class ConnectionShardDO {
               toVer: setCellResult.ver,
               ops: [[message.i, message.v]],
             });
+            this.#recordRecentEditActivity(message.tile, message.i);
           }
           this.#cursorCoordinator.onActivity();
           return;
@@ -832,6 +844,58 @@ export class ConnectionShardDO {
       ...(name ? { error_name: name } : {}),
       ...(message ? { error_message: message } : {}),
     };
+  }
+
+  async #resolveHelloSpawn(): Promise<{ x: number; y: number } | null> {
+    if (!this.#cursorHubGateway) {
+      return null;
+    }
+
+    try {
+      const sample = await this.#cursorHubGateway.sampleSpawnPoint();
+      if (!sample || !Number.isFinite(sample.x) || !Number.isFinite(sample.y)) {
+        return null;
+      }
+      return {
+        x: sample.x,
+        y: sample.y,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  #recordRecentEditActivity(tileKey: string, index: number): void {
+    if (!this.#cursorHubGateway) {
+      return;
+    }
+
+    const parsed = parseTileKeyStrict(tileKey);
+    if (!parsed) {
+      return;
+    }
+
+    let world;
+    try {
+      world = worldFromTileCell(parsed.tx, parsed.ty, index);
+    } catch {
+      return;
+    }
+
+    const x = world.x + 0.5;
+    const y = world.y + 0.5;
+    this.#deferDetachedTask(async () => {
+      try {
+        await this.#cursorHubGateway?.publishRecentEdit({
+          from: this.#currentShardName(),
+          x,
+          y,
+          atMs: this.#nowMs(),
+        });
+      } catch {
+        // Spawn activity publication is best-effort.
+      }
+    });
   }
 
   #operationsContext(): ConnectionShardDOOperationsContext {

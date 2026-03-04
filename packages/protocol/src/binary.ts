@@ -233,6 +233,10 @@ class BinaryReader {
     return tileKeyFromTileCoord(tx, ty);
   }
 
+  remainingBytes(): number {
+    return this.#bytes.length - this.#offset;
+  }
+
   ensureFullyRead(): void {
     if (this.#offset !== this.#bytes.length) {
       throw new Error(`Trailing bytes in payload: ${this.#bytes.length - this.#offset}`);
@@ -371,6 +375,13 @@ export function encodeServerMessageBinary(message: ServerMessage): Uint8Array {
       writer.writeString(message.uid);
       writer.writeString(message.name);
       writer.writeString(message.token);
+      if (message.spawn) {
+        writer.writeU8(1);
+        writer.writeF32(message.spawn.x);
+        writer.writeF32(message.spawn.y);
+      } else {
+        writer.writeU8(0);
+      }
       break;
     case "tileSnap": {
       if (message.enc !== TILE_ENCODING) {
@@ -437,6 +448,20 @@ export function decodeServerMessageBinary(payload: Uint8Array): ServerMessage {
         name: reader.readString(),
         token: reader.readString(),
       };
+      if (reader.remainingBytes() > 0) {
+        const hasSpawn = reader.readU8();
+        if (hasSpawn === 1) {
+          decoded = {
+            ...decoded,
+            spawn: {
+              x: reader.readF32(),
+              y: reader.readF32(),
+            },
+          };
+        } else if (hasSpawn !== 0) {
+          throw new Error(`Invalid hello spawn marker: ${hasSpawn}`);
+        }
+      }
       break;
     case SERVER_TAG.tileSnap:
       decoded = {
