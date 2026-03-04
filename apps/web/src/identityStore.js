@@ -1,7 +1,8 @@
 import { normalizeIdentity } from "@sea/domain";
 
-const STORAGE_KEY = "sea.identity.v2";
-const ANONYMOUS_STORAGE_KEY = "sea.identity.anon.v1";
+const AUTH_STATE_STORAGE_KEY = "sea.auth-state.v1";
+const LEGACY_IDENTITY_STORAGE_KEY = "sea.identity.v2";
+const LEGACY_ANONYMOUS_STORAGE_KEY = "sea.identity.anon.v1";
 const MAX_TOKEN_LENGTH = 2_048;
 
 function defaultStorage() {
@@ -30,66 +31,139 @@ export function normalizeStoredIdentity(value) {
 }
 
 export function readStoredIdentity({ storage = defaultStorage() } = {}) {
-  return readStoredIdentityByKey(STORAGE_KEY, { storage });
+  return readAuthState({ storage }).active;
 }
 
 export function writeStoredIdentity(identity, { storage = defaultStorage() } = {}) {
-  return writeStoredIdentityByKey(STORAGE_KEY, identity, { storage });
-}
-
-export function readStoredAnonymousIdentity({ storage = defaultStorage() } = {}) {
-  return readStoredIdentityByKey(ANONYMOUS_STORAGE_KEY, { storage });
-}
-
-export function writeStoredAnonymousIdentity(identity, { storage = defaultStorage() } = {}) {
-  return writeStoredIdentityByKey(ANONYMOUS_STORAGE_KEY, identity, { storage });
-}
-
-export function clearStoredAnonymousIdentity({ storage = defaultStorage() } = {}) {
-  if (!storage || typeof storage.removeItem !== "function") {
-    return false;
-  }
-
-  try {
-    storage.removeItem(ANONYMOUS_STORAGE_KEY);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function readStoredIdentityByKey(key, { storage = defaultStorage() } = {}) {
-  if (!storage) {
-    return null;
-  }
-
-  try {
-    const raw = storage.getItem(key);
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw);
-    return normalizeStoredIdentity(parsed);
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredIdentityByKey(key, identity, { storage = defaultStorage() } = {}) {
-  if (!storage) {
-    return false;
-  }
-
   const normalized = normalizeStoredIdentity(identity);
   if (!normalized) {
     return false;
   }
 
+  const state = readAuthState({ storage });
+  return writeAuthState({
+    active: normalized,
+    anonymousBackup: state.anonymousBackup,
+  }, { storage });
+}
+
+export function readStoredAnonymousIdentity({ storage = defaultStorage() } = {}) {
+  return readAuthState({ storage }).anonymousBackup;
+}
+
+export function writeStoredAnonymousIdentity(identity, { storage = defaultStorage() } = {}) {
+  const normalized = normalizeStoredIdentity(identity);
+  if (!normalized) {
+    return false;
+  }
+
+  const state = readAuthState({ storage });
+  return writeAuthState({
+    active: state.active,
+    anonymousBackup: normalized,
+  }, { storage });
+}
+
+export function clearStoredAnonymousIdentity({ storage = defaultStorage() } = {}) {
+  if (!storage) {
+    return false;
+  }
+
+  const state = readAuthState({ storage });
+  return writeAuthState({
+    active: state.active,
+    anonymousBackup: null,
+  }, { storage });
+}
+
+function readAuthState({ storage = defaultStorage() } = {}) {
+  if (!storage) {
+    return {
+      active: null,
+      anonymousBackup: null,
+    };
+  }
+
+  const storedState = normalizeAuthState(readJsonValue(storage, AUTH_STATE_STORAGE_KEY));
+  if (storedState) {
+    return storedState;
+  }
+
+  const legacyActive = normalizeStoredIdentity(readJsonValue(storage, LEGACY_IDENTITY_STORAGE_KEY));
+  const legacyAnonymous = normalizeStoredIdentity(readJsonValue(storage, LEGACY_ANONYMOUS_STORAGE_KEY));
+
+  return {
+    active: legacyActive,
+    anonymousBackup: legacyAnonymous,
+  };
+}
+
+function normalizeAuthState(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const active = normalizeStoredIdentity(value.active);
+  const anonymousBackup = normalizeStoredIdentity(value.anonymousBackup);
+  return {
+    active,
+    anonymousBackup,
+  };
+}
+
+function readJsonValue(storage, key) {
+  if (!storage) {
+    return null;
+  }
+
+  let raw = null;
   try {
-    storage.setItem(key, JSON.stringify(normalized));
-    return true;
+    raw = storage.getItem(key);
+  } catch {
+    return null;
+  }
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function writeAuthState(state, { storage = defaultStorage() } = {}) {
+  if (!storage) {
+    return false;
+  }
+
+  const normalized = normalizeAuthState(state) ?? {
+    active: null,
+    anonymousBackup: null,
+  };
+
+  try {
+    storage.setItem(
+      AUTH_STATE_STORAGE_KEY,
+      JSON.stringify({
+        active: normalized.active,
+        anonymousBackup: normalized.anonymousBackup,
+      })
+    );
   } catch {
     return false;
   }
+
+  if (typeof storage.removeItem === "function") {
+    try {
+      storage.removeItem(LEGACY_IDENTITY_STORAGE_KEY);
+      storage.removeItem(LEGACY_ANONYMOUS_STORAGE_KEY);
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+
+  return true;
 }

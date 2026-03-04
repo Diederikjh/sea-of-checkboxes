@@ -22,8 +22,7 @@ export function getRequiredElements() {
   const inspectToggleEl = queryRequiredElement("#inspect-mode-toggle");
   const inspectLabelEl = queryRequiredElement("#inspect-mode-label");
   const editInfoPopupEl = queryRequiredElement("#edit-info-popup");
-  const authGoogleUpgradeButtonEl = document.querySelector("#auth-google-upgrade");
-  const authGoogleUnlinkButtonEl = document.querySelector("#auth-google-unlink");
+  const authGoogleSignInButtonEl = document.querySelector("#auth-google-signin");
   const authGoogleLogoutButtonEl = document.querySelector("#auth-google-logout");
 
   return {
@@ -38,8 +37,7 @@ export function getRequiredElements() {
     inspectToggleEl,
     inspectLabelEl,
     editInfoPopupEl,
-    authGoogleUpgradeButtonEl,
-    authGoogleUnlinkButtonEl,
+    authGoogleSignInButtonEl,
     authGoogleLogoutButtonEl,
   };
 }

@@ -14,11 +14,11 @@ import {
 import { createCamera } from "./camera";
 import { createCursorLabels } from "./cursorLabels";
 import { applyBranding, getRequiredElements, updateZoomReadout } from "./dom";
+import { bootstrapAuthSession } from "./auth/bootstrap";
 import {
-  bootstrapAuthSession,
-  removeGoogleLinkFromSession,
-  upgradeAuthSessionWithGoogle,
-} from "./auth/bootstrap";
+  signInWithGoogleSessionTransition,
+  signOutToAnonymousSessionTransition,
+} from "./auth/sessionSwitcher";
 import {
   createFirebaseAuthIdentityProvider,
   resolveFirebaseConfigFromEnv,
@@ -29,8 +29,8 @@ import { setupInputHandlers } from "./inputHandlers";
 import {
   readStoredAnonymousIdentity,
   readStoredIdentity,
-  writeStoredAnonymousIdentity,
   writeStoredIdentity,
+  writeStoredAnonymousIdentity,
 } from "./identityStore";
 import { logger } from "./logger";
 import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
@@ -165,8 +165,7 @@ export async function startApp() {
     inspectToggleEl,
     inspectLabelEl,
     editInfoPopupEl,
-    authGoogleUpgradeButtonEl,
-    authGoogleUnlinkButtonEl,
+    authGoogleSignInButtonEl,
     authGoogleLogoutButtonEl,
   } = getRequiredElements();
 
@@ -229,11 +228,8 @@ export async function startApp() {
     }
   }
 
-  if (authGoogleUpgradeButtonEl) {
-    authGoogleUpgradeButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
-  }
-  if (authGoogleUnlinkButtonEl) {
-    authGoogleUnlinkButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
+  if (authGoogleSignInButtonEl) {
+    authGoogleSignInButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
   }
   if (authGoogleLogoutButtonEl) {
     authGoogleLogoutButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
@@ -566,117 +562,46 @@ export async function startApp() {
       setStatus("Network restored; reconnecting...");
     }
   };
-  const reloadForIdentityChange = () => {
-    if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
-      window.location.reload();
-    }
-  };
-  const onGoogleUpgradeClick = async () => {
+  const onGoogleSignInClick = async () => {
     if (!authIdentityProvider || !authSessionExchangeClient) {
       return;
     }
 
-    try {
-      const principalBefore = await authIdentityProvider.initAnonymousSession();
-      const existingAnonymousIdentity = readStoredAnonymousIdentity();
-      const currentIdentity = readStoredIdentity();
-      if (!existingAnonymousIdentity && principalBefore.isAnonymous && currentIdentity) {
-        writeStoredAnonymousIdentity(currentIdentity);
-      }
-
-      setStatus("Signing in with Google...");
-      await upgradeAuthSessionWithGoogle({
-        identityProvider: authIdentityProvider,
-        sessionExchangeClient: authSessionExchangeClient,
-        readStoredIdentity,
-        writeStoredIdentity,
-      });
-      setStatus("Signed in with Google. Reloading...");
-      reloadForIdentityChange();
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logOther("auth google_link_failed", {
-        error: errorMessage,
-      });
-      console.error("auth google_link_failed", { error: errorMessage });
-      setStatus(`Google sign-in failed. ${errorMessage}`);
-    }
-  };
-  const onGoogleUnlinkClick = async () => {
-    if (!authIdentityProvider || !authSessionExchangeClient) {
-      return;
-    }
-
-    try {
-      setStatus("Removing Google account link...");
-      await removeGoogleLinkFromSession({
-        identityProvider: authIdentityProvider,
-        sessionExchangeClient: authSessionExchangeClient,
-        readStoredIdentity,
-        writeStoredIdentity,
-      });
-      setStatus("Google account link removed.");
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logOther("auth google_unlink_failed", {
-        error: errorMessage,
-      });
-      console.error("auth google_unlink_failed", { error: errorMessage });
-      setStatus(`Google unlink failed. ${errorMessage}`);
-    }
+    await signInWithGoogleSessionTransition({
+      identityProvider: authIdentityProvider,
+      sessionExchangeClient: authSessionExchangeClient,
+      readStoredIdentity,
+      writeStoredIdentity,
+      readStoredAnonymousIdentity,
+      writeStoredAnonymousIdentity,
+      setStatus,
+      logOther,
+      errorLogger: console,
+    });
   };
   const onGoogleLogoutClick = async () => {
     if (!authIdentityProvider || !authSessionExchangeClient) {
       return;
     }
 
-    try {
-      setStatus("Signing out...");
-      const anonymousIdentity = readStoredAnonymousIdentity();
-      await authIdentityProvider.signOut();
-      await authIdentityProvider.initAnonymousSession();
-
-      if (anonymousIdentity) {
-        writeStoredIdentity(anonymousIdentity);
-        setStatus("Signed out. Restoring anonymous session...");
-        reloadForIdentityChange();
-        return;
-      }
-
-      const bootstrap = await bootstrapAuthSession({
-        identityProvider: authIdentityProvider,
-        sessionExchangeClient: authSessionExchangeClient,
-        readStoredIdentity: () => null,
-        writeStoredIdentity,
-        allowLegacyFallback: false,
-        forceRefresh: true,
-      });
-      writeStoredAnonymousIdentity({
-        uid: bootstrap.session.uid,
-        name: bootstrap.session.name,
-        token: bootstrap.session.token,
-      });
-      setStatus("Signed out. New anonymous session ready.");
-      reloadForIdentityChange();
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logOther("auth google_logout_failed", {
-        error: errorMessage,
-      });
-      console.error("auth google_logout_failed", { error: errorMessage });
-      setStatus(`Google logout failed. ${errorMessage}`);
-    }
+    await signOutToAnonymousSessionTransition({
+      identityProvider: authIdentityProvider,
+      sessionExchangeClient: authSessionExchangeClient,
+      writeStoredIdentity,
+      readStoredAnonymousIdentity,
+      writeStoredAnonymousIdentity,
+      setStatus,
+      logOther,
+      errorLogger: console,
+    });
   };
   window.addEventListener("resize", onResize);
   window.addEventListener("focus", onWindowFocus);
   window.addEventListener("pageshow", onPageShow);
   window.addEventListener("offline", onBrowserOffline);
   window.addEventListener("online", onBrowserOnline);
-  if (authGoogleUpgradeButtonEl) {
-    authGoogleUpgradeButtonEl.addEventListener("click", onGoogleUpgradeClick);
-  }
-  if (authGoogleUnlinkButtonEl) {
-    authGoogleUnlinkButtonEl.addEventListener("click", onGoogleUnlinkClick);
+  if (authGoogleSignInButtonEl) {
+    authGoogleSignInButtonEl.addEventListener("click", onGoogleSignInClick);
   }
   if (authGoogleLogoutButtonEl) {
     authGoogleLogoutButtonEl.addEventListener("click", onGoogleLogoutClick);
@@ -691,11 +616,8 @@ export async function startApp() {
     window.removeEventListener("pageshow", onPageShow);
     window.removeEventListener("offline", onBrowserOffline);
     window.removeEventListener("online", onBrowserOnline);
-    if (authGoogleUpgradeButtonEl) {
-      authGoogleUpgradeButtonEl.removeEventListener("click", onGoogleUpgradeClick);
-    }
-    if (authGoogleUnlinkButtonEl) {
-      authGoogleUnlinkButtonEl.removeEventListener("click", onGoogleUnlinkClick);
+    if (authGoogleSignInButtonEl) {
+      authGoogleSignInButtonEl.removeEventListener("click", onGoogleSignInClick);
     }
     if (authGoogleLogoutButtonEl) {
       authGoogleLogoutButtonEl.removeEventListener("click", onGoogleLogoutClick);

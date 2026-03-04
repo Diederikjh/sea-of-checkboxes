@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   bootstrapAuthSession,
   removeGoogleLinkFromSession,
-  upgradeAuthSessionWithGoogle,
+  signInWithGoogleSession,
 } from "../src/auth/bootstrap";
 
 describe("auth bootstrap orchestration", () => {
@@ -81,7 +81,7 @@ describe("auth bootstrap orchestration", () => {
     expect(result.session.uid).toBe("u_new123");
   });
 
-  it("preserves uid across google upgrade", async () => {
+  it("preserves uid across google sign-in", async () => {
     const identityProvider = {
       initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_3", isAnonymous: true }),
       getAssertionToken: vi.fn().mockResolvedValue("firebase-id-token-google"),
@@ -97,7 +97,7 @@ describe("auth bootstrap orchestration", () => {
       migration: "none",
     });
 
-    const result = await upgradeAuthSessionWithGoogle({
+    const result = await signInWithGoogleSession({
       identityProvider,
       sessionExchangeClient: { exchange },
       readStoredIdentity: () => ({ uid: "u_saved123", name: "BriskOtter001", token: "tok_old" }),
@@ -183,7 +183,7 @@ describe("auth bootstrap orchestration", () => {
     };
 
     await expect(
-      upgradeAuthSessionWithGoogle({
+      signInWithGoogleSession({
         identityProvider,
         sessionExchangeClient: {
           exchange: vi.fn().mockRejectedValue(exchangeError),

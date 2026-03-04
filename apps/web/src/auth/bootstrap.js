@@ -74,7 +74,7 @@ export async function bootstrapAuthSession({
   }
 }
 
-export async function upgradeAuthSessionWithGoogle({
+export async function signInWithGoogleSession({
   identityProvider,
   sessionExchangeClient,
   readStoredIdentity,
