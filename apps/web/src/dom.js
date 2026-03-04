@@ -24,6 +24,7 @@ export function getRequiredElements() {
   const editInfoPopupEl = queryRequiredElement("#edit-info-popup");
   const authGoogleUpgradeButtonEl = document.querySelector("#auth-google-upgrade");
   const authGoogleUnlinkButtonEl = document.querySelector("#auth-google-unlink");
+  const authGoogleLogoutButtonEl = document.querySelector("#auth-google-logout");
 
   return {
     canvas,
@@ -39,6 +40,7 @@ export function getRequiredElements() {
     editInfoPopupEl,
     authGoogleUpgradeButtonEl,
     authGoogleUnlinkButtonEl,
+    authGoogleLogoutButtonEl,
   };
 }
 

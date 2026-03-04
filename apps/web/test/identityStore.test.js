@@ -5,7 +5,14 @@ import {
   vi,
 } from "vitest";
 
-import { normalizeStoredIdentity, readStoredIdentity, writeStoredIdentity } from "../src/identityStore";
+import {
+  clearStoredAnonymousIdentity,
+  normalizeStoredIdentity,
+  readStoredAnonymousIdentity,
+  readStoredIdentity,
+  writeStoredIdentity,
+  writeStoredAnonymousIdentity,
+} from "../src/identityStore";
 
 function createStorage(initial = {}) {
   const data = new Map(Object.entries(initial));
@@ -15,6 +22,9 @@ function createStorage(initial = {}) {
     },
     setItem(key, value) {
       data.set(key, value);
+    },
+    removeItem(key) {
+      data.delete(key);
     },
   };
 }
@@ -117,5 +127,21 @@ describe("identity storage", () => {
       token: "tok_session",
     });
     vi.unstubAllGlobals();
+  });
+
+  it("stores and clears anonymous identity snapshot separately", () => {
+    const storage = createStorage();
+    const primaryIdentity = { uid: "u_primary", name: "BriskOtter481", token: "tok_primary" };
+    const anonymousIdentity = { uid: "u_guest", name: "MintStoat111", token: "tok_guest" };
+
+    expect(writeStoredIdentity(primaryIdentity, { storage })).toBe(true);
+    expect(writeStoredAnonymousIdentity(anonymousIdentity, { storage })).toBe(true);
+
+    expect(readStoredIdentity({ storage })).toEqual(primaryIdentity);
+    expect(readStoredAnonymousIdentity({ storage })).toEqual(anonymousIdentity);
+
+    expect(clearStoredAnonymousIdentity({ storage })).toBe(true);
+    expect(readStoredAnonymousIdentity({ storage })).toBeNull();
+    expect(readStoredIdentity({ storage })).toEqual(primaryIdentity);
   });
 });

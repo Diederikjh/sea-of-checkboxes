@@ -1,6 +1,7 @@
 import { normalizeIdentity } from "@sea/domain";
 
 const STORAGE_KEY = "sea.identity.v2";
+const ANONYMOUS_STORAGE_KEY = "sea.identity.anon.v1";
 const MAX_TOKEN_LENGTH = 2_048;
 
 function defaultStorage() {
@@ -29,12 +30,41 @@ export function normalizeStoredIdentity(value) {
 }
 
 export function readStoredIdentity({ storage = defaultStorage() } = {}) {
+  return readStoredIdentityByKey(STORAGE_KEY, { storage });
+}
+
+export function writeStoredIdentity(identity, { storage = defaultStorage() } = {}) {
+  return writeStoredIdentityByKey(STORAGE_KEY, identity, { storage });
+}
+
+export function readStoredAnonymousIdentity({ storage = defaultStorage() } = {}) {
+  return readStoredIdentityByKey(ANONYMOUS_STORAGE_KEY, { storage });
+}
+
+export function writeStoredAnonymousIdentity(identity, { storage = defaultStorage() } = {}) {
+  return writeStoredIdentityByKey(ANONYMOUS_STORAGE_KEY, identity, { storage });
+}
+
+export function clearStoredAnonymousIdentity({ storage = defaultStorage() } = {}) {
+  if (!storage || typeof storage.removeItem !== "function") {
+    return false;
+  }
+
+  try {
+    storage.removeItem(ANONYMOUS_STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readStoredIdentityByKey(key, { storage = defaultStorage() } = {}) {
   if (!storage) {
     return null;
   }
 
   try {
-    const raw = storage.getItem(STORAGE_KEY);
+    const raw = storage.getItem(key);
     if (!raw) {
       return null;
     }
@@ -46,7 +76,7 @@ export function readStoredIdentity({ storage = defaultStorage() } = {}) {
   }
 }
 
-export function writeStoredIdentity(identity, { storage = defaultStorage() } = {}) {
+function writeStoredIdentityByKey(key, identity, { storage = defaultStorage() } = {}) {
   if (!storage) {
     return false;
   }
@@ -57,7 +87,7 @@ export function writeStoredIdentity(identity, { storage = defaultStorage() } = {
   }
 
   try {
-    storage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    storage.setItem(key, JSON.stringify(normalized));
     return true;
   } catch {
     return false;

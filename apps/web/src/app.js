@@ -26,7 +26,12 @@ import {
 import { createAuthSessionExchangeClient } from "./auth/sessionExchangeClient";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
-import { readStoredIdentity, writeStoredIdentity } from "./identityStore";
+import {
+  readStoredAnonymousIdentity,
+  readStoredIdentity,
+  writeStoredAnonymousIdentity,
+  writeStoredIdentity,
+} from "./identityStore";
 import { logger } from "./logger";
 import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
 import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
@@ -162,6 +167,7 @@ export async function startApp() {
     editInfoPopupEl,
     authGoogleUpgradeButtonEl,
     authGoogleUnlinkButtonEl,
+    authGoogleLogoutButtonEl,
   } = getRequiredElements();
 
   applyBranding(titleEl);
@@ -228,6 +234,9 @@ export async function startApp() {
   }
   if (authGoogleUnlinkButtonEl) {
     authGoogleUnlinkButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
+  }
+  if (authGoogleLogoutButtonEl) {
+    authGoogleLogoutButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
   }
   const perfProbe = createPerfProbe({
     enabled: isPerfProbeEnabled(),
@@ -557,27 +566,40 @@ export async function startApp() {
       setStatus("Network restored; reconnecting...");
     }
   };
+  const reloadForIdentityChange = () => {
+    if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
+      window.location.reload();
+    }
+  };
   const onGoogleUpgradeClick = async () => {
     if (!authIdentityProvider || !authSessionExchangeClient) {
       return;
     }
 
     try {
-      setStatus("Linking Google account...");
+      const principalBefore = await authIdentityProvider.initAnonymousSession();
+      const existingAnonymousIdentity = readStoredAnonymousIdentity();
+      const currentIdentity = readStoredIdentity();
+      if (!existingAnonymousIdentity && principalBefore.isAnonymous && currentIdentity) {
+        writeStoredAnonymousIdentity(currentIdentity);
+      }
+
+      setStatus("Signing in with Google...");
       await upgradeAuthSessionWithGoogle({
         identityProvider: authIdentityProvider,
         sessionExchangeClient: authSessionExchangeClient,
         readStoredIdentity,
         writeStoredIdentity,
       });
-      setStatus("Google account linked.");
+      setStatus("Signed in with Google. Reloading...");
+      reloadForIdentityChange();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logOther("auth google_link_failed", {
         error: errorMessage,
       });
       console.error("auth google_link_failed", { error: errorMessage });
-      setStatus(`Google link failed. ${errorMessage}`);
+      setStatus(`Google sign-in failed. ${errorMessage}`);
     }
   };
   const onGoogleUnlinkClick = async () => {
@@ -603,6 +625,48 @@ export async function startApp() {
       setStatus(`Google unlink failed. ${errorMessage}`);
     }
   };
+  const onGoogleLogoutClick = async () => {
+    if (!authIdentityProvider || !authSessionExchangeClient) {
+      return;
+    }
+
+    try {
+      setStatus("Signing out...");
+      const anonymousIdentity = readStoredAnonymousIdentity();
+      await authIdentityProvider.signOut();
+      await authIdentityProvider.initAnonymousSession();
+
+      if (anonymousIdentity) {
+        writeStoredIdentity(anonymousIdentity);
+        setStatus("Signed out. Restoring anonymous session...");
+        reloadForIdentityChange();
+        return;
+      }
+
+      const bootstrap = await bootstrapAuthSession({
+        identityProvider: authIdentityProvider,
+        sessionExchangeClient: authSessionExchangeClient,
+        readStoredIdentity: () => null,
+        writeStoredIdentity,
+        allowLegacyFallback: false,
+        forceRefresh: true,
+      });
+      writeStoredAnonymousIdentity({
+        uid: bootstrap.session.uid,
+        name: bootstrap.session.name,
+        token: bootstrap.session.token,
+      });
+      setStatus("Signed out. New anonymous session ready.");
+      reloadForIdentityChange();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logOther("auth google_logout_failed", {
+        error: errorMessage,
+      });
+      console.error("auth google_logout_failed", { error: errorMessage });
+      setStatus(`Google logout failed. ${errorMessage}`);
+    }
+  };
   window.addEventListener("resize", onResize);
   window.addEventListener("focus", onWindowFocus);
   window.addEventListener("pageshow", onPageShow);
@@ -613,6 +677,9 @@ export async function startApp() {
   }
   if (authGoogleUnlinkButtonEl) {
     authGoogleUnlinkButtonEl.addEventListener("click", onGoogleUnlinkClick);
+  }
+  if (authGoogleLogoutButtonEl) {
+    authGoogleLogoutButtonEl.addEventListener("click", onGoogleLogoutClick);
   }
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("visibilitychange", onDocumentVisibilityChange);
@@ -629,6 +696,9 @@ export async function startApp() {
     }
     if (authGoogleUnlinkButtonEl) {
       authGoogleUnlinkButtonEl.removeEventListener("click", onGoogleUnlinkClick);
+    }
+    if (authGoogleLogoutButtonEl) {
+      authGoogleLogoutButtonEl.removeEventListener("click", onGoogleLogoutClick);
     }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", onDocumentVisibilityChange);

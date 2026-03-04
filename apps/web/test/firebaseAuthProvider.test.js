@@ -37,8 +37,10 @@ describe("firebase auth identity provider", () => {
         getIdToken: vi.fn().mockResolvedValue("token"),
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn(),
+        signInWithPopup: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn(),
+        deleteUser: vi.fn(),
         signOut: vi.fn(),
       }),
     });
@@ -78,8 +80,10 @@ describe("firebase auth identity provider", () => {
         getIdToken: vi.fn().mockResolvedValue("token"),
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn(),
+        signInWithPopup: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn(),
+        deleteUser: vi.fn(),
         signOut: vi.fn(),
       }),
     });
@@ -113,8 +117,10 @@ describe("firebase auth identity provider", () => {
         getIdToken: vi.fn().mockResolvedValue("token"),
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn().mockRejectedValue({ code: "auth/provider-already-linked" }),
+        signInWithPopup: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn(),
+        deleteUser: vi.fn(),
         signOut: vi.fn(),
       }),
     });
@@ -146,8 +152,10 @@ describe("firebase auth identity provider", () => {
         getIdToken: vi.fn().mockResolvedValue("token"),
         GoogleAuthProvider: class GoogleAuthProvider {},
         linkWithPopup: vi.fn(),
+        signInWithPopup: vi.fn(),
         onAuthStateChanged: vi.fn(),
         unlink: vi.fn().mockRejectedValue({ code: "auth/no-such-provider" }),
+        deleteUser: vi.fn(),
         signOut: vi.fn(),
       }),
     });
@@ -157,5 +165,52 @@ describe("firebase auth identity provider", () => {
       providerUserId: "firebase_existing_google",
       isAnonymous: false,
     });
+  });
+
+  it("signs in to existing google account when credential is already in use and deletes anonymous source user", async () => {
+    const anonymousSourceUser = {
+      uid: "firebase_anon_source",
+      isAnonymous: true,
+    };
+    const googleUser = {
+      uid: "firebase_google_user",
+      isAnonymous: false,
+    };
+    const auth = {
+      currentUser: anonymousSourceUser,
+      authStateReady: vi.fn().mockResolvedValue(undefined),
+    };
+    const signInWithPopup = vi.fn().mockImplementation(async () => {
+      auth.currentUser = googleUser;
+      return { user: googleUser };
+    });
+    const deleteUser = vi.fn().mockResolvedValue(undefined);
+
+    const provider = createFirebaseAuthIdentityProvider({
+      config: firebaseConfig(),
+      sdkLoader: async () => ({
+        getApp: vi.fn(),
+        getApps: vi.fn().mockReturnValue([]),
+        initializeApp: vi.fn().mockReturnValue({}),
+        getAuth: vi.fn().mockReturnValue(auth),
+        signInAnonymously: vi.fn(),
+        getIdToken: vi.fn().mockResolvedValue("token"),
+        GoogleAuthProvider: class GoogleAuthProvider {},
+        linkWithPopup: vi.fn().mockRejectedValue({ code: "auth/credential-already-in-use" }),
+        signInWithPopup,
+        onAuthStateChanged: vi.fn(),
+        unlink: vi.fn(),
+        deleteUser,
+        signOut: vi.fn(),
+      }),
+    });
+
+    await expect(provider.linkGoogle()).resolves.toEqual({
+      provider: "firebase",
+      providerUserId: "firebase_google_user",
+      isAnonymous: false,
+    });
+    expect(signInWithPopup).toHaveBeenCalledTimes(1);
+    expect(deleteUser).toHaveBeenCalledWith(anonymousSourceUser);
   });
 });

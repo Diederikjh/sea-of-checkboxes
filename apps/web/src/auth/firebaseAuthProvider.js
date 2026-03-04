@@ -58,8 +58,10 @@ async function loadFirebaseSdk() {
     getIdToken: auth.getIdToken,
     GoogleAuthProvider: auth.GoogleAuthProvider,
     linkWithPopup: auth.linkWithPopup,
+    signInWithPopup: auth.signInWithPopup,
     onAuthStateChanged: auth.onAuthStateChanged,
     unlink: auth.unlink,
+    deleteUser: auth.deleteUser,
     signOut: auth.signOut,
   };
 }
@@ -185,6 +187,8 @@ export function createFirebaseAuthIdentityProvider({
       if (!auth.currentUser) {
         throw new Error("Missing firebase user for google link");
       }
+      const beforeLinkUser = auth.currentUser;
+      const wasAnonymousBeforeLink = beforeLinkUser.isAnonymous === true;
       const provider = new sdk.GoogleAuthProvider();
       try {
         const result = await sdk.linkWithPopup(auth.currentUser, provider);
@@ -195,6 +199,27 @@ export function createFirebaseAuthIdentityProvider({
         // Treat "already linked" as success for retry-safe UX.
         if (code === "auth/provider-already-linked") {
           return toPrincipal(auth.currentUser);
+        }
+        // If Google already belongs to another Firebase user, sign in as that user.
+        if (code === "auth/credential-already-in-use") {
+          const signInResult = await sdk.signInWithPopup(auth, provider);
+          const signedInUser = signInResult?.user ?? auth.currentUser;
+          if (!signedInUser) {
+            throw new Error("Missing firebase user after google sign-in");
+          }
+
+          // Clean up the temporary anonymous user after successful account switch.
+          if (wasAnonymousBeforeLink && beforeLinkUser.uid !== signedInUser.uid) {
+            try {
+              await sdk.deleteUser(beforeLinkUser);
+            } catch (deleteError) {
+              console.warn("firebase_anonymous_delete_failed", {
+                error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+              });
+            }
+          }
+
+          return toPrincipal(signedInUser);
         }
         throw error;
       }
