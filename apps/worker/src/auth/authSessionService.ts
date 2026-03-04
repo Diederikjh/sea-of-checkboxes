@@ -60,8 +60,9 @@ export class DefaultAuthSessionService implements AuthSessionService {
       name: generateName(),
       token: "",
     };
+    let migration: "linked_legacy" | "provisioned" = legacyIdentity ? "linked_legacy" : "provisioned";
 
-    const linkResult = await this.#links.linkProviderUserToAppIdentity({
+    let linkResult = await this.#links.linkProviderUserToAppIdentity({
       provider: verified.provider,
       providerUserId: verified.providerUserId,
       identity,
@@ -69,6 +70,24 @@ export class DefaultAuthSessionService implements AuthSessionService {
       ...(verified.email ? { email: verified.email } : {}),
       nowMs,
     });
+
+    if (!linkResult.ok && linkResult.code === "app_uid_conflict") {
+      // The provided legacy token points at an app uid linked to a different provider user.
+      // Recover by provisioning a fresh app identity for this verified provider user.
+      linkResult = await this.#links.linkProviderUserToAppIdentity({
+        provider: verified.provider,
+        providerUserId: verified.providerUserId,
+        identity: {
+          uid: generateUid(),
+          name: generateName(),
+          token: "",
+        },
+        isAnonymous: verified.isAnonymous,
+        ...(verified.email ? { email: verified.email } : {}),
+        nowMs,
+      });
+      migration = "provisioned";
+    }
 
     if (!linkResult.ok) {
       if (linkResult.code === "provider_conflict" && linkResult.existing) {
@@ -91,7 +110,7 @@ export class DefaultAuthSessionService implements AuthSessionService {
       uid: linkResult.linked.identity.uid,
       name: linkResult.linked.identity.name,
       token: await createIdentityToken(linkResult.linked.identity.uid, linkResult.linked.identity.name, this.#signingSecret, nowMs),
-      migration: legacyIdentity ? "linked_legacy" : "provisioned",
+      migration,
     };
   }
 

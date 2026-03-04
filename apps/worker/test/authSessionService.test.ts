@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DefaultAuthSessionService, AuthSessionServiceError } from "../src/auth/authSessionService";
+import { DefaultAuthSessionService } from "../src/auth/authSessionService";
 import type {
   AccountLinkRecord,
   AccountLinkRepository,
@@ -145,7 +145,7 @@ describe("DefaultAuthSessionService", () => {
     expect(session.migration).toBe("provisioned");
   });
 
-  it("fails with link_conflict when app uid already mapped to another provider user", async () => {
+  it("falls back to provisioned identity when legacy app uid is already mapped to another provider user", async () => {
     const links = new InMemoryLinkRepository();
     links.byUid.set("u_legacy1", {
       provider: "firebase",
@@ -160,15 +160,15 @@ describe("DefaultAuthSessionService", () => {
       signingSecret: "test-secret",
     });
 
-    await expect(
-      service.createOrResumeSession({
-        assertion: { provider: "firebase", idToken: "id-token" },
-        legacyToken,
-        nowMs: 1_700_000_001_000,
-      })
-    ).rejects.toMatchObject({
-      status: 409,
-      code: "link_conflict",
-    } satisfies Partial<AuthSessionServiceError>);
+    const session = await service.createOrResumeSession({
+      assertion: { provider: "firebase", idToken: "id-token" },
+      legacyToken,
+      nowMs: 1_700_000_001_000,
+    });
+
+    expect(session.uid).toMatch(/^u_[0-9a-f]{8}$/);
+    expect(session.uid).not.toBe("u_legacy1");
+    expect(session.name).toMatch(/^[A-Za-z]+\d{3}$/);
+    expect(session.migration).toBe("provisioned");
   });
 });

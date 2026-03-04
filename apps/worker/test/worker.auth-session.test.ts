@@ -242,6 +242,52 @@ describe("worker auth session endpoint", () => {
     });
   });
 
+  it("falls back to a fresh app identity when legacy uid is linked to a different firebase user", async () => {
+    const { env, identitySigningSecret } = createEnv();
+    const nowMs = Date.now();
+    const legacyToken = await createIdentityToken("u_saved123", "BriskOtter481", identitySigningSecret, nowMs);
+
+    const first = await handleWorkerFetch(
+      workerRequest("/auth/session", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          assertion: {
+            provider: "firebase",
+            idToken: "token-existing",
+          },
+          legacyToken,
+        }),
+      }),
+      env
+    );
+    expect(first.status).toBe(200);
+
+    const second = await handleWorkerFetch(
+      workerRequest("/auth/session", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          assertion: {
+            provider: "firebase",
+            idToken: "token-new",
+          },
+          legacyToken,
+        }),
+      }),
+      env
+    );
+
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as { uid: string; migration: string };
+    expect(secondBody.migration).toBe("provisioned");
+    expect(secondBody.uid).not.toBe("u_saved123");
+  });
+
   it("provisions and reuses new app identity when legacy token is missing", async () => {
     const { env } = createEnv();
 
