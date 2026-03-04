@@ -27,10 +27,8 @@ import { createAuthSessionExchangeClient } from "./auth/sessionExchangeClient";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import {
-  readStoredAnonymousIdentity,
   readStoredIdentity,
   writeStoredIdentity,
-  writeStoredAnonymousIdentity,
 } from "./identityStore";
 import { logger } from "./logger";
 import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
@@ -572,8 +570,6 @@ export async function startApp() {
       sessionExchangeClient: authSessionExchangeClient,
       readStoredIdentity,
       writeStoredIdentity,
-      readStoredAnonymousIdentity,
-      writeStoredAnonymousIdentity,
       setStatus,
       logOther,
       errorLogger: console,
@@ -588,8 +584,6 @@ export async function startApp() {
       identityProvider: authIdentityProvider,
       sessionExchangeClient: authSessionExchangeClient,
       writeStoredIdentity,
-      readStoredAnonymousIdentity,
-      writeStoredAnonymousIdentity,
       setStatus,
       logOther,
       errorLogger: console,

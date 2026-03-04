@@ -22,8 +22,6 @@ export async function signInWithGoogleSessionTransition({
   sessionExchangeClient,
   readStoredIdentity,
   writeStoredIdentity,
-  readStoredAnonymousIdentity,
-  writeStoredAnonymousIdentity,
   setStatus = () => {},
   logOther = () => {},
   errorLogger = console,
@@ -31,13 +29,7 @@ export async function signInWithGoogleSessionTransition({
   signInWithGoogleSessionFn = signInWithGoogleSession,
 } = {}) {
   try {
-    const principalBefore = await identityProvider.initAnonymousSession();
-    const existingAnonymousIdentity =
-      typeof readStoredAnonymousIdentity === "function" ? readStoredAnonymousIdentity() : null;
-    const currentIdentity = typeof readStoredIdentity === "function" ? readStoredIdentity() : null;
-    if (!existingAnonymousIdentity && principalBefore?.isAnonymous === true && currentIdentity) {
-      writeStoredAnonymousIdentity(currentIdentity);
-    }
+    await identityProvider.initAnonymousSession();
 
     setStatus("Signing in with Google...");
     await signInWithGoogleSessionFn({
@@ -67,8 +59,6 @@ export async function signOutToAnonymousSessionTransition({
   identityProvider,
   sessionExchangeClient,
   writeStoredIdentity,
-  readStoredAnonymousIdentity,
-  writeStoredAnonymousIdentity,
   setStatus = () => {},
   logOther = () => {},
   errorLogger = console,
@@ -77,21 +67,10 @@ export async function signOutToAnonymousSessionTransition({
 } = {}) {
   try {
     setStatus("Signing out...");
-    const anonymousIdentity =
-      typeof readStoredAnonymousIdentity === "function" ? readStoredAnonymousIdentity() : null;
     await identityProvider.signOut();
     await identityProvider.initAnonymousSession();
 
-    if (anonymousIdentity) {
-      writeStoredIdentity(anonymousIdentity);
-      setStatus("Signed out. Restoring anonymous session...");
-      reloadPage();
-      return {
-        ok: true,
-        restoredAnonymousIdentity: true,
-      };
-    }
-
+    // TODO(auth): Add scheduled backend cleanup for unlinked anonymous Firebase users older than 7 days.
     const bootstrap = await bootstrapAuthSessionFn({
       identityProvider,
       sessionExchangeClient,
@@ -100,16 +79,11 @@ export async function signOutToAnonymousSessionTransition({
       allowLegacyFallback: false,
       forceRefresh: true,
     });
-    writeStoredAnonymousIdentity({
-      uid: bootstrap.session.uid,
-      name: bootstrap.session.name,
-      token: bootstrap.session.token,
-    });
     setStatus("Signed out. New anonymous session ready.");
     reloadPage();
     return {
       ok: true,
-      restoredAnonymousIdentity: false,
+      uid: bootstrap.session.uid,
     };
   } catch (error) {
     const message = errorMessageOf(error);
