@@ -697,6 +697,7 @@ export async function startApp() {
       const link = await createShareLink({
         apiBaseUrl,
         camera,
+        identityToken: readStoredIdentity()?.token ?? "",
       });
       if (link.copied) {
         setStatus("Share link copied to clipboard.");

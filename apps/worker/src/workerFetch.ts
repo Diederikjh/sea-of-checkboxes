@@ -1,5 +1,6 @@
 import {
   MIN_CELL_PX,
+  UID_PATTERN,
   clampCameraCenter,
   isCellIndexValid,
 } from "@sea/domain";
@@ -39,7 +40,7 @@ const AUTH_SESSION_CORS_HEADERS: Record<string, string> = {
 const SHARE_LINK_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
+  "access-control-allow-headers": "content-type, authorization",
   "access-control-max-age": "86400",
 };
 const SHARE_LINK_UUID_PATTERN =
@@ -54,6 +55,7 @@ interface ShareLinkRecord {
   zoom: number;
   createdAtMs: number;
   lastAccessAtMs: number;
+  creatorUid: string | null;
 }
 
 interface ShareLinkCreatePayload {
@@ -206,6 +208,9 @@ function parseShareLinkRecord(raw: string | null): ShareLinkRecord | null {
     ) {
       return null;
     }
+    const creatorUidRaw = (value as { creatorUid?: unknown }).creatorUid;
+    const creatorUid =
+      typeof creatorUidRaw === "string" && UID_PATTERN.test(creatorUidRaw) ? creatorUidRaw : null;
     const clampedCenter = clampCameraCenter(value.x, value.y);
     return {
       x: clampedCenter.x,
@@ -213,10 +218,33 @@ function parseShareLinkRecord(raw: string | null): ShareLinkRecord | null {
       zoom: Math.max(MIN_CELL_PX, Math.min(SHARE_LINK_MAX_ZOOM, value.zoom)),
       createdAtMs: value.createdAtMs,
       lastAccessAtMs: value.lastAccessAtMs,
+      creatorUid,
     };
   } catch {
     return null;
   }
+}
+
+function readBearerToken(request: Request): string {
+  const authHeader = request.headers.get("authorization")?.trim() ?? "";
+  if (!authHeader.toLowerCase().startsWith("bearer ")) {
+    return "";
+  }
+
+  return authHeader.slice("bearer ".length).trim();
+}
+
+async function resolveShareCreatorUid(request: Request, env: Env): Promise<string | null> {
+  const token = readBearerToken(request);
+  if (token.length === 0) {
+    return null;
+  }
+
+  const claims = await verifyIdentityToken({
+    token,
+    secret: resolveIdentitySigningSecret(env),
+  });
+  return claims?.uid ?? null;
 }
 
 function extractShareLinkId(pathname: string): string | null {
@@ -267,6 +295,7 @@ async function handleCreateShareLinkRequest(request: Request, env: Env): Promise
     );
   }
 
+  const creatorUid = await resolveShareCreatorUid(request, env);
   const id = crypto.randomUUID().toLowerCase();
   const nowMs = Date.now();
   const record: ShareLinkRecord = {
@@ -275,6 +304,7 @@ async function handleCreateShareLinkRequest(request: Request, env: Env): Promise
     zoom: camera.zoom,
     createdAtMs: nowMs,
     lastAccessAtMs: nowMs,
+    creatorUid,
   };
   await store.put(shareLinkKey(id), JSON.stringify(record), {
     expirationTtl: SHARE_LINK_TTL_SECONDS,
@@ -283,6 +313,7 @@ async function handleCreateShareLinkRequest(request: Request, env: Env): Promise
   return withShareLinkCors(
     jsonResponse({
       id,
+      creatorUid,
     })
   );
 }
@@ -327,6 +358,7 @@ async function handleGetShareLinkRequest(shareId: string, env: Env): Promise<Res
       x: refreshed.x,
       y: refreshed.y,
       zoom: refreshed.zoom,
+      creatorUid: refreshed.creatorUid,
     })
   );
 }

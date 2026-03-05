@@ -177,10 +177,12 @@ describe("top-level worker fetch routing", () => {
 
     const payload = (await response.json()) as {
       id: string;
+      creatorUid?: string | null;
     };
     expect(payload.id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
     );
+    expect(payload.creatorUid).toBeNull();
 
     expect(shareLinks.puts.length).toBe(1);
     const stored = shareLinks.puts[0];
@@ -193,12 +195,48 @@ describe("top-level worker fetch routing", () => {
       zoom?: number;
       createdAtMs?: number;
       lastAccessAtMs?: number;
+      creatorUid?: string | null;
     };
     expect(storedRecord.x).toBe(45.25);
     expect(storedRecord.y).toBe(-93.5);
     expect(storedRecord.zoom).toBe(11.75);
     expect(typeof storedRecord.createdAtMs).toBe("number");
     expect(typeof storedRecord.lastAccessAtMs).toBe("number");
+    expect(storedRecord.creatorUid).toBeNull();
+  });
+
+  it("stores creator uid from a valid bearer identity token", async () => {
+    const { env, shareLinks, identitySigningSecret } = createEnv();
+    const token = await createIdentityToken("u_saved123", "BriskOtter481", identitySigningSecret);
+
+    const response = await handleWorkerFetch(
+      workerRequest("/share-links", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          x: 1,
+          y: 2,
+          zoom: 10,
+        }),
+      }),
+      env
+    );
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as {
+      id: string;
+      creatorUid?: string | null;
+    };
+    expect(payload.creatorUid).toBe("u_saved123");
+
+    const stored = shareLinks.puts[0];
+    const storedRecord = JSON.parse(stored?.value ?? "{}") as {
+      creatorUid?: string | null;
+    };
+    expect(storedRecord.creatorUid).toBe("u_saved123");
   });
 
   it("resolves share links and refreshes ttl on read", async () => {
@@ -222,6 +260,7 @@ describe("top-level worker fetch routing", () => {
       x: 12,
       y: 34,
       zoom: 18,
+      creatorUid: null,
     });
 
     expect(shareLinks.gets).toContain(`share:${shareId}`);

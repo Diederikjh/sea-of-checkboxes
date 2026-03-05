@@ -35,6 +35,10 @@ function normalizeSharedCameraPayload(payload) {
     x: clampedCenter.x,
     y: clampedCenter.y,
     cellPixelSize: Math.max(MIN_CELL_PX, Math.min(SHARE_MAX_ZOOM, zoom)),
+    creatorUid:
+      typeof payload.creatorUid === "string" && payload.creatorUid.trim().length > 0
+        ? payload.creatorUid.trim()
+        : null,
   };
 }
 
@@ -101,6 +105,7 @@ export async function resolveSharedCamera({
 export async function createShareLink({
   apiBaseUrl,
   camera,
+  identityToken = "",
   locationLike = globalThis.window?.location,
   clipboard = globalThis.navigator?.clipboard,
   fetchFn = globalThis.fetch,
@@ -108,11 +113,16 @@ export async function createShareLink({
   if (typeof fetchFn !== "function") {
     throw new Error("share_link_fetch_unavailable");
   }
+  const headers = {
+    "content-type": "application/json",
+  };
+  if (typeof identityToken === "string" && identityToken.trim().length > 0) {
+    headers.authorization = `Bearer ${identityToken.trim()}`;
+  }
+
   const response = await fetchFn(`${apiBaseUrl}/share-links`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       x: camera.x,
       y: camera.y,
@@ -148,5 +158,9 @@ export async function createShareLink({
     id: shareId,
     url,
     copied,
+    creatorUid:
+      typeof data?.creatorUid === "string" && data.creatorUid.trim().length > 0
+        ? data.creatorUid.trim()
+        : null,
   };
 }
