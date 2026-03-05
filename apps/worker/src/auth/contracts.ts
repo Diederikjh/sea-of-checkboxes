@@ -10,6 +10,7 @@ export interface ExternalAssertion {
 export interface VerifiedExternalIdentity {
   provider: ExternalProvider;
   providerUserId: string;
+  legacyProviderUserId?: string;
   isAnonymous: boolean;
   email?: string;
 }

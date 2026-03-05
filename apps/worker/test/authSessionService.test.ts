@@ -42,12 +42,30 @@ class InMemoryLinkRepository implements AccountLinkRepository {
       return { ok: false, code: "provider_conflict", existing: existingByProvider };
     }
 
+    const nowMs = params.nowMs ?? Date.now();
     const existingByUid = this.byUid.get(params.identity.uid);
     if (existingByUid && existingByUid.providerUserId !== params.providerUserId) {
+      const currentProviderRecord = this.byProvider.get(`${params.provider}:${existingByUid.providerUserId}`);
+      if (currentProviderRecord && currentProviderRecord.identity.uid === params.identity.uid) {
+        const migrated: AccountLinkRecord = {
+          identity: {
+            uid: currentProviderRecord.identity.uid,
+            name: currentProviderRecord.identity.name,
+            token: "",
+          },
+          linkedAtMs: nowMs,
+          createdAtMs: currentProviderRecord.createdAtMs,
+        };
+        this.byProvider.set(key, migrated);
+        this.byUid.set(params.identity.uid, {
+          provider: params.provider,
+          providerUserId: params.providerUserId,
+        });
+        return { ok: true, linked: migrated };
+      }
       return { ok: false, code: "app_uid_conflict" };
     }
 
-    const nowMs = params.nowMs ?? Date.now();
     const linked: AccountLinkRecord = {
       identity: {
         uid: params.identity.uid,
@@ -170,5 +188,40 @@ describe("DefaultAuthSessionService", () => {
     expect(session.uid).not.toBe("u_legacy1");
     expect(session.name).toMatch(/^[A-Za-z]+\d{3}$/);
     expect(session.migration).toBe("provisioned");
+  });
+
+  it("reuses existing identity via legacy provider id fallback and migrates to stable provider id", async () => {
+    const links = new InMemoryLinkRepository();
+    links.byProvider.set("firebase:firebase-sub-legacy", {
+      identity: { uid: "u_stable123", name: "BriskOtter123", token: "" },
+      linkedAtMs: 10,
+      createdAtMs: 10,
+    });
+    links.byUid.set("u_stable123", {
+      provider: "firebase",
+      providerUserId: "firebase-sub-legacy",
+    });
+
+    const service = new DefaultAuthSessionService({
+      verifier: new StaticVerifier({
+        provider: "firebase",
+        providerUserId: "google:google-sub-1",
+        legacyProviderUserId: "firebase-sub-legacy",
+        isAnonymous: false,
+        email: "stable@example.com",
+      }),
+      links,
+      signingSecret: "test-secret",
+    });
+
+    const session = await service.createOrResumeSession({
+      assertion: { provider: "firebase", idToken: "id-token" },
+      nowMs: 1_700_000_010_000,
+    });
+
+    expect(session.uid).toBe("u_stable123");
+    expect(session.name).toBe("BriskOtter123");
+    expect(session.migration).toBe("none");
+    expect(links.byProvider.get("firebase:google:google-sub-1")?.identity.uid).toBe("u_stable123");
   });
 });

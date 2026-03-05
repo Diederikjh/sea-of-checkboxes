@@ -206,6 +206,42 @@ export class AccountLinkDO {
 
       const existingAppRecord = normalizedAppMapping(await this.#state.storage.get(aKey));
       if (existingAppRecord && existingAppRecord.providerUserId !== payload.providerUserId) {
+        if (existingAppRecord.provider === payload.provider) {
+          const existingMappedProviderRecord = normalizedRecord(
+            await this.#state.storage.get(providerKey(payload.provider, existingAppRecord.providerUserId))
+          );
+          if (existingMappedProviderRecord && existingMappedProviderRecord.identity.uid === identity.uid) {
+            const migrated: ProviderMappingRecord = {
+              identity: {
+                uid: existingMappedProviderRecord.identity.uid,
+                name: existingMappedProviderRecord.identity.name,
+                token: "",
+              },
+              linkedAtMs: nowMs,
+              createdAtMs: existingMappedProviderRecord.createdAtMs,
+              provider: "firebase",
+              providerUserId: payload.providerUserId,
+              isAnonymous: payload.isAnonymous,
+              ...(typeof payload.email === "string" && payload.email.length > 0 ? { email: payload.email } : {}),
+            };
+
+            await this.#state.storage.put(pKey, migrated);
+            await this.#state.storage.put(aKey, {
+              provider: "firebase",
+              providerUserId: payload.providerUserId,
+            } satisfies AppMappingRecord);
+
+            return jsonResponse({
+              ok: true,
+              linked: {
+                identity: migrated.identity,
+                linkedAtMs: migrated.linkedAtMs,
+                createdAtMs: migrated.createdAtMs,
+              },
+            });
+          }
+        }
+
         return jsonResponse({
           ok: false,
           code: "app_uid_conflict",

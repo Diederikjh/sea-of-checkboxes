@@ -45,13 +45,47 @@ export class DefaultAuthSessionService implements AuthSessionService {
       throw new AuthSessionServiceError(401, "invalid_firebase_token", "Invalid external identity assertion");
     }
 
-    const existingLink = await this.#links.getByProviderUser(verified.provider, verified.providerUserId);
-    if (existingLink) {
+    const existingLinkByPrimary = await this.#links.getByProviderUser(verified.provider, verified.providerUserId);
+    if (existingLinkByPrimary) {
       return {
-        ...existingLink.identity,
-        token: await createIdentityToken(existingLink.identity.uid, existingLink.identity.name, this.#signingSecret, nowMs),
+        ...existingLinkByPrimary.identity,
+        token: await createIdentityToken(
+          existingLinkByPrimary.identity.uid,
+          existingLinkByPrimary.identity.name,
+          this.#signingSecret,
+          nowMs
+        ),
         migration: "none",
       };
+    }
+
+    if (
+      typeof verified.legacyProviderUserId === "string" &&
+      verified.legacyProviderUserId.length > 0 &&
+      verified.legacyProviderUserId !== verified.providerUserId
+    ) {
+      const existingLinkByLegacy = await this.#links.getByProviderUser(verified.provider, verified.legacyProviderUserId);
+      if (existingLinkByLegacy) {
+        await this.#links.linkProviderUserToAppIdentity({
+          provider: verified.provider,
+          providerUserId: verified.providerUserId,
+          identity: existingLinkByLegacy.identity,
+          isAnonymous: verified.isAnonymous,
+          ...(verified.email ? { email: verified.email } : {}),
+          nowMs,
+        });
+
+        return {
+          ...existingLinkByLegacy.identity,
+          token: await createIdentityToken(
+            existingLinkByLegacy.identity.uid,
+            existingLinkByLegacy.identity.name,
+            this.#signingSecret,
+            nowMs
+          ),
+          migration: "none",
+        };
+      }
     }
 
     const legacyIdentity = await this.#resolveLegacyIdentity(params.legacyToken, nowMs);

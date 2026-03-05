@@ -218,4 +218,33 @@ describe("FirebaseIdTokenVerifier", () => {
       email: "user@example.com",
     });
   });
+
+  it("prefers google identity claim for provider key and keeps firebase uid as legacy fallback", async () => {
+    const verifier = new FirebaseIdTokenVerifier({
+      projectId: "project-1",
+      signatureVerifier: async () => true,
+    });
+
+    const token = makeToken({
+      iss: "https://securetoken.google.com/project-1",
+      aud: "project-1",
+      sub: "firebase-user-3",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      email: "user@example.com",
+      firebase: {
+        sign_in_provider: "google.com",
+        identities: {
+          "google.com": ["google-sub-123"],
+        },
+      },
+    });
+
+    await expect(verifier.verify({ provider: "firebase", idToken: token })).resolves.toEqual({
+      provider: "firebase",
+      providerUserId: "google:google-sub-123",
+      legacyProviderUserId: "firebase-user-3",
+      isAnonymous: false,
+      email: "user@example.com",
+    });
+  });
 });

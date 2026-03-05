@@ -25,6 +25,7 @@ interface FirebaseClaims {
   email?: unknown;
   firebase?: {
     sign_in_provider?: unknown;
+    identities?: unknown;
   };
 }
 
@@ -112,9 +113,25 @@ function claimInt(value: unknown): number | null {
   return value;
 }
 
-function resolveProvider(claims: FirebaseClaims): { providerUserId: string; isAnonymous: boolean; email?: string } | null {
-  const providerUserId = claimString(claims.sub);
-  if (!providerUserId) {
+function firstIdentityValue(identities: unknown, key: string): string | null {
+  if (!identities || typeof identities !== "object") {
+    return null;
+  }
+  const value = (identities as Record<string, unknown>)[key];
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  return claimString(value[0]);
+}
+
+function resolveProvider(claims: FirebaseClaims): {
+  providerUserId: string;
+  legacyProviderUserId?: string;
+  isAnonymous: boolean;
+  email?: string;
+} | null {
+  const firebaseUid = claimString(claims.sub);
+  if (!firebaseUid) {
     return null;
   }
 
@@ -126,9 +143,21 @@ function resolveProvider(claims: FirebaseClaims): { providerUserId: string; isAn
     return null;
   }
 
+  if (isAnonymous) {
+    return {
+      providerUserId: firebaseUid,
+      isAnonymous: true,
+      ...(email ? { email } : {}),
+    };
+  }
+
+  const googleIdentity = firstIdentityValue(claims.firebase?.identities, "google.com");
+  const providerUserId = googleIdentity ? `google:${googleIdentity}` : firebaseUid;
+
   return {
     providerUserId,
-    isAnonymous,
+    isAnonymous: false,
+    ...(googleIdentity && providerUserId !== firebaseUid ? { legacyProviderUserId: firebaseUid } : {}),
     ...(email ? { email } : {}),
   };
 }
@@ -281,6 +310,7 @@ export class FirebaseIdTokenVerifier implements ExternalIdentityVerifier {
     return {
       provider: "firebase",
       providerUserId: provider.providerUserId,
+      ...(provider.legacyProviderUserId ? { legacyProviderUserId: provider.legacyProviderUserId } : {}),
       isAnonymous: provider.isAnonymous,
       ...(provider.email ? { email: provider.email } : {}),
     };
