@@ -59,6 +59,9 @@ const TILE_BATCH_SETCELL_RETRY_MS = 20;
 const TILE_PULL_INTERVAL_MIN_MS = 200;
 const TILE_PULL_INTERVAL_MAX_MS = 1000;
 const TILE_PULL_INTERVAL_BACKOFF_STEP_MS = 200;
+const TILE_PULL_INTERVAL_IDLE_MAX_MS = 10_000;
+const TILE_PULL_INTERVAL_IDLE_BACKOFF_STEP_MS = 1_000;
+const TILE_PULL_IDLE_STREAK_BEFORE_LONG_BACKOFF = 5;
 const TILE_PULL_PAGE_LIMIT = 256;
 const TILE_PULL_MAX_PAGES_PER_TICK = 4;
 const CURSOR_PULL_INTERVAL_MS = 75;
@@ -89,6 +92,7 @@ export class ConnectionShardDO {
   #tilePullInFlight: Set<string>;
   #tilePullTimer: ReturnType<typeof setTimeout> | null;
   #tilePullIntervalMs: number;
+  #tilePullQuietStreak: number;
   #cursorPullInFlight: boolean;
   #cursorPullTimer: ReturnType<typeof setTimeout> | null;
   #cursorStateIngressDepth: number;
@@ -116,6 +120,7 @@ export class ConnectionShardDO {
     this.#tilePullInFlight = new Set();
     this.#tilePullTimer = null;
     this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
+    this.#tilePullQuietStreak = 0;
     this.#cursorPullInFlight = false;
     this.#cursorPullTimer = null;
     this.#cursorStateIngressDepth = 0;
@@ -937,10 +942,12 @@ export class ConnectionShardDO {
       this.#tilePullInFlight.clear();
       this.#tileKnownVersionByTile.clear();
       this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
+      this.#tilePullQuietStreak = 0;
       return;
     }
 
     this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
+    this.#tilePullQuietStreak = 0;
     this.#scheduleTilePullTick(0);
   }
 
@@ -1028,12 +1035,27 @@ export class ConnectionShardDO {
   #updateTilePullInterval(deltaObserved: boolean): void {
     if (deltaObserved) {
       this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MIN_MS;
+      this.#tilePullQuietStreak = 0;
+      return;
+    }
+
+    if (this.#tilePullIntervalMs < TILE_PULL_INTERVAL_MAX_MS) {
+      this.#tilePullIntervalMs = Math.min(
+        TILE_PULL_INTERVAL_MAX_MS,
+        this.#tilePullIntervalMs + TILE_PULL_INTERVAL_BACKOFF_STEP_MS
+      );
+      this.#tilePullQuietStreak = 0;
+      return;
+    }
+
+    this.#tilePullQuietStreak += 1;
+    if (this.#tilePullQuietStreak < TILE_PULL_IDLE_STREAK_BEFORE_LONG_BACKOFF) {
       return;
     }
 
     this.#tilePullIntervalMs = Math.min(
-      TILE_PULL_INTERVAL_MAX_MS,
-      this.#tilePullIntervalMs + TILE_PULL_INTERVAL_BACKOFF_STEP_MS
+      TILE_PULL_INTERVAL_IDLE_MAX_MS,
+      this.#tilePullIntervalMs + TILE_PULL_INTERVAL_IDLE_BACKOFF_STEP_MS
     );
   }
 

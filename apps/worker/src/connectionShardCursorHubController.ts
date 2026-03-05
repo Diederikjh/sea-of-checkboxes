@@ -48,7 +48,7 @@ export class ConnectionShardCursorHubController {
     this.#deferDetachedTask = options.deferDetachedTask;
     this.#maybeUnrefTimer = options.maybeUnrefTimer;
     this.#publishFlushMs = options.publishFlushMs ?? 50;
-    this.#watchRenewMs = options.watchRenewMs ?? 10_000;
+    this.#watchRenewMs = options.watchRenewMs ?? 60_000;
 
     this.#subscribed = false;
     this.#watchInFlight = false;

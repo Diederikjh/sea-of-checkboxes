@@ -1198,6 +1198,39 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
+  it("backs off tile ops-since polling beyond 1s after sustained idle", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-a",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(0);
+      const initial = countTileOpsSinceRequests(harness);
+      expect(initial).toBeGreaterThan(0);
+
+      // Let the shard observe multiple quiet polls so idle backoff engages.
+      await vi.advanceTimersByTimeAsync(7_000);
+      const afterQuiet = countTileOpsSinceRequests(harness);
+      expect(afterQuiet).toBeGreaterThan(initial);
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(countTileOpsSinceRequests(harness)).toBe(afterQuiet);
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(countTileOpsSinceRequests(harness)).toBe(afterQuiet + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("exposes local cursor state via cursor-state endpoint", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
