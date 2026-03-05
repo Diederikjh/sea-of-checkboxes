@@ -33,6 +33,13 @@
 			"preview_bucket_name": "sea-of-checkboxes-tiles-preview"
 		}
 	],
+	"kv_namespaces": [
+		{
+			"binding": "SHARE_LINKS",
+			"id": "becd286c09de490b89a8570c68cff8f6",
+			"preview_id": "059b18a237b1410fb5ec244e8040f44f"
+		}
+	],
 	"migrations": [
 		{
 			"tag": "v1",
