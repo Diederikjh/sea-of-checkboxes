@@ -312,4 +312,38 @@ describe("websocket transport", () => {
       vi.useRealTimers();
     }
   });
+
+  it("caps reconnect delay at 60s after repeated failures", () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [];
+      const transport = createWebSocketTransport("ws://example/ws", {
+        wsFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.connect(() => {});
+      const expectedDelays = [250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000];
+
+      expectedDelays.forEach((delay, index) => {
+        const current = sockets[sockets.length - 1];
+        if (!current) {
+          throw new Error("Expected active socket");
+        }
+        current.readyState = 3;
+        current.onclose?.();
+
+        vi.advanceTimersByTime(delay - 1);
+        expect(sockets).toHaveLength(index + 1);
+        vi.advanceTimersByTime(1);
+      });
+
+      expect(sockets).toHaveLength(expectedDelays.length + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

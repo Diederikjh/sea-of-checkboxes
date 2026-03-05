@@ -2,7 +2,7 @@ import { logger } from "./logger";
 
 const SOCKET_OPEN = 1;
 const MIN_RECONNECT_MS = 250;
-const MAX_RECONNECT_MS = 4_000;
+const MAX_RECONNECT_MS = 60_000;
 const MAX_PENDING_SENDS = 512;
 const RECONNECT_DRAIN_BATCH_SIZE = 2;
 const RECONNECT_DRAIN_INTERVAL_MS = 500;

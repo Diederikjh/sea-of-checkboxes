@@ -180,6 +180,7 @@ Required GitHub repository variables:
 Optional GitHub repository variables:
 - `CLOUDFLARE_PAGES_PROJECT` (defaults to `sea-of-checkboxes-web`)
 - `VITE_USE_MOCK` (defaults to `0`)
+- `WS_DISABLED` (worker websocket kill switch; defaults to `0`)
 
 The workflow runs:
 
@@ -198,3 +199,6 @@ pnpm dlx wrangler pages project create sea-of-checkboxes-web
 
 - Durable Object migrations are declared in `apps/worker/wrangler.jsonc`. When adding/changing DO classes, add a new migration tag before deploying.
 - If Pages and Worker are on different hostnames, keep `VITE_WS_URL` and `VITE_API_BASE_URL` explicitly set to the Worker hostname.
+- Emergency websocket kill switch:
+  - Disable websocket forwarding (returns `503` on `/ws` and avoids DO calls): `pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc --var FIREBASE_PROJECT_ID:${VITE_FIREBASE_PROJECT_ID} --var WS_DISABLED:1`
+  - Re-enable websocket forwarding: `pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc --var FIREBASE_PROJECT_ID:${VITE_FIREBASE_PROJECT_ID} --var WS_DISABLED:0`

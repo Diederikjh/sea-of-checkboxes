@@ -62,6 +62,7 @@
 		}
 	],
 	"vars": {
-		"AUTH_MODE": "hybrid"
+		"AUTH_MODE": "hybrid",
+		"WS_DISABLED": "0"
 	}
 }

@@ -48,6 +48,7 @@ const SHARE_LINK_UUID_PATTERN =
 const SHARE_LINK_KEY_PREFIX = "share:";
 const SHARE_LINK_TTL_SECONDS = 90 * 24 * 60 * 60;
 const SHARE_LINK_MAX_ZOOM = 64;
+const WS_DISABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 
 interface ShareLinkRecord {
   x: number;
@@ -172,6 +173,14 @@ function shareLinkKey(id: string): string {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function isWebSocketTemporarilyDisabled(env: Env): boolean {
+  if (typeof env.WS_DISABLED !== "string") {
+    return false;
+  }
+
+  return WS_DISABLED_VALUES.has(env.WS_DISABLED.trim().toLowerCase());
 }
 
 function parseShareLinkCreatePayload(value: unknown): { x: number; y: number; zoom: number } | null {
@@ -535,6 +544,16 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
 
   if (url.pathname !== "/ws") {
     return new Response("Not found", { status: 404 });
+  }
+
+  if (isWebSocketTemporarilyDisabled(env)) {
+    return new Response("WebSocket temporarily disabled", {
+      status: 503,
+      headers: {
+        "cache-control": "no-store",
+        "retry-after": "3600",
+      },
+    });
   }
 
   if (!isWebSocketUpgrade(request)) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { handleWorkerFetch } from "../src/workerFetch";
 import { createIdentityToken } from "../src/identityToken";
+import type { Env } from "../src/doCommon";
 import {
   RecordingDurableObjectStub,
   StubNamespace,
@@ -69,13 +70,14 @@ function createEnv() {
   const connectionShard = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const tileOwner = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const shareLinks = new RecordingKvNamespace();
+  const env: Env = {
+    CONNECTION_SHARD: connectionShard,
+    TILE_OWNER: tileOwner,
+    SHARE_LINKS: shareLinks,
+    IDENTITY_SIGNING_SECRET: identitySigningSecret,
+  };
   return {
-    env: {
-      CONNECTION_SHARD: connectionShard,
-      TILE_OWNER: tileOwner,
-      SHARE_LINKS: shareLinks,
-      IDENTITY_SIGNING_SECRET: identitySigningSecret,
-    },
+    env,
     connectionShard,
     tileOwner,
     shareLinks,
@@ -324,6 +326,24 @@ describe("top-level worker fetch routing", () => {
     const { env } = createEnv();
     const response = await handleWorkerFetch(workerRequest("/ws"), env);
     expect(response.status).toBe(426);
+  });
+
+  it("short-circuits /ws when websocket access is temporarily disabled", async () => {
+    const { env, connectionShard } = createEnv();
+    env.WS_DISABLED = "1";
+
+    const response = await handleWorkerFetch(
+      workerRequest("/ws", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("3600");
+    expect(connectionShard.requestedNames).toEqual([]);
   });
 
   it("forwards websocket requests to selected shard with uid/name/shard params", async () => {
