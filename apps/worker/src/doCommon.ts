@@ -31,6 +31,15 @@ export interface R2BucketLike {
   put(key: string, value: string): Promise<void>;
 }
 
+export interface KvPutOptions {
+  expirationTtl?: number;
+}
+
+export interface KvNamespaceLike {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string, options?: KvPutOptions): Promise<void>;
+}
+
 export interface ExecutionContextLike {
   waitUntil(promise: Promise<unknown>): void;
 }
@@ -41,6 +50,7 @@ export interface Env {
   CURSOR_HUB?: DurableObjectNamespaceLike;
   ACCOUNT_LINK?: DurableObjectNamespaceLike;
   TILE_SNAPSHOTS?: R2BucketLike;
+  SHARE_LINKS?: KvNamespaceLike;
   IDENTITY_SIGNING_SECRET?: string;
   FIREBASE_PROJECT_ID?: string;
   AUTH_MODE?: string;

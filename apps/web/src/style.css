@@ -148,6 +148,29 @@ body,
   color: #b9d0e7;
 }
 
+#share-view {
+  margin-top: 8px;
+  width: 100%;
+  min-height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(173, 181, 189, 0.55);
+  background: rgba(20, 30, 40, 0.85);
+  color: #e8f3ff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 0.86rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#share-view:hover:not(:disabled) {
+  border-color: rgba(226, 232, 240, 0.9);
+}
+
+#share-view:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .hint {
   color: #9fb0c0;
 }

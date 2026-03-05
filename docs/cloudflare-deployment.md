@@ -23,12 +23,20 @@ Review `apps/worker/wrangler.jsonc` and set production-safe names:
 - `name`
 - `r2_buckets[].bucket_name`
 - `r2_buckets[].preview_bucket_name`
+- `kv_namespaces[]` entry for `SHARE_LINKS` (used by share URLs)
 
 Create the R2 buckets if they do not exist:
 
 ```bash
 pnpm dlx wrangler r2 bucket create sea-of-checkboxes-tiles
 pnpm dlx wrangler r2 bucket create sea-of-checkboxes-tiles-preview
+```
+
+Create KV namespaces for share links and add their IDs to `apps/worker/wrangler.jsonc`:
+
+```bash
+pnpm dlx wrangler kv namespace create SHARE_LINKS
+pnpm dlx wrangler kv namespace create SHARE_LINKS --preview
 ```
 
 ## 3. Set Required Worker Auth Config

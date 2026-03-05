@@ -22,6 +22,7 @@ export function getRequiredElements() {
   const inspectToggleEl = queryRequiredElement("#inspect-mode-toggle");
   const inspectLabelEl = queryRequiredElement("#inspect-mode-label");
   const editInfoPopupEl = queryRequiredElement("#edit-info-popup");
+  const shareButtonEl = document.querySelector("#share-view");
   const authGoogleSignInButtonEl = document.querySelector("#auth-google-signin");
   const authGoogleLogoutButtonEl = document.querySelector("#auth-google-logout");
 
@@ -37,6 +38,7 @@ export function getRequiredElements() {
     inspectToggleEl,
     inspectLabelEl,
     editInfoPopupEl,
+    shareButtonEl,
     authGoogleSignInButtonEl,
     authGoogleLogoutButtonEl,
   };

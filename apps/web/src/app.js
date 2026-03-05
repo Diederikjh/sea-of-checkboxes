@@ -39,6 +39,11 @@ import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
 import { createServerMessageHandler } from "./serverMessages";
 import { createSetCellOutboxSync } from "./setCellOutboxSync";
 import { createRenderLoop } from "./renderLoop";
+import {
+  createShareLink,
+  readShareIdFromLocation,
+  resolveSharedCamera,
+} from "./shareLinks";
 import { TileStore } from "./tileStore";
 import { resolveApiBaseUrl } from "./transportConfig";
 import { createWireTransport } from "./wireTransport";
@@ -168,6 +173,7 @@ export async function startApp() {
     editInfoPopupEl,
     authGoogleSignInButtonEl,
     authGoogleLogoutButtonEl,
+    shareButtonEl,
   } = getRequiredElements();
 
   applyBranding(titleEl);
@@ -196,6 +202,27 @@ export async function startApp() {
   const tileStore = new TileStore(512);
   const heatStore = new HeatStore();
   const apiBaseUrl = resolveApiBaseUrl();
+  const shareId = readShareIdFromLocation();
+  const sharedCamera = shareId
+    ? await resolveSharedCamera({
+        apiBaseUrl,
+        shareId,
+      }).catch((error) => {
+        logOther("share resolve_failed", {
+          shareId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      })
+    : null;
+  if (sharedCamera) {
+    camera.x = sharedCamera.x;
+    camera.y = sharedCamera.y;
+    camera.cellPixelSize = sharedCamera.cellPixelSize;
+    setStatus("Loaded shared view.");
+  } else if (shareId) {
+    setStatus("Share link unavailable or expired; using default view.");
+  }
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
   const firebaseConfig = resolveFirebaseConfigFromEnv(env);
   const authSessionExchangeClient = firebaseConfig
@@ -476,7 +503,7 @@ export async function startApp() {
     setStatus,
     perfProbe,
   });
-  let hasAppliedServerSpawn = false;
+  let hasAppliedServerSpawn = sharedCamera !== null;
 
   updateZoomReadout(camera, zoomEl);
 
@@ -590,12 +617,18 @@ export async function startApp() {
     }
   };
   let authTransitionInFlight = false;
+  let shareCreateInFlight = false;
   const setAuthControlsDisabled = (disabled) => {
     if (authGoogleSignInButtonEl) {
       authGoogleSignInButtonEl.disabled = disabled;
     }
     if (authGoogleLogoutButtonEl) {
       authGoogleLogoutButtonEl.disabled = disabled;
+    }
+  };
+  const setShareButtonDisabled = (disabled) => {
+    if (shareButtonEl) {
+      shareButtonEl.disabled = disabled;
     }
   };
 
@@ -652,6 +685,35 @@ export async function startApp() {
       setAuthControlsDisabled(false);
     }
   };
+  const onShareButtonClick = async () => {
+    if (shareCreateInFlight) {
+      return;
+    }
+
+    shareCreateInFlight = true;
+    setShareButtonDisabled(true);
+    setStatus("Creating share link...");
+    try {
+      const link = await createShareLink({
+        apiBaseUrl,
+        camera,
+      });
+      if (link.copied) {
+        setStatus("Share link copied to clipboard.");
+      } else {
+        setStatus(`Share link ready: ${link.url}`);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logOther("share create_failed", {
+        error: detail,
+      });
+      setStatus("Share link failed. Please try again.");
+    } finally {
+      shareCreateInFlight = false;
+      setShareButtonDisabled(false);
+    }
+  };
   window.addEventListener("resize", onResize);
   window.addEventListener("focus", onWindowFocus);
   window.addEventListener("pageshow", onPageShow);
@@ -662,6 +724,9 @@ export async function startApp() {
   }
   if (authGoogleLogoutButtonEl) {
     authGoogleLogoutButtonEl.addEventListener("click", onGoogleLogoutClick);
+  }
+  if (shareButtonEl) {
+    shareButtonEl.addEventListener("click", onShareButtonClick);
   }
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("visibilitychange", onDocumentVisibilityChange);
@@ -678,6 +743,9 @@ export async function startApp() {
     }
     if (authGoogleLogoutButtonEl) {
       authGoogleLogoutButtonEl.removeEventListener("click", onGoogleLogoutClick);
+    }
+    if (shareButtonEl) {
+      shareButtonEl.removeEventListener("click", onShareButtonClick);
     }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", onDocumentVisibilityChange);

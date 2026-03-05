@@ -1,4 +1,8 @@
-import { isCellIndexValid } from "@sea/domain";
+import {
+  MIN_CELL_PX,
+  clampCameraCenter,
+  isCellIndexValid,
+} from "@sea/domain";
 
 import {
   isWebSocketUpgrade,
@@ -32,6 +36,31 @@ const AUTH_SESSION_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-headers": "content-type",
   "access-control-max-age": "86400",
 };
+const SHARE_LINK_CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+  "access-control-max-age": "86400",
+};
+const SHARE_LINK_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHARE_LINK_KEY_PREFIX = "share:";
+const SHARE_LINK_TTL_SECONDS = 90 * 24 * 60 * 60;
+const SHARE_LINK_MAX_ZOOM = 64;
+
+interface ShareLinkRecord {
+  x: number;
+  y: number;
+  zoom: number;
+  createdAtMs: number;
+  lastAccessAtMs: number;
+}
+
+interface ShareLinkCreatePayload {
+  x?: unknown;
+  y?: unknown;
+  zoom?: unknown;
+}
 
 function buildShardUrl(identity: ConnectionIdentity, shardName: string): URL {
   const shardUrl = new URL("https://connection-shard.internal/ws");
@@ -113,6 +142,193 @@ function authSessionCorsPreflightResponse(): Response {
     status: 204,
     headers: AUTH_SESSION_CORS_HEADERS,
   });
+}
+
+function withShareLinkCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(SHARE_LINK_CORS_HEADERS)) {
+    headers.set(key, value);
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function shareLinkCorsPreflightResponse(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: SHARE_LINK_CORS_HEADERS,
+  });
+}
+
+function shareLinkKey(id: string): string {
+  return `${SHARE_LINK_KEY_PREFIX}${id.toLowerCase()}`;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseShareLinkCreatePayload(value: unknown): { x: number; y: number; zoom: number } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const payload = value as ShareLinkCreatePayload;
+  if (!isFiniteNumber(payload.x) || !isFiniteNumber(payload.y) || !isFiniteNumber(payload.zoom)) {
+    return null;
+  }
+
+  const clampedCenter = clampCameraCenter(payload.x, payload.y);
+  return {
+    x: clampedCenter.x,
+    y: clampedCenter.y,
+    zoom: Math.max(MIN_CELL_PX, Math.min(SHARE_LINK_MAX_ZOOM, payload.zoom)),
+  };
+}
+
+function parseShareLinkRecord(raw: string | null): ShareLinkRecord | null {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const value = JSON.parse(raw) as Partial<ShareLinkRecord>;
+    if (
+      !isFiniteNumber(value.x) ||
+      !isFiniteNumber(value.y) ||
+      !isFiniteNumber(value.zoom) ||
+      !isFiniteNumber(value.createdAtMs) ||
+      !isFiniteNumber(value.lastAccessAtMs)
+    ) {
+      return null;
+    }
+    const clampedCenter = clampCameraCenter(value.x, value.y);
+    return {
+      x: clampedCenter.x,
+      y: clampedCenter.y,
+      zoom: Math.max(MIN_CELL_PX, Math.min(SHARE_LINK_MAX_ZOOM, value.zoom)),
+      createdAtMs: value.createdAtMs,
+      lastAccessAtMs: value.lastAccessAtMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractShareLinkId(pathname: string): string | null {
+  if (!pathname.startsWith("/share-links/")) {
+    return null;
+  }
+
+  const encodedId = pathname.slice("/share-links/".length);
+  if (encodedId.length === 0 || encodedId.includes("/")) {
+    return null;
+  }
+
+  let decodedId = "";
+  try {
+    decodedId = decodeURIComponent(encodedId);
+  } catch {
+    return null;
+  }
+
+  return SHARE_LINK_UUID_PATTERN.test(decodedId) ? decodedId.toLowerCase() : null;
+}
+
+async function handleCreateShareLinkRequest(request: Request, env: Env): Promise<Response> {
+  const store = env.SHARE_LINKS;
+  if (!store) {
+    return withShareLinkCors(
+      jsonResponse(
+        {
+          code: "share_unavailable",
+          msg: "Share links are unavailable",
+        },
+        { status: 503 }
+      )
+    );
+  }
+
+  const body = await readJson<unknown>(request);
+  const camera = parseShareLinkCreatePayload(body);
+  if (!camera) {
+    return withShareLinkCors(
+      jsonResponse(
+        {
+          code: "invalid_payload",
+          msg: "Invalid share payload",
+        },
+        { status: 400 }
+      )
+    );
+  }
+
+  const id = crypto.randomUUID().toLowerCase();
+  const nowMs = Date.now();
+  const record: ShareLinkRecord = {
+    x: camera.x,
+    y: camera.y,
+    zoom: camera.zoom,
+    createdAtMs: nowMs,
+    lastAccessAtMs: nowMs,
+  };
+  await store.put(shareLinkKey(id), JSON.stringify(record), {
+    expirationTtl: SHARE_LINK_TTL_SECONDS,
+  });
+
+  return withShareLinkCors(
+    jsonResponse({
+      id,
+    })
+  );
+}
+
+async function handleGetShareLinkRequest(shareId: string, env: Env): Promise<Response> {
+  const store = env.SHARE_LINKS;
+  if (!store) {
+    return withShareLinkCors(
+      jsonResponse(
+        {
+          code: "share_unavailable",
+          msg: "Share links are unavailable",
+        },
+        { status: 503 }
+      )
+    );
+  }
+
+  const record = parseShareLinkRecord(await store.get(shareLinkKey(shareId)));
+  if (!record) {
+    return withShareLinkCors(
+      jsonResponse(
+        {
+          code: "share_not_found",
+          msg: "Share link not found",
+        },
+        { status: 404 }
+      )
+    );
+  }
+
+  const refreshed: ShareLinkRecord = {
+    ...record,
+    lastAccessAtMs: Date.now(),
+  };
+  await store.put(shareLinkKey(shareId), JSON.stringify(refreshed), {
+    expirationTtl: SHARE_LINK_TTL_SECONDS,
+  });
+
+  return withShareLinkCors(
+    jsonResponse({
+      x: refreshed.x,
+      y: refreshed.y,
+      zoom: refreshed.zoom,
+    })
+  );
 }
 
 async function handleAuthSessionRequest(request: Request, env: Env): Promise<Response> {
@@ -247,6 +463,34 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
 
   if (url.pathname === "/cell-last-edit" && request.method === "OPTIONS") {
     return cellLastEditCorsPreflightResponse();
+  }
+
+  if (url.pathname === "/share-links" && request.method === "POST") {
+    return handleCreateShareLinkRequest(request, env);
+  }
+
+  if (url.pathname === "/share-links" && request.method === "OPTIONS") {
+    return shareLinkCorsPreflightResponse();
+  }
+
+  if (url.pathname.startsWith("/share-links/") && request.method === "GET") {
+    const shareId = extractShareLinkId(url.pathname);
+    if (!shareId) {
+      return withShareLinkCors(
+        jsonResponse(
+          {
+            code: "invalid_share_id",
+            msg: "Invalid share link id",
+          },
+          { status: 400 }
+        )
+      );
+    }
+    return handleGetShareLinkRequest(shareId, env);
+  }
+
+  if (url.pathname.startsWith("/share-links/") && request.method === "OPTIONS") {
+    return shareLinkCorsPreflightResponse();
   }
 
   if (url.pathname === "/auth/session" && request.method === "POST") {
