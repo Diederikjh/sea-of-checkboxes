@@ -204,6 +204,7 @@ export async function startApp() {
   const authIdentityProvider = firebaseConfig
     ? createFirebaseAuthIdentityProvider({ config: firebaseConfig })
     : null;
+  let authPrincipal = null;
 
   if (authIdentityProvider && authSessionExchangeClient) {
     setStatus("Signing in...");
@@ -227,13 +228,27 @@ export async function startApp() {
       console.error("auth bootstrap_failed", { error: errorMessage });
       setStatus(`Sign-in failed; continuing with existing session. (${errorMessage})`);
     }
+
+    try {
+      authPrincipal = await authIdentityProvider.initAnonymousSession();
+    } catch (error) {
+      logOther("auth principal_resolve_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   if (authGoogleSignInButtonEl) {
-    authGoogleSignInButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
+    authGoogleSignInButtonEl.hidden =
+      !authIdentityProvider ||
+      !authSessionExchangeClient ||
+      (authPrincipal ? authPrincipal.isAnonymous === false : true);
   }
   if (authGoogleLogoutButtonEl) {
-    authGoogleLogoutButtonEl.hidden = !authIdentityProvider || !authSessionExchangeClient;
+    authGoogleLogoutButtonEl.hidden =
+      !authIdentityProvider ||
+      !authSessionExchangeClient ||
+      (authPrincipal ? authPrincipal.isAnonymous === true : true);
   }
   const perfProbe = createPerfProbe({
     enabled: isPerfProbeEnabled(),
