@@ -58,6 +58,8 @@ export async function signInWithGoogleSessionTransition({
 export async function signOutToAnonymousSessionTransition({
   identityProvider,
   sessionExchangeClient,
+  readStoredAnonymousIdentity,
+  writeStoredAnonymousIdentity,
   writeStoredIdentity,
   setStatus = () => {},
   logOther = () => {},
@@ -69,17 +71,26 @@ export async function signOutToAnonymousSessionTransition({
     setStatus("Signing out...");
     await identityProvider.signOut();
     await identityProvider.initAnonymousSession();
+    const preferredAnonymousIdentity =
+      typeof readStoredAnonymousIdentity === "function" ? readStoredAnonymousIdentity() : null;
 
     // TODO(auth): Add scheduled backend cleanup for unlinked anonymous Firebase users older than 7 days.
     const bootstrap = await bootstrapAuthSessionFn({
       identityProvider,
       sessionExchangeClient,
-      readStoredIdentity: () => null,
+      readStoredIdentity: () => preferredAnonymousIdentity,
       writeStoredIdentity,
       allowLegacyFallback: false,
       forceRefresh: true,
     });
-    setStatus("Signed out. New anonymous session ready.");
+    if (typeof writeStoredAnonymousIdentity === "function") {
+      writeStoredAnonymousIdentity({
+        uid: bootstrap.session.uid,
+        name: bootstrap.session.name,
+        token: bootstrap.session.token,
+      });
+    }
+    setStatus("Signed out. Anonymous session ready.");
     reloadPage();
     return {
       ok: true,

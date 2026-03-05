@@ -40,8 +40,9 @@ describe("auth session switcher", () => {
     expect(reloadPage).toHaveBeenCalledTimes(1);
   });
 
-  it("always provisions a fresh anonymous app session on sign out", async () => {
+  it("provisions anonymous session on sign out and stores it as anonymous backup", async () => {
     const writeStoredIdentity = vi.fn();
+    const writeStoredAnonymousIdentity = vi.fn();
     const bootstrapAuthSessionFn = vi.fn().mockResolvedValue({
       session: {
         uid: "u_new_guest",
@@ -59,6 +60,8 @@ describe("auth session switcher", () => {
         initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_new", isAnonymous: true }),
       },
       sessionExchangeClient: {},
+      readStoredAnonymousIdentity: vi.fn().mockReturnValue(null),
+      writeStoredAnonymousIdentity,
       writeStoredIdentity,
       setStatus: vi.fn(),
       logOther: vi.fn(),
@@ -79,7 +82,48 @@ describe("auth session switcher", () => {
       allowLegacyFallback: false,
       forceRefresh: true,
     });
+    expect(writeStoredAnonymousIdentity).toHaveBeenCalledWith({
+      uid: "u_new_guest",
+      name: "BriskOtter001",
+      token: "tok_new_guest",
+    });
     expect(reloadPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses existing anonymous backup as legacy token source on sign out", async () => {
+    const writeStoredIdentity = vi.fn();
+    const writeStoredAnonymousIdentity = vi.fn();
+    const anonymousBackup = {
+      uid: "u_stable_anon",
+      name: "MintStoat111",
+      token: "tok_stable_anon",
+    };
+    const bootstrapAuthSessionFn = vi.fn().mockResolvedValue({
+      session: anonymousBackup,
+      migration: "none",
+      usedLegacyFallback: false,
+    });
+
+    await signOutToAnonymousSessionTransition({
+      identityProvider: {
+        signOut: vi.fn().mockResolvedValue(undefined),
+        initAnonymousSession: vi.fn().mockResolvedValue({ provider: "firebase", providerUserId: "f_new", isAnonymous: true }),
+      },
+      sessionExchangeClient: {},
+      readStoredAnonymousIdentity: vi.fn().mockReturnValue(anonymousBackup),
+      writeStoredAnonymousIdentity,
+      writeStoredIdentity,
+      setStatus: vi.fn(),
+      logOther: vi.fn(),
+      errorLogger: { error: vi.fn() },
+      reloadPage: vi.fn(),
+      bootstrapAuthSessionFn,
+    });
+
+    const bootstrapArgs = bootstrapAuthSessionFn.mock.calls[0]?.[0];
+    expect(typeof bootstrapArgs.readStoredIdentity).toBe("function");
+    expect(bootstrapArgs.readStoredIdentity()).toEqual(anonymousBackup);
+    expect(writeStoredAnonymousIdentity).toHaveBeenCalledWith(anonymousBackup);
   });
 
   it("reports google sign-in failures without reloading", async () => {

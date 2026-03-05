@@ -28,7 +28,9 @@ import { createAuthSessionExchangeClient } from "./auth/sessionExchangeClient";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import {
+  readStoredAnonymousIdentity,
   readStoredIdentity,
+  writeStoredAnonymousIdentity,
   writeStoredIdentity,
 } from "./identityStore";
 import { logger } from "./logger";
@@ -623,6 +625,8 @@ export async function startApp() {
       await signOutToAnonymousSessionTransition({
         identityProvider: authIdentityProvider,
         sessionExchangeClient: authSessionExchangeClient,
+        readStoredAnonymousIdentity,
+        writeStoredAnonymousIdentity,
         writeStoredIdentity,
         setStatus,
         logOther,
