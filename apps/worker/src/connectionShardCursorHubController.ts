@@ -1,8 +1,12 @@
-import type { CursorPresence, CursorRelayBatch } from "./cursorRelay";
+import type { CursorPresence, CursorRelayBatch, CursorTraceContext } from "./cursorRelay";
 
 export interface ConnectionShardCursorHubGatewayLike {
   watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorRelayBatch | null>;
-  publishLocalCursors(from: string, updates: CursorPresence[]): Promise<void>;
+  publishLocalCursors(
+    from: string,
+    updates: CursorPresence[],
+    trace?: CursorTraceContext | null
+  ): Promise<void>;
 }
 
 interface ConnectionShardCursorHubControllerOptions {
@@ -10,6 +14,7 @@ interface ConnectionShardCursorHubControllerOptions {
   hasClients: () => boolean;
   currentShardName: () => string;
   canRelayNow: () => boolean;
+  activeTraceContext?: () => CursorTraceContext | null;
   localCursorSnapshot: () => CursorPresence[];
   ingestBatch: (batch: CursorRelayBatch) => void;
   deferDetachedTask: (task: () => Promise<void>) => void;
@@ -23,6 +28,7 @@ export class ConnectionShardCursorHubController {
   #hasClients: () => boolean;
   #currentShardName: () => string;
   #canRelayNow: () => boolean;
+  #activeTraceContext: () => CursorTraceContext | null;
   #localCursorSnapshot: () => CursorPresence[];
   #ingestBatch: (batch: CursorRelayBatch) => void;
   #deferDetachedTask: (task: () => Promise<void>) => void;
@@ -37,12 +43,14 @@ export class ConnectionShardCursorHubController {
   #publishTimer: ReturnType<typeof setTimeout> | null;
   #publishInFlight: boolean;
   #publishPending: boolean;
+  #pendingPublishTrace: CursorTraceContext | null;
 
   constructor(options: ConnectionShardCursorHubControllerOptions) {
     this.#gateway = options.gateway;
     this.#hasClients = options.hasClients;
     this.#currentShardName = options.currentShardName;
     this.#canRelayNow = options.canRelayNow;
+    this.#activeTraceContext = options.activeTraceContext ?? (() => null);
     this.#localCursorSnapshot = options.localCursorSnapshot;
     this.#ingestBatch = options.ingestBatch;
     this.#deferDetachedTask = options.deferDetachedTask;
@@ -57,6 +65,7 @@ export class ConnectionShardCursorHubController {
     this.#publishTimer = null;
     this.#publishInFlight = false;
     this.#publishPending = false;
+    this.#pendingPublishTrace = null;
   }
 
   isEnabled(): boolean {
@@ -72,6 +81,7 @@ export class ConnectionShardCursorHubController {
       this.#clearWatchRenewTimer();
       this.#clearPublishTimer();
       this.#publishPending = false;
+      this.#pendingPublishTrace = null;
       if (this.#subscribed) {
         this.#queueWatch("unsub");
       } else {
@@ -86,6 +96,7 @@ export class ConnectionShardCursorHubController {
 
   markLocalCursorDirty(): void {
     this.#publishPending = true;
+    this.#pendingPublishTrace ??= this.#activeTraceContext();
     this.#schedulePublish();
   }
 
@@ -210,13 +221,19 @@ export class ConnectionShardCursorHubController {
     const updates = this.#localCursorSnapshot();
     if (updates.length === 0) {
       this.#publishPending = false;
+      this.#pendingPublishTrace = null;
       return;
     }
 
     this.#publishInFlight = true;
     try {
-      await this.#gateway.publishLocalCursors(this.#currentShardName(), updates);
+      await this.#gateway.publishLocalCursors(
+        this.#currentShardName(),
+        updates,
+        this.#pendingPublishTrace ?? this.#activeTraceContext()
+      );
       this.#publishPending = false;
+      this.#pendingPublishTrace = null;
     } catch {
       // Hub publish is best-effort.
     } finally {

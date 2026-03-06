@@ -60,6 +60,7 @@ describe("server message schema matrix", () => {
     ).toBe("curUp");
 
     expect(parseServerMessage({ t: "err", code: "bad", msg: "Nope" }).t).toBe("err");
+    expect(parseServerMessage({ t: "err", code: "bad", msg: "Nope", trace: "trace_1" }).t).toBe("err");
   });
 
   it("rejects unknown message discriminator", () => {
@@ -199,5 +200,6 @@ describe("server message schema matrix", () => {
 
     expect(() => parseServerMessage({ t: "err", code: "", msg: "m" })).toThrow();
     expect(() => parseServerMessage({ t: "err", code: "c", msg: "" })).toThrow();
+    expect(() => parseServerMessage({ t: "err", code: "c", msg: "m", trace: "" })).toThrow();
   });
 });

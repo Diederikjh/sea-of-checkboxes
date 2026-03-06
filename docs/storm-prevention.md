@@ -57,6 +57,12 @@ Even if each individual call is valid, synchronous chaining can still recurse un
 ### 5. Use loop-trace headers for shard-to-shard push paths
 
 - Tile batch fanout uses hop tracking headers and drops requests past safe hop depth.
+- Cursor batch fanout now also carries trace headers:
+  - `x-sea-cursor-trace-id`
+  - `x-sea-cursor-trace-hop`
+  - `x-sea-cursor-trace-origin`
+- `ConnectionShardDO` drops traced `/cursor-batch` requests that exceed safe hop depth.
+- `ConnectionShardDO` also drops duplicate traced deliveries seen recently on the same shard.
 - This provides a hard fail-safe when topology changes accidentally create loops.
 
 ### 6. Prefer pull-based convergence for durable state
@@ -74,16 +80,75 @@ Even if each individual call is valid, synchronous chaining can still recurse un
 Any topology change touching batch fanout should keep these covered:
 
 - Re-entrant ingress drop for `/cursor-batch`.
+- Traced `/cursor-batch` hop-limit drop.
+- Duplicate traced `/cursor-batch` delivery drop.
 - No relay/publish while ingesting inbound cursor batches.
 - Cursor hub publish suppressed during inbound cursor/tile batch windows, then resumes.
 - Inbound cursor batches are not re-published as outbound hub updates.
 - Cursor hub `/publish` returns without waiting for downstream shard fanout.
+- Client-visible internal errors include the active cursor trace id when present.
 
 See current tests in:
 
 - `apps/worker/test/worker.connectionShard-websocket.test.ts`
 - `apps/worker/test/worker.cursorHub.test.ts`
 - `apps/worker/test/connectionShardCursorHubController.test.ts`
+- `apps/worker/test/connectionShardCursorBatchIngress.test.ts`
+- `apps/worker/test/connectionShardCursorTrace.test.ts`
+- `apps/worker/test/connectionShardClientMessageHandler.test.ts`
+- `packages/protocol/test/binary.test.ts`
+- `packages/protocol/test/messages.server.test.ts`
+- `apps/web/test/serverMessages.test.js`
+
+## Logging And Correlation
+
+For cursor storms, the minimum useful correlation data is now:
+
+- Cloudflare `requestId`
+- request path
+- cursor `trace_id`
+- `trace_hop`
+- `trace_origin`
+- shard name
+- whether the request came `from_hub`
+
+Key log events to group on:
+
+- `cursor_batch_ingress`
+- `cursor_batch_reentrant_drop`
+- `cursor_batch_loop_guard_drop`
+- `cursor_batch_duplicate_trace_drop`
+- `internal_error`
+
+Client correlation:
+
+- Internal server errors now include the active cursor trace id in the websocket `err` message when available.
+- The web client surfaces that as `Error: ... [trace <id>]`.
+- If a user reports a trace id from the UI, that trace id should be searchable directly in server logs.
+
+Recommended query order during an incident:
+
+1. Group recursion errors by `requestId`.
+2. Group `/cursor-batch` logs by `trace_id`.
+3. Check whether the same `trace_id` appears with increasing `trace_hop`.
+4. Check for guard events:
+   - `cursor_batch_loop_guard_drop`
+   - `cursor_batch_duplicate_trace_drop`
+   - `cursor_batch_reentrant_drop`
+5. If no guard events appear, inspect the fanout path that emitted `cursor_batch_ingress` for that trace.
+
+What a healthy capture usually shows:
+
+- isolated `cursor_batch_ingress` events
+- no repeated `trace_id` across many shards in a tight burst
+- near-zero loop-guard and duplicate-trace drops
+
+What a storm capture usually shows:
+
+- one dominant `requestId`
+- one or a small number of dominant `trace_id` values
+- repeated `/cursor-batch` ingress on the same second
+- many `internal_error` records with `Subrequest depth limit exceeded`
 
 ## Review Checklist (PRs)
 
@@ -93,13 +158,16 @@ Before merging any fanout/topology change:
 2. Is ingress guarded against re-entry?
 3. Are outbound fanout actions detached from inbound request lifecycle?
 4. Is there a suppression window after ingesting remote batches?
-5. Are logs structured enough to isolate a single storm by `requestId` and path?
-6. Are regression tests updated for the changed flow?
+5. Are loop-trace headers propagated on every shard-to-shard push path?
+6. Are logs structured enough to isolate a single storm by `requestId`, path, and `trace_id`?
+7. Does the client surface a trace id for actionable internal errors?
+8. Are regression tests updated for the changed flow?
 
 ## Incident Response (Quick)
 
 1. Capture server + client logs (`docs/debug-log-capture.md`).
-2. Group by `requestId`, path, and message.
+2. Group by `requestId`, path, `trace_id`, and message.
 3. If one `requestId` dominates recursion errors, treat as request-chain loop.
-4. Verify whether the path is ingress or fanout and disable/decouple synchronous fanout first.
-5. Deploy fix with added guard + test before re-enabling full fanout.
+4. If the client captured `[trace ...]`, pivot server logs to that trace immediately.
+5. Verify whether the path is ingress or fanout and disable/decouple synchronous fanout first.
+6. Deploy fix with added guard + test before re-enabling full fanout.

@@ -15,6 +15,12 @@ export interface CursorRelayBatch {
   updates: CursorPresence[];
 }
 
+export interface CursorTraceContext {
+  traceId: string;
+  traceHop: number;
+  traceOrigin: string;
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }

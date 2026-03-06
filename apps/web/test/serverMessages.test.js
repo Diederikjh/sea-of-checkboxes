@@ -340,6 +340,18 @@ describe("server message handling", () => {
     expect(harness.restrictions).toEqual([]);
   });
 
+  it("includes server error trace ids in status and protocol logs", () => {
+    const harness = createHarness();
+    harness.handler({
+      t: "err",
+      code: "internal",
+      msg: "Failed to process message",
+      trace: "trace-123",
+    });
+
+    expect(harness.statuses.at(-1)).toBe("Error: Failed to process message [trace trace-123]");
+  });
+
   it("triggers read-only overlay hint for hot-tile write rejection", () => {
     const harness = createHarness();
 

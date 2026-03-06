@@ -131,6 +131,7 @@ export const cursorUpdateSchema = strictTaggedMessage("curUp", {
 export const errorMessageSchema = strictTaggedMessage("err", {
   code: z.string().min(1),
   msg: z.string().min(1),
+  trace: z.string().min(1).optional(),
 });
 
 const serverMessageDiscriminatedSchema = z.discriminatedUnion("t", [

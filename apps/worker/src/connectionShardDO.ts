@@ -22,18 +22,25 @@ import {
 } from "./doCommon";
 import {
   disconnectClientFromShard,
-  handleResyncMessage,
-  handleSetCellMessage,
-  handleSubMessage,
-  handleUnsubMessage,
   type ConnectedClient,
   type ConnectionShardDOOperationsContext,
 } from "./connectionShardDOOperations";
+import {
+  CURSOR_HUB_SOURCE_HEADER,
+  handleConnectionShardCursorBatchIngress,
+} from "./connectionShardCursorBatchIngress";
+import { handleConnectionShardClientMessage } from "./connectionShardClientMessageHandler";
 import { ConnectionShardSetCellQueue } from "./connectionShardSetCellQueue";
-import { type CursorRelayBatch, isValidCursorRelayBatch } from "./cursorRelay";
+import {
+  type CursorRelayBatch,
+  isValidCursorRelayBatch,
+} from "./cursorRelay";
 import { ConnectionShardTileBatchOrderTracker } from "./connectionShardTileBatchOrder";
 import { CursorCoordinator } from "./cursorCoordinator";
 import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
+import {
+  ConnectionShardCursorTraceState,
+} from "./connectionShardCursorTrace";
 import { ConnectionShardCursorHubGateway } from "./cursorHubGateway";
 import { ConnectionShardCursorHubController } from "./connectionShardCursorHubController";
 import { peerShardNames } from "./sharding";
@@ -67,7 +74,7 @@ const TILE_PULL_MAX_PAGES_PER_TICK = 4;
 const CURSOR_PULL_INTERVAL_MS = 75;
 const CURSOR_HUB_NAME = "global";
 const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
-const CURSOR_HUB_SOURCE_HEADER = "x-sea-cursor-hub";
+const CURSOR_BATCH_TRACE_MAX_HOP = 1;
 
 type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
@@ -99,6 +106,7 @@ export class ConnectionShardDO {
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
   #cursorHubController: ConnectionShardCursorHubController;
+  #cursorTraceState: ConnectionShardCursorTraceState;
 
   constructor(
     state: DurableObjectStateLike,
@@ -125,6 +133,9 @@ export class ConnectionShardDO {
     this.#cursorPullTimer = null;
     this.#cursorStateIngressDepth = 0;
     this.#cursorHubPublishSuppressedUntilMs = 0;
+    this.#cursorTraceState = new ConnectionShardCursorTraceState({
+      nowMs: () => this.#nowMs(),
+    });
     const cursorHubGateway = this.#env.CURSOR_HUB
       ? new ConnectionShardCursorHubGateway({
           namespace: this.#env.CURSOR_HUB,
@@ -176,6 +187,7 @@ export class ConnectionShardDO {
       hasClients: () => this.#clients.size > 0,
       currentShardName: () => this.#currentShardName(),
       canRelayNow: () => this.#canRelayCursorNow(),
+      activeTraceContext: () => this.#cursorTraceState.activeTraceContext(),
       localCursorSnapshot: () => this.#cursorCoordinator.localCursorSnapshot(),
       ingestBatch: (batch) => this.#ingestCursorBatchWithIngress(batch),
       deferDetachedTask: (task) => this.#deferDetachedTask(task),
@@ -245,30 +257,30 @@ export class ConnectionShardDO {
     }
 
     if (url.pathname === "/cursor-batch" && request.method === "POST") {
-      if (this.#cursorBatchIngressDepth > 0) {
-        this.#logEvent("cursor_batch_reentrant_drop", {
-          ingress_depth: this.#cursorBatchIngressDepth,
-          from_hub: request.headers.get(CURSOR_HUB_SOURCE_HEADER) === "1",
-          path: "/cursor-batch",
-        });
-        return new Response(null, { status: 204 });
-      }
-
-      this.#cursorBatchIngressDepth += 1;
-      try {
-        const batch = await readJson<CursorRelayBatch>(request);
-        if (!batch || !isValidCursorRelayBatch(batch)) {
-          return new Response("Invalid cursor batch payload", { status: 400 });
-        }
-        this.#receiveCursorBatch(batch);
-        return new Response(null, { status: 204 });
-      } finally {
-        this.#cursorBatchIngressDepth = Math.max(0, this.#cursorBatchIngressDepth - 1);
-        this.#cursorHubPublishSuppressedUntilMs = Math.max(
-          this.#cursorHubPublishSuppressedUntilMs,
-          this.#nowMs() + CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS
-        );
-      }
+      return handleConnectionShardCursorBatchIngress({
+        request,
+        traceState: this.#cursorTraceState,
+        currentIngressDepth: () => this.#cursorBatchIngressDepth,
+        setIngressDepth: (depth) => {
+          this.#cursorBatchIngressDepth = depth;
+        },
+        nowMs: () => this.#nowMs(),
+        maxTraceHop: CURSOR_BATCH_TRACE_MAX_HOP,
+        publishSuppressionMs: CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS,
+        extendPublishSuppressedUntil: (untilMs) => {
+          this.#cursorHubPublishSuppressedUntilMs = Math.max(
+            this.#cursorHubPublishSuppressedUntilMs,
+            untilMs
+          );
+        },
+        readBatch: (incomingRequest) => readJson<CursorRelayBatch>(incomingRequest),
+        receiveBatch: (batch) => {
+          this.#receiveCursorBatch(batch);
+        },
+        logEvent: (event, fields) => {
+          this.#logEvent(event, fields);
+        },
+      });
     }
 
     if (url.pathname === "/cursor-state" && request.method === "GET") {
@@ -429,111 +441,44 @@ export class ConnectionShardDO {
     }
 
     try {
-      switch (message.t) {
-        case "sub": {
-          const subResult = await handleSubMessage(context, client, message.tiles);
-          this.#logEvent("sub", {
-            uid,
-            requested_count: subResult.requestedCount,
-            changed_count: subResult.changedCount,
-            invalid_count: subResult.invalidCount,
-            rejected_count: subResult.rejectedCount,
-            subscribed_count: subResult.subscribedCount,
-            clamped: subResult.clamped,
-          });
-          this.#cursorCoordinator.onSubscriptionsChanged(true);
-          this.#refreshTilePullSchedule();
-          return;
-        }
-        case "unsub": {
-          const unsubResult = await handleUnsubMessage(context, client, message.tiles);
-          this.#logEvent("unsub", {
-            uid,
-            requested_count: unsubResult.requestedCount,
-            changed_count: unsubResult.changedCount,
-            subscribed_count: unsubResult.subscribedCount,
-          });
-          this.#cursorCoordinator.onSubscriptionsChanged(true);
-          this.#refreshTilePullSchedule();
-          return;
-        }
-        case "setCell": {
-          const startMs = Date.now();
-          const setCellResult = await handleSetCellMessage(context, client, message);
-          if (setCellResult.reason === "not_subscribed" && setCellResult.notSubscribed) {
-            this.#logEvent("setcell_not_subscribed", {
-              uid,
-              tile: message.tile,
-              i: message.i,
-              v: message.v,
-              op: message.op,
-              subscribed_count: setCellResult.notSubscribed.subscribedCount,
-              subscribed_tiles_sample: setCellResult.notSubscribed.subscribedTilesSample,
-              clients_connected: setCellResult.notSubscribed.clientsConnected,
-              ...(typeof setCellResult.notSubscribed.connectionAgeMs === "number"
-                ? { connection_age_ms: setCellResult.notSubscribed.connectionAgeMs }
-                : {}),
-            });
-          }
-          this.#logEvent("setCell", {
-            uid,
-            tile: message.tile,
-            i: message.i,
-            v: message.v,
-            op: message.op,
-            accepted: setCellResult.accepted,
-            changed: setCellResult.changed,
-            ...(setCellResult.reason ? { reason: setCellResult.reason } : {}),
-            ...(typeof setCellResult.ver === "number" ? { ver: setCellResult.ver } : {}),
-            ...(typeof setCellResult.watcherCount === "number"
-              ? { watcher_count: setCellResult.watcherCount }
-              : {}),
-            duration_ms: elapsedMs(startMs),
-          });
-          if (
-            setCellResult.accepted &&
-            setCellResult.changed &&
-            typeof setCellResult.ver === "number"
-          ) {
-            this.#recordTileVersion(message.tile, setCellResult.ver);
-          }
-          if (
-            setCellResult.accepted &&
-            setCellResult.changed &&
-            typeof setCellResult.ver === "number"
-          ) {
-            // Always fan out accepted local writes to this shard's subscribers.
-            // Remote shards rely on ops-since polling; this local fanout keeps same-shard
-            // clients in sync even when tile owner watcher_count is > 1.
-            this.#receiveTileBatch({
-              t: "cellUpBatch",
-              tile: message.tile,
-              fromVer: setCellResult.ver,
-              toVer: setCellResult.ver,
-              ops: [[message.i, message.v]],
-            });
-            this.#recordRecentEditActivity(message.tile, message.i);
-          }
+      await handleConnectionShardClientMessage({
+        context,
+        client,
+        uid,
+        message,
+        logEvent: (event, fields) => {
+          this.#logEvent(event, fields);
+        },
+        recordTileVersion: (tileKey, ver) => {
+          this.#recordTileVersion(tileKey, ver);
+        },
+        receiveTileBatch: (serverMessage) => {
+          this.#receiveTileBatch(serverMessage);
+        },
+        recordRecentEditActivity: (tileKey, index) => {
+          this.#recordRecentEditActivity(tileKey, index);
+        },
+        cursorOnActivity: () => {
           this.#cursorCoordinator.onActivity();
-          return;
-        }
-        case "resyncTile":
-          await handleResyncMessage(context, client, message.tile);
-          this.#logEvent("resyncTile", {
-            uid,
-            tile: message.tile,
-          });
-          return;
-        case "cur":
-          this.#cursorCoordinator.onLocalCursor(client, message.x, message.y);
+        },
+        cursorOnSubscriptionsChanged: (force) => {
+          this.#cursorCoordinator.onSubscriptionsChanged(force);
+        },
+        refreshTilePullSchedule: () => {
+          this.#refreshTilePullSchedule();
+        },
+        cursorOnLocalCursor: (connectedClient, x, y) => {
+          this.#cursorCoordinator.onLocalCursor(connectedClient, x, y);
+        },
+        markLocalCursorDirty: () => {
           this.#cursorHubController.markLocalCursorDirty();
-          return;
-        default:
-          return;
-      }
+        },
+        elapsedMs,
+      });
     } catch (error) {
       this.#logEvent("internal_error", {
         uid,
+        ...this.#cursorTraceState.traceFields(this.#cursorTraceState.activeTraceContext()),
         ...this.#errorFields(error),
       });
       this.#sendError(client, "internal", "Failed to process message");
@@ -739,10 +684,12 @@ export class ConnectionShardDO {
   }
 
   #sendError(client: ConnectedClient, code: string, msg: string): void {
+    const activeTrace = this.#cursorTraceState.activeTraceContext();
     this.#sendServerMessage(client, {
       t: "err",
       code,
       msg,
+      ...(activeTrace ? { trace: activeTrace.traceId } : {}),
     });
   }
 

@@ -89,6 +89,7 @@ describe("binary protocol codec", () => {
       },
       { t: "curUp", uid: "u_remote", name: "Bob", x: 1200.75, y: -33.125 },
       { t: "err", code: "rate_limited", msg: "slow down" },
+      { t: "err", code: "internal", msg: "Failed to process message", trace: "trace_1" },
     ];
 
     for (const message of messages) {

@@ -426,6 +426,10 @@ export function encodeServerMessageBinary(message: ServerMessage): Uint8Array {
       writer.writeU8(SERVER_TAG.err);
       writer.writeString(message.code);
       writer.writeString(message.msg);
+      writer.writeU8(message.trace ? 1 : 0);
+      if (message.trace) {
+        writer.writeString(message.trace);
+      }
       break;
     default:
       return assertNever(message);
@@ -516,6 +520,15 @@ export function decodeServerMessageBinary(payload: Uint8Array): ServerMessage {
         code: reader.readString(),
         msg: reader.readString(),
       };
+      if (reader.remainingBytes() > 0) {
+        const hasTrace = reader.readU8();
+        if (hasTrace === 1) {
+          decoded = {
+            ...decoded,
+            trace: reader.readString(),
+          };
+        }
+      }
       break;
     default:
       throw new Error(`Unknown server binary tag: ${tag}`);

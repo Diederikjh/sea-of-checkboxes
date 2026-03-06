@@ -280,6 +280,23 @@ async function postCursorBatch(
   return postJson(shard, "/cursor-batch", body);
 }
 
+async function postCursorBatchWithHeaders(
+  shard: ConnectionShardDO,
+  body: unknown,
+  headers: Record<string, string>
+): Promise<Response> {
+  return shard.fetch(
+    new Request("https://connection-shard.internal/cursor-batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
 async function getCursorState(shard: ConnectionShardDO): Promise<CursorRelayBatch> {
   const response = await shard.fetch(
     new Request("https://connection-shard.internal/cursor-state", {
@@ -1130,6 +1147,86 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
+  it("drops traced cursor-batch loops once hop depth exceeds the safe limit", async () => {
+    const harness = createHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const response = await postCursorBatchWithHeaders(
+        harness.shard,
+        {
+          from: "shard-1",
+          updates: [],
+        },
+        {
+          "x-sea-cursor-hub": "1",
+          "x-sea-cursor-trace-id": "trace-loop",
+          "x-sea-cursor-trace-hop": "2",
+          "x-sea-cursor-trace-origin": "shard-origin",
+        }
+      );
+
+      expect(response.status).toBe(204);
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "cursor_batch_loop_guard_drop"
+            && event.trace_id === "trace-loop"
+            && event.trace_hop === 2
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("drops duplicate traced cursor-batch deliveries on the same shard", async () => {
+    const harness = createHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const requestBody = {
+        from: "shard-1",
+        updates: [
+          {
+            uid: "u_remote",
+            name: "Remote",
+            x: 1.5,
+            y: 1.5,
+            seenAt: Date.now(),
+            seq: 1,
+            tileKey: "0:0",
+          },
+        ],
+      };
+      const headers = {
+        "x-sea-cursor-hub": "1",
+        "x-sea-cursor-trace-id": "trace-dup",
+        "x-sea-cursor-trace-hop": "1",
+        "x-sea-cursor-trace-origin": "shard-origin",
+      };
+
+      const firstResponse = await postCursorBatchWithHeaders(harness.shard, requestBody, headers);
+      const secondResponse = await postCursorBatchWithHeaders(harness.shard, requestBody, headers);
+
+      expect(firstResponse.status).toBe(204);
+      expect(secondResponse.status).toBe(204);
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "cursor_batch_duplicate_trace_drop"
+            && event.trace_id === "trace-dup"
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it("polls tile ops-since at ~1s cadence when idle", async () => {
     vi.useFakeTimers();
     try {
@@ -1648,9 +1745,62 @@ describe("ConnectionShardDO websocket handling", () => {
         (update) => update.uid === "u_a" && update.name === "Alice" && update.x === 1.5 && update.y === 0.5
       )
     ).toBe(true);
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-id")).toBeNull();
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-hop")).toBeNull();
 
     expect(countCursorStatePullRequests(harness)).toBe(0);
     expect(countCursorRelaySubrequests(harness)).toBe(0);
+  });
+
+  it("propagates the active cursor trace when hub publishing from inbound cursor-batch processing", async () => {
+    const harness = createRelayHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-0",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+
+    const response = await postCursorBatchWithHeaders(
+      harness.shard,
+      {
+        from: "shard-1",
+        updates: [
+          {
+            uid: "u_remote",
+            name: "Remote",
+            x: 1.5,
+            y: 1.5,
+            seenAt: Date.now(),
+            seq: 1,
+            tileKey: "0:0",
+          },
+        ],
+      },
+      {
+        "x-sea-cursor-hub": "1",
+        "x-sea-cursor-trace-id": "trace-prop",
+        "x-sea-cursor-trace-hop": "1",
+        "x-sea-cursor-trace-origin": "shard-origin",
+      }
+    );
+    expect(response.status).toBe(204);
+    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 2.5 }));
+
+    await waitFor(() => {
+      expect(countCursorHubPublishes(harness)).toBeGreaterThan(0);
+    }, { attempts: 120, delayMs: 10 });
+
+    const hub = harness.cursorHub.getByName("global");
+    const publishRequest = [...hub.requests].reverse().find((entry) => {
+      const url = new URL(entry.request.url);
+      return entry.request.method === "POST" && url.pathname === "/publish";
+    });
+    expect(publishRequest).toBeDefined();
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-id")).toBe("trace-prop");
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-hop")).toBe("1");
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-origin")).toBe("shard-origin");
   });
 
   it("does not generate timer-driven cursor relay from inbound batches", async () => {

@@ -141,6 +141,9 @@ describe("CursorHubDO", () => {
     expect(fanoutRequest?.method).toBe("POST");
     expect(new URL(fanoutRequest?.url ?? "https://connection-shard.internal/").pathname).toBe("/cursor-batch");
     expect(fanoutRequest?.headers.get("x-sea-cursor-hub")).toBe("1");
+    expect(fanoutRequest?.headers.get("x-sea-cursor-trace-id")).toBeTruthy();
+    expect(fanoutRequest?.headers.get("x-sea-cursor-trace-hop")).toBe("1");
+    expect(fanoutRequest?.headers.get("x-sea-cursor-trace-origin")).toBe("shard-a");
     await expect(fanoutRequest?.json()).resolves.toEqual({
       from: "shard-a",
       updates: [
@@ -252,6 +255,49 @@ describe("CursorHubDO", () => {
       }),
     ]);
     expect(resolvedQuickly).toBe(true);
+  });
+
+  it("propagates inbound cursor trace headers and increments hop on fanout", async () => {
+    const harness = createHarness();
+    await postWatch(harness.hub, "shard-a", "sub");
+    await postWatch(harness.hub, "shard-b", "sub");
+
+    const response = await harness.hub.fetch(
+      new Request("https://cursor-hub.internal/publish", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-sea-cursor-trace-id": "trace-1",
+          "x-sea-cursor-trace-hop": "1",
+          "x-sea-cursor-trace-origin": "shard-origin",
+        },
+        body: JSON.stringify({
+          from: "shard-a",
+          updates: [
+            {
+              uid: "u_a",
+              name: "Alice",
+              x: 1.5,
+              y: 2.5,
+              seenAt: Date.now(),
+              seq: 1,
+              tileKey: "0:0",
+            },
+          ],
+        }),
+      })
+    );
+    expect(response.status).toBe(204);
+
+    const shardBStub = harness.shardNamespace.getByName("shard-b");
+    await waitFor(() => {
+      expect(shardBStub.requests.length).toBe(1);
+    });
+
+    const fanoutRequest = shardBStub.requests[0]?.request;
+    expect(fanoutRequest?.headers.get("x-sea-cursor-trace-id")).toBe("trace-1");
+    expect(fanoutRequest?.headers.get("x-sea-cursor-trace-hop")).toBe("2");
+    expect(fanoutRequest?.headers.get("x-sea-cursor-trace-origin")).toBe("shard-origin");
   });
 
   it("dedupes updates for the same uid within a single fanout flush window", async () => {

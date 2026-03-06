@@ -8,6 +8,7 @@ import {
 } from "./doCommon";
 import {
   isValidCursorPresence,
+  type CursorTraceContext,
   type CursorPresence,
   type CursorRelayBatch,
 } from "./cursorRelay";
@@ -19,6 +20,9 @@ import {
 const CURSOR_TTL_MS = 5_000;
 const CURSOR_HUB_INTERNAL_SHARD = "cursor-hub";
 const CURSOR_HUB_SHARD_HEADER = "x-sea-cursor-hub";
+const CURSOR_TRACE_ID_HEADER = "x-sea-cursor-trace-id";
+const CURSOR_TRACE_HOP_HEADER = "x-sea-cursor-trace-hop";
+const CURSOR_TRACE_ORIGIN_HEADER = "x-sea-cursor-trace-origin";
 const CURSOR_HUB_FANOUT_FLUSH_MS = 25;
 const RECENT_EDIT_ACTIVITY_TTL_MS = 10 * 60_000;
 const RECENT_EDIT_ACTIVITY_LIMIT = 2_048;
@@ -57,6 +61,12 @@ interface StoredEditActivity {
   atMs: number;
 }
 
+interface PendingFanout {
+  originShard: string;
+  trace: CursorTraceContext;
+  updatesByUid: Map<string, CursorPresence>;
+}
+
 interface SpawnBase {
   x: number;
   y: number;
@@ -69,6 +79,10 @@ function clamp(value: number, min: number, max: number): number {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function createCursorTraceId(): string {
+  return `ctrace_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function isValidWatchRequest(value: unknown): value is CursorHubWatchRequest {
@@ -121,7 +135,7 @@ export class CursorHubDO {
   #subscribers: Set<string>;
   #cursorByUid: Map<string, StoredCursor>;
   #recentEditActivity: StoredEditActivity[];
-  #pendingFanoutByOrigin: Map<string, Map<string, CursorPresence>>;
+  #pendingFanoutByOrigin: Map<string, PendingFanout>;
   #fanoutFlushTimer: ReturnType<typeof setTimeout> | null;
   #fanoutInFlight: boolean;
 
@@ -191,6 +205,12 @@ export class CursorHubDO {
     if (!payload || !isValidPublishRequest(payload)) {
       return new Response("Invalid publish payload", { status: 400 });
     }
+    const incomingTrace = this.#readTraceContext(request);
+    const outgoingTrace: CursorTraceContext = {
+      traceId: incomingTrace?.traceId ?? createCursorTraceId(),
+      traceHop: (incomingTrace?.traceHop ?? 0) + 1,
+      traceOrigin: incomingTrace?.traceOrigin ?? payload.from,
+    };
 
     this.#subscribers.add(payload.from);
     this.#pruneStaleCursors();
@@ -209,7 +229,12 @@ export class CursorHubDO {
     }
 
     if (acceptedUpdates.length > 0) {
-      this.#enqueueFanout(payload.from, acceptedUpdates);
+      this.#enqueueFanout(
+        payload.from,
+        acceptedUpdates,
+        outgoingTrace,
+        incomingTrace ? `${payload.from}|${incomingTrace.traceId}` : `${payload.from}|generated`
+      );
     }
 
     this.#logEvent("publish", {
@@ -218,6 +243,9 @@ export class CursorHubDO {
       accepted_count: acceptedUpdates.length,
       subscriber_count: this.#subscribers.size,
       cursor_count: this.#cursorByUid.size,
+      trace_id: outgoingTrace.traceId,
+      trace_hop: outgoingTrace.traceHop,
+      trace_origin: outgoingTrace.traceOrigin,
       duration_ms: elapsedMs(startMs),
     });
     return new Response(null, { status: 204 });
@@ -348,23 +376,32 @@ export class CursorHubDO {
     };
   }
 
-  #enqueueFanout(originShard: string, updates: CursorPresence[]): void {
+  #enqueueFanout(
+    originShard: string,
+    updates: CursorPresence[],
+    trace: CursorTraceContext,
+    pendingKey: string
+  ): void {
     if (updates.length === 0) {
       return;
     }
 
-    let pendingByUid = this.#pendingFanoutByOrigin.get(originShard);
-    if (!pendingByUid) {
-      pendingByUid = new Map();
-      this.#pendingFanoutByOrigin.set(originShard, pendingByUid);
+    let pending = this.#pendingFanoutByOrigin.get(pendingKey);
+    if (!pending) {
+      pending = {
+        originShard,
+        trace,
+        updatesByUid: new Map(),
+      };
+      this.#pendingFanoutByOrigin.set(pendingKey, pending);
     }
 
     for (const update of updates) {
-      const existing = pendingByUid.get(update.uid);
+      const existing = pending.updatesByUid.get(update.uid);
       if (existing && existing.seq >= update.seq) {
         continue;
       }
-      pendingByUid.set(update.uid, update);
+      pending.updatesByUid.set(update.uid, update);
     }
 
     this.#scheduleFanoutFlush();
@@ -388,16 +425,17 @@ export class CursorHubDO {
     }
 
     this.#fanoutInFlight = true;
-    const pending = Array.from(this.#pendingFanoutByOrigin.entries()).map(([originShard, updatesByUid]) => ({
-      originShard,
-      updates: Array.from(updatesByUid.values()),
+    const pending = Array.from(this.#pendingFanoutByOrigin.values()).map((entry) => ({
+      originShard: entry.originShard,
+      trace: entry.trace,
+      updates: Array.from(entry.updatesByUid.values()),
     }));
     this.#pendingFanoutByOrigin.clear();
 
     try {
       await Promise.all(
-        pending.map(async ({ originShard, updates }) => {
-          await this.#fanoutCursorUpdates(originShard, updates);
+        pending.map(async ({ originShard, trace, updates }) => {
+          await this.#fanoutCursorUpdates(originShard, trace, updates);
         })
       );
     } finally {
@@ -408,7 +446,11 @@ export class CursorHubDO {
     }
   }
 
-  async #fanoutCursorUpdates(originShard: string, updates: CursorPresence[]): Promise<void> {
+  async #fanoutCursorUpdates(
+    originShard: string,
+    trace: CursorTraceContext,
+    updates: CursorPresence[]
+  ): Promise<void> {
     const targetShards = Array.from(this.#subscribers).filter((shard) => shard !== originShard);
     if (targetShards.length === 0 || updates.length === 0) {
       return;
@@ -428,6 +470,9 @@ export class CursorHubDO {
               headers: {
                 "content-type": "application/json",
                 [CURSOR_HUB_SHARD_HEADER]: "1",
+                [CURSOR_TRACE_ID_HEADER]: trace.traceId,
+                [CURSOR_TRACE_HOP_HEADER]: String(trace.traceHop),
+                [CURSOR_TRACE_ORIGIN_HEADER]: trace.traceOrigin,
               },
               body,
             });
@@ -450,5 +495,22 @@ export class CursorHubDO {
       do_id: this.#doId,
       ...fields,
     });
+  }
+
+  #readTraceContext(request: Request): CursorTraceContext | null {
+    const traceId = request.headers.get(CURSOR_TRACE_ID_HEADER)?.trim() ?? "";
+    const traceOrigin = request.headers.get(CURSOR_TRACE_ORIGIN_HEADER)?.trim() ?? "";
+    const rawHop = request.headers.get(CURSOR_TRACE_HOP_HEADER)?.trim() ?? "";
+    const traceHop = Number.parseInt(rawHop, 10);
+
+    if (traceId.length === 0 || traceOrigin.length === 0 || !Number.isFinite(traceHop) || traceHop < 0) {
+      return null;
+    }
+
+    return {
+      traceId,
+      traceHop,
+      traceOrigin,
+    };
   }
 }

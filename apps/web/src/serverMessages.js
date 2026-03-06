@@ -269,12 +269,18 @@ export function createServerMessageHandler({
         break;
       }
       case "err": {
+        logger.protocol("server_error", {
+          code: message.code,
+          msg: message.msg,
+          trace: message.trace ?? null,
+        });
         if (message.code === "setcell_rejected" && message.msg === "tile_readonly_hot") {
           setInteractionRestriction("readonly", "Hot tile is read-only right now");
         } else if (message.code === "tile_sub_denied") {
           setInteractionRestriction("deny", "Tile is over capacity; access denied for now");
         }
-        setStatus(`Error: ${message.msg}`);
+        const traceSuffix = message.trace ? ` [trace ${message.trace}]` : "";
+        setStatus(`Error: ${message.msg}${traceSuffix}`);
         break;
       }
       default:
