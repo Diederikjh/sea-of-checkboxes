@@ -15,11 +15,14 @@ Options:
   -c, --config <file>     Wrangler config path (default: apps/worker/wrangler.jsonc)
   -w, --worker <name>     Worker name to tail (default: sea-of-checkboxes-worker)
   -f, --format <format>   Wrangler tail format: json | pretty (default: json)
+  --settle-ms <n>         Wait this long after Ctrl+C before stopping tail (default: 5000)
+  --stop-timeout-ms <n>   Force-stop tail if it does not exit after shutdown (default: 5000)
   -h, --help              Show this help
 
 Examples:
   pnpm logs:server:capture
   pnpm logs:server:capture --worker sea-of-checkboxes-worker --format pretty
+  pnpm logs:server:capture --settle-ms 10000
   pnpm logs:server:capture -- --status error
 `);
 }
@@ -36,12 +39,22 @@ function resolveArgValue(args, index, flagName) {
   return value;
 }
 
+function parseIntegerArg(rawValue, flagName) {
+  const value = Number.parseInt(rawValue, 10);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`Invalid value for ${flagName}: ${rawValue}`);
+  }
+  return value;
+}
+
 function parseArgs(argv) {
   const options = {
     output: path.resolve("logs", `server-${buildTimestamp()}.log`),
     config: path.resolve("apps", "worker", "wrangler.jsonc"),
     worker: "sea-of-checkboxes-worker",
     format: "json",
+    settleMs: 5_000,
+    stopTimeoutMs: 5_000,
     passthroughArgs: [],
     help: false,
   };
@@ -102,6 +115,27 @@ function parseArgs(argv) {
       options.format = arg.slice("--format=".length);
       continue;
     }
+    if (arg === "--settle-ms") {
+      options.settleMs = parseIntegerArg(resolveArgValue(args, index, arg), arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--settle-ms=")) {
+      options.settleMs = parseIntegerArg(arg.slice("--settle-ms=".length), "--settle-ms");
+      continue;
+    }
+    if (arg === "--stop-timeout-ms") {
+      options.stopTimeoutMs = parseIntegerArg(resolveArgValue(args, index, arg), arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--stop-timeout-ms=")) {
+      options.stopTimeoutMs = parseIntegerArg(
+        arg.slice("--stop-timeout-ms=".length),
+        "--stop-timeout-ms"
+      );
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -135,9 +169,11 @@ const startedAt = new Date().toISOString();
 const commandPreview = `pnpm ${wranglerArgs.join(" ")}`;
 fileStream.write(`# started_at=${startedAt}\n`);
 fileStream.write(`# command=${commandPreview}\n`);
+fileStream.write(`# settle_ms=${options.settleMs}\n`);
+fileStream.write(`# stop_timeout_ms=${options.stopTimeoutMs}\n`);
 console.log(`Capturing worker logs to ${options.output}`);
 console.log(`Running: ${commandPreview}`);
-console.log("Press Ctrl+C to stop.\n");
+console.log(`Press Ctrl+C to stop. The script will wait ${options.settleMs}ms for late logs first.\n`);
 
 const child = spawn("pnpm", wranglerArgs, {
   stdio: ["inherit", "pipe", "pipe"],
@@ -158,15 +194,50 @@ child.stdout.on("data", (chunk) => writeChunk("stdout", chunk));
 child.stderr.on("data", (chunk) => writeChunk("stderr", chunk));
 
 let shuttingDown = false;
-function shutdown(signal) {
+let stopRequested = false;
+let settleTimer = null;
+let stopTimer = null;
+
+function beginShutdown(signal, stopMode) {
   if (shuttingDown) {
     return;
   }
   shuttingDown = true;
-  const endedAt = new Date().toISOString();
-  fileStream.write(`\n# ended_at=${endedAt}\n`);
-  fileStream.write(`# signal=${signal}\n`);
+  if (settleTimer) {
+    clearTimeout(settleTimer);
+    settleTimer = null;
+  }
+  fileStream.write(`\n# stop_signal=${signal}\n`);
+  fileStream.write(`# stop_mode=${stopMode}\n`);
   child.kill("SIGINT");
+
+  if (options.stopTimeoutMs > 0) {
+    stopTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        const forcedAt = new Date().toISOString();
+        fileStream.write(`# force_stop_at=${forcedAt}\n`);
+        child.kill("SIGTERM");
+      }
+    }, options.stopTimeoutMs);
+  }
+}
+
+function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  if (stopRequested || options.settleMs === 0) {
+    beginShutdown(signal, stopRequested ? "forced" : "immediate");
+    return;
+  }
+
+  stopRequested = true;
+  const requestedAt = new Date().toISOString();
+  fileStream.write(`\n# stop_requested_at=${requestedAt}\n`);
+  console.log(
+    `Stop requested. Waiting ${options.settleMs}ms for late-arriving logs before stopping. Press Ctrl+C again to force stop now.`
+  );
+  settleTimer = setTimeout(() => beginShutdown(signal, "settled"), options.settleMs);
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));
@@ -178,9 +249,19 @@ child.on("error", (error) => {
 });
 
 child.on("exit", (code, signal) => {
+  if (settleTimer) {
+    clearTimeout(settleTimer);
+  }
+  if (stopTimer) {
+    clearTimeout(stopTimer);
+  }
   if (!shuttingDown) {
     const endedAt = new Date().toISOString();
     fileStream.write(`\n# ended_at=${endedAt}\n`);
+    fileStream.write(`# signal=${signal ?? "none"}\n`);
+  } else {
+    const endedAt = new Date().toISOString();
+    fileStream.write(`# ended_at=${endedAt}\n`);
     fileStream.write(`# signal=${signal ?? "none"}\n`);
   }
 
