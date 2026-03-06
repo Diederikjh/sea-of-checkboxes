@@ -4,23 +4,12 @@ import {
 } from "./doCommon";
 import {
   isValidCursorRelayBatch,
-  type CursorPresence,
   type CursorRelayBatch,
-  type CursorTraceContext,
 } from "./cursorRelay";
-
-const CURSOR_TRACE_ID_HEADER = "x-sea-cursor-trace-id";
-const CURSOR_TRACE_HOP_HEADER = "x-sea-cursor-trace-hop";
-const CURSOR_TRACE_ORIGIN_HEADER = "x-sea-cursor-trace-origin";
 
 export interface CursorHubWatchRequest {
   shard: string;
   action: "sub" | "unsub";
-}
-
-export interface CursorHubPublishRequest {
-  from: string;
-  updates: CursorPresence[];
 }
 
 export interface CursorHubRecordActivityRequest {
@@ -87,34 +76,6 @@ export class ConnectionShardCursorHubGateway {
     }
 
     return batch;
-  }
-
-  async publishLocalCursors(
-    from: string,
-    updates: CursorPresence[],
-    trace?: CursorTraceContext | null
-  ): Promise<void> {
-    if (updates.length === 0) {
-      return;
-    }
-
-    const headers = new Headers({
-      "content-type": "application/json",
-    });
-    if (trace) {
-      headers.set(CURSOR_TRACE_ID_HEADER, trace.traceId);
-      headers.set(CURSOR_TRACE_HOP_HEADER, String(trace.traceHop));
-      headers.set(CURSOR_TRACE_ORIGIN_HEADER, trace.traceOrigin);
-    }
-
-    await this.#namespace.getByName(this.#hubName).fetch("https://cursor-hub.internal/publish", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        from,
-        updates,
-      } satisfies CursorHubPublishRequest),
-    });
   }
 
   async publishRecentEdit(params: CursorHubRecordActivityRequest): Promise<void> {

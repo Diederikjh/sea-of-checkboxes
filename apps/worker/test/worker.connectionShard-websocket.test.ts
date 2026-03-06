@@ -1598,7 +1598,7 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(afterRelayCount).toBe(beforeRelayCount);
   });
 
-  it("suppresses cursor hub publishes during inbound cursor-batch processing and resumes after cooldown", async () => {
+  it("does not publish local cursors to the hub during inbound cursor-batch handling and wakes cursor pull", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1612,9 +1612,10 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    await drainDeferred(harness);
-    const beforeHubPublishCount = countCursorHubPublishes(harness);
+    harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+      from: "shard-1",
+      updates: [],
+    });
 
     const response = await postCursorBatch(harness.shard, {
       from: "shard-1",
@@ -1633,17 +1634,13 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(response.status).toBe(204);
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 1.5 }));
 
-    await new Promise((resolve) => setTimeout(resolve, 90));
-    await drainDeferred(harness);
-    const duringCooldownHubPublishCount = countCursorHubPublishes(harness);
-    expect(duringCooldownHubPublishCount).toBe(beforeHubPublishCount);
-
     await waitFor(() => {
-      expect(countCursorHubPublishes(harness)).toBeGreaterThan(beforeHubPublishCount);
+      expect(countCursorHubPublishes(harness)).toBe(0);
+      expect(countCursorStatePullRequests(harness)).toBeGreaterThan(0);
     }, { attempts: 120, delayMs: 10 });
   });
 
-  it("suppresses cursor hub publishes during inbound tile-batch processing and resumes after cooldown", async () => {
+  it("does not publish local cursors to the hub after inbound tile-batch handling and wakes cursor pull", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1657,9 +1654,10 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    await drainDeferred(harness);
-    const beforeHubPublishCount = countCursorHubPublishes(harness);
+    harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+      from: "shard-1",
+      updates: [],
+    });
 
     const originalSend = socket.send.bind(socket);
     let reflectedCursor = false;
@@ -1687,55 +1685,13 @@ describe("ConnectionShardDO websocket handling", () => {
     });
     expect(response.status).toBe(204);
 
-    await new Promise((resolve) => setTimeout(resolve, 90));
-    await drainDeferred(harness);
-    const duringCooldownHubPublishCount = countCursorHubPublishes(harness);
-    expect(duringCooldownHubPublishCount).toBe(beforeHubPublishCount);
-
     await new Promise((resolve) => setTimeout(resolve, 80));
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 2.5 }));
 
     await waitFor(() => {
-      expect(countCursorHubPublishes(harness)).toBeGreaterThan(beforeHubPublishCount);
+      expect(countCursorHubPublishes(harness)).toBe(0);
+      expect(countCursorStatePullRequests(harness)).toBeGreaterThan(0);
     }, { attempts: 80, delayMs: 5 });
-    expect(countCursorStatePullRequests(harness)).toBe(0);
-  });
-
-  it("does not publish hub updates from inbound cursor batches and only publishes new local cursors", async () => {
-    const harness = createRelayHarness();
-    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
-      uid: "u_a",
-      name: "Alice",
-      shard: "shard-0",
-    });
-
-    const beforeHubPublishCount = countCursorHubPublishes(harness);
-
-    const inboundResponse = await postCursorBatch(harness.shard, {
-      from: "shard-1",
-      updates: [
-        {
-          uid: "u_remote",
-          name: "Remote",
-          x: 1.5,
-          y: 1.5,
-          seenAt: Date.now(),
-          seq: 1,
-          tileKey: "0:0",
-        },
-      ],
-    });
-    expect(inboundResponse.status).toBe(204);
-
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(countCursorHubPublishes(harness)).toBe(beforeHubPublishCount);
-
-    socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 3.5, y: 3.5 }));
-
-    await waitFor(() => {
-      expect(countCursorHubPublishes(harness)).toBeGreaterThan(beforeHubPublishCount);
-    }, { attempts: 80, delayMs: 5 });
-    expect(countCursorStatePullRequests(harness)).toBe(0);
   });
 
   it("rejects malformed cursor-batch payloads", async () => {
@@ -1865,7 +1821,7 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
-  it("publishes local cursor updates to cursor hub and does not poll peer cursor-state", async () => {
+  it("pulls peer cursor-state when the hub is configured and never publishes local cursors to the hub", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1873,11 +1829,29 @@ describe("ConnectionShardDO websocket handling", () => {
       shard: "shard-0",
     });
 
+    harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 9.5,
+          y: 1.5,
+          seenAt: Date.now(),
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+
     socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 1.5, y: 0.5 }));
 
     await waitFor(() => {
-      expect(countCursorHubPublishes(harness)).toBeGreaterThan(0);
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(true);
+      expect(countCursorStatePullRequests(harness)).toBeGreaterThan(0);
+      expect(countCursorHubPublishes(harness)).toBe(0);
     }, { attempts: 80, delayMs: 5 });
 
     const hub = harness.cursorHub.getByName("global");
@@ -1886,27 +1860,10 @@ describe("ConnectionShardDO websocket handling", () => {
       return entry.request.method === "POST" && url.pathname === "/watch";
     });
     expect(watchRequest).toBeDefined();
-
-    const publishRequest = hub.requests.find((entry) => {
-      const url = new URL(entry.request.url);
-      return entry.request.method === "POST" && url.pathname === "/publish";
-    });
-    expect(publishRequest).toBeDefined();
-    const publishBody = publishRequest ? JSON.parse(publishRequest.body) as CursorRelayBatch : null;
-    expect(publishBody?.from).toBe("shard-0");
-    expect(
-      publishBody?.updates.some(
-        (update) => update.uid === "u_a" && update.name === "Alice" && update.x === 1.5 && update.y === 0.5
-      )
-    ).toBe(true);
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-id")).toBeNull();
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-hop")).toBeNull();
-
-    expect(countCursorStatePullRequests(harness)).toBe(0);
     expect(countCursorRelaySubrequests(harness)).toBe(0);
   });
 
-  it("does not leak an inbound cursor trace into later local hub publishes", async () => {
+  it("does not publish local cursors to the hub after an inbound traced cursor batch", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1943,18 +1900,9 @@ describe("ConnectionShardDO websocket handling", () => {
     socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 2.5 }));
 
     await waitFor(() => {
-      expect(countCursorHubPublishes(harness)).toBeGreaterThan(0);
+      expect(countCursorHubPublishes(harness)).toBe(0);
+      expect(countCursorStatePullRequests(harness)).toBeGreaterThan(0);
     }, { attempts: 120, delayMs: 10 });
-
-    const hub = harness.cursorHub.getByName("global");
-    const publishRequest = [...hub.requests].reverse().find((entry) => {
-      const url = new URL(entry.request.url);
-      return entry.request.method === "POST" && url.pathname === "/publish";
-    });
-    expect(publishRequest).toBeDefined();
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-id")).toBeNull();
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-hop")).toBeNull();
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-origin")).toBeNull();
   });
 
   it("does not generate timer-driven cursor relay from inbound batches", async () => {

@@ -23,7 +23,6 @@ export interface ConnectionShardClientMessageHandlerOptions {
   refreshTilePullSchedule: () => void;
   markCursorPullActive: () => void;
   cursorOnLocalCursor: (client: ConnectedClient, x: number, y: number) => void;
-  markLocalCursorDirty: () => void;
   elapsedMs: (startMs: number) => number;
 }
 
@@ -51,7 +50,6 @@ export async function handleConnectionShardClientMessage(
     refreshTilePullSchedule,
     markCursorPullActive,
     cursorOnLocalCursor,
-    markLocalCursorDirty,
     elapsedMs,
   } = options;
   const cidFields = messageCidFields(message);
@@ -183,7 +181,6 @@ export async function handleConnectionShardClientMessage(
       return;
     case "cur":
       cursorOnLocalCursor(client, message.x, message.y);
-      markLocalCursorDirty();
       markCursorPullActive();
       return;
     default:

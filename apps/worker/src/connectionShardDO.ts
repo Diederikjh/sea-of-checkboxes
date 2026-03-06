@@ -198,9 +198,6 @@ export class ConnectionShardDO {
       gateway: cursorHubGateway,
       hasClients: () => this.#clients.size > 0,
       currentShardName: () => this.#currentShardName(),
-      canRelayNow: () => this.#canRelayCursorNow(),
-      activeTraceContext: () => this.#cursorTraceState.activeTraceContext(),
-      localCursorSnapshot: () => this.#cursorCoordinator.localCursorSnapshot(),
       ingestBatch: (batch) => this.#ingestCursorBatchWithIngress(batch),
       deferDetachedTask: (task) => this.#deferDetachedTask(task),
       maybeUnrefTimer: (timer) => this.#maybeUnrefTimer(timer),
@@ -484,9 +481,6 @@ export class ConnectionShardDO {
         },
         cursorOnLocalCursor: (connectedClient, x, y) => {
           this.#cursorCoordinator.onLocalCursor(connectedClient, x, y);
-        },
-        markLocalCursorDirty: () => {
-          this.#cursorHubController.markLocalCursorDirty();
         },
         elapsedMs,
       });
@@ -929,15 +923,6 @@ export class ConnectionShardDO {
   }
 
   #refreshCursorPullSchedule(): void {
-    if (this.#cursorHubController.isEnabled()) {
-      this.#clearCursorPullTimer();
-      this.#cursorPullInFlight = false;
-      this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
-      this.#cursorPullQuietStreak = 0;
-      this.#cursorPullActiveUntilMs = 0;
-      return;
-    }
-
     if (this.#clients.size === 0) {
       this.#clearCursorPullTimer();
       this.#cursorPullInFlight = false;
@@ -1049,10 +1034,6 @@ export class ConnectionShardDO {
   }
 
   async #runCursorPullTick(): Promise<void> {
-    if (this.#cursorHubController.isEnabled()) {
-      return;
-    }
-
     if (this.#clients.size === 0) {
       return;
     }
@@ -1100,7 +1081,7 @@ export class ConnectionShardDO {
   }
 
   #markCursorPullActive(): void {
-    if (this.#cursorHubController.isEnabled() || this.#clients.size === 0) {
+    if (this.#clients.size === 0) {
       return;
     }
 

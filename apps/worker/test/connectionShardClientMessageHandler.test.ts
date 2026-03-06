@@ -51,7 +51,6 @@ function createOptions(message: ClientMessage): ConnectionShardClientMessageHand
     refreshTilePullSchedule: vi.fn(),
     markCursorPullActive: vi.fn(),
     cursorOnLocalCursor: vi.fn(),
-    markLocalCursorDirty: vi.fn(),
     elapsedMs: vi.fn(() => 5),
   };
 }
@@ -255,7 +254,6 @@ describe("handleConnectionShardClientMessage", () => {
     await handleConnectionShardClientMessage(options);
 
     expect(options.cursorOnLocalCursor).toHaveBeenCalledWith(options.client, 3.5, -4.5);
-    expect(options.markLocalCursorDirty).toHaveBeenCalled();
     expect(options.markCursorPullActive).toHaveBeenCalled();
   });
 

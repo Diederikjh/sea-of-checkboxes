@@ -1,39 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import type { CursorPresence, CursorRelayBatch, CursorTraceContext } from "../src/cursorRelay";
+import type { CursorPresence, CursorRelayBatch } from "../src/cursorRelay";
 import { ConnectionShardCursorHubController } from "../src/connectionShardCursorHubController";
 import { waitFor } from "./helpers/waitFor";
 
 class MockCursorHubGateway {
   watchCalls: Array<{ shard: string; action: "sub" | "unsub" }> = [];
-  publishCalls: Array<{ from: string; updates: CursorPresence[]; trace: CursorTraceContext | null }> = [];
   watchResponses: Array<CursorRelayBatch | null> = [];
 
   async watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorRelayBatch | null> {
     this.watchCalls.push({ shard, action });
     return this.watchResponses.shift() ?? null;
   }
-
-  async publishLocalCursors(
-    from: string,
-    updates: CursorPresence[],
-    trace?: CursorTraceContext | null
-  ): Promise<void> {
-    this.publishCalls.push({ from, updates, trace: trace ?? null });
-  }
 }
 
 function createControllerHarness(options: {
   hasClients?: boolean;
-  canRelayNow?: boolean;
-  localSnapshot?: CursorPresence[];
   watchResponses?: Array<CursorRelayBatch | null>;
-  activeTraceContext?: CursorTraceContext | null;
 }) {
   let hasClients = options.hasClients ?? true;
-  let canRelayNow = options.canRelayNow ?? true;
-  let localSnapshot = options.localSnapshot ?? [];
-  let activeTraceContext = options.activeTraceContext ?? null;
   const ingested: CursorRelayBatch[] = [];
   const gateway = new MockCursorHubGateway();
   gateway.watchResponses = [...(options.watchResponses ?? [])];
@@ -42,9 +27,6 @@ function createControllerHarness(options: {
     gateway,
     hasClients: () => hasClients,
     currentShardName: () => "shard-a",
-    canRelayNow: () => canRelayNow,
-    activeTraceContext: () => activeTraceContext,
-    localCursorSnapshot: () => localSnapshot,
     ingestBatch: (batch) => {
       ingested.push(batch);
     },
@@ -52,7 +34,6 @@ function createControllerHarness(options: {
       void task();
     },
     maybeUnrefTimer: () => {},
-    publishFlushMs: 0,
     watchRenewMs: 60_000,
   });
 
@@ -62,15 +43,6 @@ function createControllerHarness(options: {
     ingested,
     setHasClients(value: boolean) {
       hasClients = value;
-    },
-    setCanRelayNow(value: boolean) {
-      canRelayNow = value;
-    },
-    setLocalSnapshot(value: CursorPresence[]) {
-      localSnapshot = value;
-    },
-    setActiveTraceContext(value: CursorTraceContext | null) {
-      activeTraceContext = value;
     },
   };
 }
@@ -107,45 +79,16 @@ describe("ConnectionShardCursorHubController", () => {
     });
   });
 
-  it("publishes local cursors when marked dirty after subscription", async () => {
-    const local = cursor("u_local");
+  it("does not register a watch when there are no clients", async () => {
     const harness = createControllerHarness({
-      watchResponses: [null],
-      localSnapshot: [local],
+      hasClients: false,
     });
 
     harness.controller.refreshWatchState();
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls.length).toBe(1);
-    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
 
-    harness.controller.markLocalCursorDirty();
-
-    await waitFor(() => {
-      expect(harness.gateway.publishCalls).toHaveLength(1);
-      expect(harness.gateway.publishCalls[0]).toEqual({
-        from: "shard-a",
-        updates: [local],
-        trace: null,
-      });
-    });
-  });
-
-  it("queues subscription first when a publish arrives before watch is established", async () => {
-    const local = cursor("u_local");
-    const harness = createControllerHarness({
-      watchResponses: [null],
-      localSnapshot: [local],
-    });
-
-    harness.controller.markLocalCursorDirty();
-
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls).toEqual([
-        { shard: "shard-a", action: "sub" },
-      ]);
-      expect(harness.gateway.publishCalls).toHaveLength(1);
-    });
+    expect(harness.gateway.watchCalls).toEqual([]);
+    expect(harness.ingested).toEqual([]);
   });
 
   it("unsubscribes when clients drop to zero", async () => {
@@ -171,97 +114,34 @@ describe("ConnectionShardCursorHubController", () => {
     });
   });
 
-  it("defers publish while relay is suppressed and retries after suppression lifts", async () => {
-    const local = cursor("u_local");
+  it("repeated refreshes only issue watch actions for the current shard", async () => {
     const harness = createControllerHarness({
-      watchResponses: [null],
-      localSnapshot: [local],
-      canRelayNow: false,
+      watchResponses: [null, null],
     });
 
     harness.controller.refreshWatchState();
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls.length).toBe(1);
-    });
-
-    harness.controller.markLocalCursorDirty();
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(harness.gateway.publishCalls).toHaveLength(0);
-
-    harness.setCanRelayNow(true);
-    harness.controller.markLocalCursorDirty();
-    await waitFor(() => {
-      expect(harness.gateway.publishCalls).toHaveLength(1);
-    });
-  });
-
-  it("forwards the active cursor trace context with hub publishes", async () => {
-    const local = cursor("u_local");
-    const harness = createControllerHarness({
-      watchResponses: [null],
-      localSnapshot: [local],
-      activeTraceContext: {
-        traceId: "trace-1",
-        traceHop: 1,
-        traceOrigin: "shard-remote",
-      },
-    });
-
     harness.controller.refreshWatchState();
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls.length).toBe(1);
-    });
-
-    harness.controller.markLocalCursorDirty();
 
     await waitFor(() => {
-      expect(harness.gateway.publishCalls).toHaveLength(1);
-      expect(harness.gateway.publishCalls[0]).toEqual({
-        from: "shard-a",
-        updates: [local],
-        trace: {
-          traceId: "trace-1",
-          traceHop: 1,
-          traceOrigin: "shard-remote",
-        },
+      expect(harness.gateway.watchCalls.length).toBeGreaterThanOrEqual(1);
+      expect(harness.gateway.watchCalls[0]).toEqual({
+        shard: "shard-a",
+        action: "sub",
       });
     });
-  });
 
-  it("keeps the trace captured at dirty time for a delayed publish", async () => {
-    const local = cursor("u_local");
-    const harness = createControllerHarness({
-      watchResponses: [null],
-      localSnapshot: [local],
-      canRelayNow: false,
-      activeTraceContext: {
-        traceId: "trace-2",
-        traceHop: 1,
-        traceOrigin: "shard-remote",
-      },
-    });
-
+    harness.setHasClients(false);
     harness.controller.refreshWatchState();
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls.length).toBe(1);
-    });
-
-    harness.controller.markLocalCursorDirty();
-    harness.setActiveTraceContext(null);
-    harness.setCanRelayNow(true);
-    harness.controller.markLocalCursorDirty();
+    harness.controller.refreshWatchState();
 
     await waitFor(() => {
-      expect(harness.gateway.publishCalls).toHaveLength(1);
-      expect(harness.gateway.publishCalls[0]).toEqual({
-        from: "shard-a",
-        updates: [local],
-        trace: {
-          traceId: "trace-2",
-          traceHop: 1,
-          traceOrigin: "shard-remote",
-        },
+      expect(harness.gateway.watchCalls.some((call) => call.action === "unsub")).toBe(true);
+      expect(harness.gateway.watchCalls[harness.gateway.watchCalls.length - 1]).toEqual({
+        shard: "shard-a",
+        action: "unsub",
       });
     });
+
+    expect(harness.gateway.watchCalls.every((call) => call.shard === "shard-a")).toBe(true);
   });
 });
