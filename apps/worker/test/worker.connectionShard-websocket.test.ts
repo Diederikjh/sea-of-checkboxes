@@ -122,9 +122,38 @@ function createRelayHarness() {
 }
 
 type RelayHarness = ReturnType<typeof createRelayHarness>;
+type ConnectionShardRequestHarness = { connectionShards: StubNamespace<RecordingDurableObjectStub> };
+
+function createCursorPullHarness() {
+  const socketPairFactory = new MockSocketPairFactory();
+  const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
+  const connectionShards = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+  const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
+
+  const env = {
+    CONNECTION_SHARD: connectionShards,
+    TILE_OWNER: tileOwners,
+  };
+
+  const state = {
+    id: { toString: () => "shard:test" },
+    storage: new NullStorage(),
+  };
+
+  const shard = new ConnectionShardDO(state, env, {
+    socketPairFactory,
+    upgradeResponseFactory,
+  });
+
+  return {
+    shard,
+    socketPairFactory,
+    connectionShards,
+  };
+}
 
 function countConnectionShardSubrequests(
-  harness: RelayHarness,
+  harness: ConnectionShardRequestHarness,
   options: { path: string; method?: string }
 ): number {
   let total = 0;
@@ -151,7 +180,7 @@ function countCursorRelaySubrequests(harness: RelayHarness): number {
   });
 }
 
-function countCursorStatePullRequests(harness: RelayHarness): number {
+function countCursorStatePullRequests(harness: ConnectionShardRequestHarness): number {
   return countConnectionShardSubrequests(harness, {
     path: "/cursor-state",
     method: "GET",
@@ -1393,6 +1422,85 @@ describe("ConnectionShardDO websocket handling", () => {
         )
       ).toBe(true);
     });
+  });
+
+  it("backs off cursor-state polling after repeated quiet polls", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createCursorPullHarness();
+      for (let index = 1; index < 8; index += 1) {
+        harness.connectionShards.getByName(`shard-${index}`).setJsonPathResponse("/cursor-state", {
+          from: `shard-${index}`,
+          updates: [],
+        });
+      }
+
+      await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(countCursorStatePullRequests(harness)).toBe(7);
+
+      await vi.advanceTimersByTimeAsync(450);
+      expect(countCursorStatePullRequests(harness)).toBe(49);
+
+      await vi.advanceTimersByTimeAsync(74);
+      expect(countCursorStatePullRequests(harness)).toBe(49);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(countCursorStatePullRequests(harness)).toBe(56);
+
+      await vi.advanceTimersByTimeAsync(149);
+      expect(countCursorStatePullRequests(harness)).toBe(56);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(countCursorStatePullRequests(harness)).toBe(63);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("wakes cursor-state polling back up when local cursor activity resumes", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createCursorPullHarness();
+      for (let index = 1; index < 8; index += 1) {
+        harness.connectionShards.getByName(`shard-${index}`).setJsonPathResponse("/cursor-state", {
+          from: `shard-${index}`,
+          updates: [],
+        });
+      }
+
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(countCursorStatePullRequests(harness)).toBe(7);
+
+      await vi.advanceTimersByTimeAsync(150 + 225 + 300 + 300 + 300 + 300);
+      expect(countCursorStatePullRequests(harness)).toBe(84);
+
+      await vi.advanceTimersByTimeAsync(224);
+      expect(countCursorStatePullRequests(harness)).toBe(84);
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 1.5 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(countCursorStatePullRequests(harness)).toBe(91);
+
+      await vi.advanceTimersByTimeAsync(74);
+      expect(countCursorStatePullRequests(harness)).toBe(91);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(countCursorStatePullRequests(harness)).toBe(98);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not relay inbound cursor batches to peer shards", async () => {

@@ -21,6 +21,7 @@ export interface ConnectionShardClientMessageHandlerOptions {
   cursorOnActivity: () => void;
   cursorOnSubscriptionsChanged: (force: boolean) => void;
   refreshTilePullSchedule: () => void;
+  markCursorPullActive: () => void;
   cursorOnLocalCursor: (client: ConnectedClient, x: number, y: number) => void;
   markLocalCursorDirty: () => void;
   elapsedMs: (startMs: number) => number;
@@ -48,6 +49,7 @@ export async function handleConnectionShardClientMessage(
     cursorOnActivity,
     cursorOnSubscriptionsChanged,
     refreshTilePullSchedule,
+    markCursorPullActive,
     cursorOnLocalCursor,
     markLocalCursorDirty,
     elapsedMs,
@@ -100,6 +102,7 @@ export async function handleConnectionShardClientMessage(
       }
       cursorOnSubscriptionsChanged(true);
       refreshTilePullSchedule();
+      markCursorPullActive();
       return;
     }
     case "unsub": {
@@ -113,6 +116,7 @@ export async function handleConnectionShardClientMessage(
       });
       cursorOnSubscriptionsChanged(true);
       refreshTilePullSchedule();
+      markCursorPullActive();
       return;
     }
     case "setCell": {
@@ -166,6 +170,7 @@ export async function handleConnectionShardClientMessage(
         recordRecentEditActivity(message.tile, message.i);
       }
       cursorOnActivity();
+      markCursorPullActive();
       return;
     }
     case "resyncTile":
@@ -179,6 +184,7 @@ export async function handleConnectionShardClientMessage(
     case "cur":
       cursorOnLocalCursor(client, message.x, message.y);
       markLocalCursorDirty();
+      markCursorPullActive();
       return;
     default:
       return;

@@ -161,9 +161,9 @@ export class CursorCoordinator {
     this.#scheduleCursorRelayFlush();
   }
 
-  onCursorBatch(batch: CursorRelayBatch): void {
+  onCursorBatch(batch: CursorRelayBatch): boolean {
     if (batch.from === this.#getCurrentShardName()) {
-      return;
+      return false;
     }
 
     let hadChanges = false;
@@ -182,7 +182,7 @@ export class CursorCoordinator {
     }
 
     if (!hadChanges) {
-      return;
+      return false;
     }
 
     this.#markCursorSelectionDirty();
@@ -191,6 +191,7 @@ export class CursorCoordinator {
       this.#relaySuppressedUntilMs,
       this.#clock.nowMs() + CURSOR_RELAY_INGRESS_SUPPRESSION_MS
     );
+    return true;
   }
 
   localCursorSnapshot(): CursorPresence[] {

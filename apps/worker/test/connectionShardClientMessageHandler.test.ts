@@ -49,6 +49,7 @@ function createOptions(message: ClientMessage): ConnectionShardClientMessageHand
     cursorOnActivity: vi.fn(),
     cursorOnSubscriptionsChanged: vi.fn(),
     refreshTilePullSchedule: vi.fn(),
+    markCursorPullActive: vi.fn(),
     cursorOnLocalCursor: vi.fn(),
     markLocalCursorDirty: vi.fn(),
     elapsedMs: vi.fn(() => 5),
@@ -110,6 +111,7 @@ describe("handleConnectionShardClientMessage", () => {
     }));
     expect(options.cursorOnSubscriptionsChanged).toHaveBeenCalledWith(true);
     expect(options.refreshTilePullSchedule).toHaveBeenCalled();
+    expect(options.markCursorPullActive).toHaveBeenCalled();
   });
 
   it("handles unsubscribe messages via the shared operations module", async () => {
@@ -141,6 +143,7 @@ describe("handleConnectionShardClientMessage", () => {
     }));
     expect(options.cursorOnSubscriptionsChanged).toHaveBeenCalledWith(true);
     expect(options.refreshTilePullSchedule).toHaveBeenCalled();
+    expect(options.markCursorPullActive).toHaveBeenCalled();
   });
 
   it("fans out accepted setCell updates through the injected callbacks", async () => {
@@ -178,6 +181,7 @@ describe("handleConnectionShardClientMessage", () => {
     });
     expect(options.recordRecentEditActivity).toHaveBeenCalledWith("0:0", 5);
     expect(options.cursorOnActivity).toHaveBeenCalled();
+    expect(options.markCursorPullActive).toHaveBeenCalled();
   });
 
   it("logs not-subscribed rejections without fanning out a tile update", async () => {
@@ -215,6 +219,7 @@ describe("handleConnectionShardClientMessage", () => {
     expect(options.receiveTileBatch).not.toHaveBeenCalled();
     expect(options.recordRecentEditActivity).not.toHaveBeenCalled();
     expect(options.cursorOnActivity).toHaveBeenCalled();
+    expect(options.markCursorPullActive).toHaveBeenCalled();
   });
 
   it("routes resync messages through the shared operations module", async () => {
@@ -251,6 +256,7 @@ describe("handleConnectionShardClientMessage", () => {
 
     expect(options.cursorOnLocalCursor).toHaveBeenCalledWith(options.client, 3.5, -4.5);
     expect(options.markLocalCursorDirty).toHaveBeenCalled();
+    expect(options.markCursorPullActive).toHaveBeenCalled();
   });
 
   it("ignores unsupported client messages", async () => {
