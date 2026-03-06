@@ -32,7 +32,29 @@ const SERVER_TAG = {
   cellUpBatch: 104,
   curUp: 105,
   err: 106,
+  subAck: 107,
 } as const;
+
+function writeOptionalString(writer: BinaryWriter, value?: string): void {
+  writer.writeU8(value ? 1 : 0);
+  if (value) {
+    writer.writeString(value);
+  }
+}
+
+function readOptionalString(reader: BinaryReader): string | undefined {
+  if (reader.remainingBytes() <= 0) {
+    return undefined;
+  }
+  const marker = reader.readU8();
+  if (marker === 0) {
+    return undefined;
+  }
+  if (marker !== 1) {
+    throw new Error(`Invalid optional string marker: ${marker}`);
+  }
+  return reader.readString();
+}
 
 function encodeBase64Bytes(bytes: Uint8Array): string {
   if (typeof Buffer !== "undefined") {
@@ -287,10 +309,12 @@ export function encodeClientMessageBinary(message: ClientMessage): Uint8Array {
     case "sub":
       writer.writeU8(CLIENT_TAG.sub);
       writeTileList(writer, message.tiles);
+      writeOptionalString(writer, message.cid);
       break;
     case "unsub":
       writer.writeU8(CLIENT_TAG.unsub);
       writeTileList(writer, message.tiles);
+      writeOptionalString(writer, message.cid);
       break;
     case "setCell":
       writer.writeU8(CLIENT_TAG.setCell);
@@ -298,6 +322,7 @@ export function encodeClientMessageBinary(message: ClientMessage): Uint8Array {
       writer.writeU16(message.i);
       writer.writeU8(message.v);
       writer.writeString(message.op);
+      writeOptionalString(writer, message.cid);
       break;
     case "cur":
       writer.writeU8(CLIENT_TAG.cur);
@@ -308,6 +333,7 @@ export function encodeClientMessageBinary(message: ClientMessage): Uint8Array {
       writer.writeU8(CLIENT_TAG.resyncTile);
       writer.writeTileKey(message.tile);
       writer.writeU32(message.haveVer);
+      writeOptionalString(writer, message.cid);
       break;
     default:
       return assertNever(message);
@@ -323,27 +349,42 @@ export function decodeClientMessageBinary(payload: Uint8Array): ClientMessage {
   let decoded: ClientMessage;
 
   switch (tag) {
-    case CLIENT_TAG.sub:
+    case CLIENT_TAG.sub: {
+      const tiles = readTileList(reader);
+      const cid = readOptionalString(reader);
       decoded = {
         t: "sub",
-        tiles: readTileList(reader),
+        tiles,
+        ...(cid ? { cid } : {}),
       };
       break;
-    case CLIENT_TAG.unsub:
+    }
+    case CLIENT_TAG.unsub: {
+      const tiles = readTileList(reader);
+      const cid = readOptionalString(reader);
       decoded = {
         t: "unsub",
-        tiles: readTileList(reader),
+        tiles,
+        ...(cid ? { cid } : {}),
       };
       break;
-    case CLIENT_TAG.setCell:
+    }
+    case CLIENT_TAG.setCell: {
+      const tile = reader.readTileKey();
+      const i = reader.readU16();
+      const v = toBit(reader.readU8());
+      const op = reader.readString();
+      const cid = readOptionalString(reader);
       decoded = {
         t: "setCell",
-        tile: reader.readTileKey(),
-        i: reader.readU16(),
-        v: toBit(reader.readU8()),
-        op: reader.readString(),
+        tile,
+        i,
+        v,
+        op,
+        ...(cid ? { cid } : {}),
       };
       break;
+    }
     case CLIENT_TAG.cur:
       decoded = {
         t: "cur",
@@ -351,13 +392,18 @@ export function decodeClientMessageBinary(payload: Uint8Array): ClientMessage {
         y: reader.readF32(),
       };
       break;
-    case CLIENT_TAG.resyncTile:
+    case CLIENT_TAG.resyncTile: {
+      const tile = reader.readTileKey();
+      const haveVer = reader.readU32();
+      const cid = readOptionalString(reader);
       decoded = {
         t: "resyncTile",
-        tile: reader.readTileKey(),
-        haveVer: reader.readU32(),
+        tile,
+        haveVer,
+        ...(cid ? { cid } : {}),
       };
       break;
+    }
     default:
       throw new Error(`Unknown client binary tag: ${tag}`);
   }
@@ -430,6 +476,13 @@ export function encodeServerMessageBinary(message: ServerMessage): Uint8Array {
       if (message.trace) {
         writer.writeString(message.trace);
       }
+      break;
+    case "subAck":
+      writer.writeU8(SERVER_TAG.subAck);
+      writer.writeString(message.cid);
+      writer.writeU32(message.requestedCount);
+      writer.writeU32(message.changedCount);
+      writer.writeU32(message.subscribedCount);
       break;
     default:
       return assertNever(message);
@@ -529,6 +582,15 @@ export function decodeServerMessageBinary(payload: Uint8Array): ServerMessage {
           };
         }
       }
+      break;
+    case SERVER_TAG.subAck:
+      decoded = {
+        t: "subAck",
+        cid: reader.readString(),
+        requestedCount: reader.readU32(),
+        changedCount: reader.readU32(),
+        subscribedCount: reader.readU32(),
+      };
       break;
     default:
       throw new Error(`Unknown server binary tag: ${tag}`);

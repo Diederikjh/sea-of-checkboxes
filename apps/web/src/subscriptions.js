@@ -5,7 +5,6 @@ export function reconcileSubscriptions({
   viewportWidth,
   viewportHeight,
   subscribedTiles,
-  transport,
   marginTiles = 1,
 }) {
   const visibleTiles = enumerateVisibleTiles({
@@ -33,15 +32,10 @@ export function reconcileSubscriptions({
     }
   }
 
-  if (toSub.length > 0) {
-    transport.send({ t: "sub", tiles: toSub });
-  }
-  if (toUnsub.length > 0) {
-    transport.send({ t: "unsub", tiles: toUnsub });
-  }
-
   return {
     visibleTiles,
     subscribedTiles: nextSubscribedTiles,
+    toSub,
+    toUnsub,
   };
 }

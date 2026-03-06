@@ -364,7 +364,7 @@ describe("ConnectionShardDO websocket handling", () => {
       shard: "shard-a",
     });
 
-    serverSocket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    serverSocket.emitMessage(encodeClientMessageBinary({ t: "sub", cid: "c_sub_1", tiles: ["0:0"] }));
 
     await waitFor(() => {
       const tileStub = harness.tileOwners.getByName("0:0");
@@ -380,6 +380,13 @@ describe("ConnectionShardDO websocket handling", () => {
 
     const messages = decodeMessages(serverSocket);
     expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    expect(messages).toContainEqual({
+      t: "subAck",
+      cid: "c_sub_1",
+      requestedCount: 1,
+      changedCount: 1,
+      subscribedCount: 1,
+    });
   });
 
   it("rejects setCell for unsubscribed tiles and sends snapshot", async () => {
@@ -1003,6 +1010,7 @@ describe("ConnectionShardDO websocket handling", () => {
       secondSocket.emitMessage(
         encodeClientMessageBinary({
           t: "setCell",
+          cid: "c_set_before_resub",
           tile: "0:0",
           i: 7,
           v: 1,
@@ -1026,6 +1034,7 @@ describe("ConnectionShardDO websocket handling", () => {
 
       expect(event).toBeDefined();
       expect(event).toMatchObject({
+        cid: "c_set_before_resub",
         i: 7,
         v: 1,
         op: "op_before_resub",
@@ -1047,6 +1056,7 @@ describe("ConnectionShardDO websocket handling", () => {
       );
 
       expect(errEvent).toMatchObject({
+        cid: "c_set_before_resub",
         msg: "Tile 0:0 is not currently subscribed",
         tile: "0:0",
         i: 7,

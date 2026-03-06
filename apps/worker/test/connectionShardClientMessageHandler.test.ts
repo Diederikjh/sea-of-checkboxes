@@ -55,6 +55,24 @@ function createOptions(message: ClientMessage): ConnectionShardClientMessageHand
   };
 }
 
+function expectScopedContext(
+  actual: ConnectionShardDOOperationsContext,
+  expectedBase: ConnectionShardDOOperationsContext
+) {
+  expect(actual).toMatchObject({
+    clients: expectedBase.clients,
+    tileToClients: expectedBase.tileToClients,
+    shardName: expectedBase.shardName,
+    sendServerMessage: expectedBase.sendServerMessage,
+    watchTile: expectedBase.watchTile,
+    setTileCell: expectedBase.setTileCell,
+    sendSnapshotToClient: expectedBase.sendSnapshotToClient,
+    nowMs: expectedBase.nowMs,
+  });
+  expect(typeof actual.sendError).toBe("function");
+  expect(typeof actual.sendBadTile).toBe("function");
+}
+
 describe("handleConnectionShardClientMessage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -76,11 +94,14 @@ describe("handleConnectionShardClientMessage", () => {
 
     await handleConnectionShardClientMessage(options);
 
-    expect(operationsMocks.handleSubMessage).toHaveBeenCalledWith(
-      options.context,
-      options.client,
-      ["0:0"]
-    );
+    const subCall = operationsMocks.handleSubMessage.mock.calls[0];
+    if (!subCall) {
+      throw new Error("Expected handleSubMessage call");
+    }
+    const [contextArg, clientArg, tilesArg] = subCall;
+    expectScopedContext(contextArg, options.context);
+    expect(clientArg).toBe(options.client);
+    expect(tilesArg).toEqual(["0:0"]);
     expect(options.logEvent).toHaveBeenCalledWith("sub", expect.objectContaining({
       uid: "u_a",
       requested_count: 1,
@@ -104,11 +125,14 @@ describe("handleConnectionShardClientMessage", () => {
 
     await handleConnectionShardClientMessage(options);
 
-    expect(operationsMocks.handleUnsubMessage).toHaveBeenCalledWith(
-      options.context,
-      options.client,
-      ["0:0"]
-    );
+    const unsubCall = operationsMocks.handleUnsubMessage.mock.calls[0];
+    if (!unsubCall) {
+      throw new Error("Expected handleUnsubMessage call");
+    }
+    const [contextArg, clientArg, tilesArg] = unsubCall;
+    expectScopedContext(contextArg, options.context);
+    expect(clientArg).toBe(options.client);
+    expect(tilesArg).toEqual(["0:0"]);
     expect(options.logEvent).toHaveBeenCalledWith("unsub", expect.objectContaining({
       uid: "u_a",
       requested_count: 1,
@@ -136,11 +160,14 @@ describe("handleConnectionShardClientMessage", () => {
 
     await handleConnectionShardClientMessage(options);
 
-    expect(operationsMocks.handleSetCellMessage).toHaveBeenCalledWith(
-      options.context,
-      options.client,
-      options.message
-    );
+    const setCellCall = operationsMocks.handleSetCellMessage.mock.calls[0];
+    if (!setCellCall) {
+      throw new Error("Expected handleSetCellMessage call");
+    }
+    const [contextArg, clientArg, messageArg] = setCellCall;
+    expectScopedContext(contextArg, options.context);
+    expect(clientArg).toBe(options.client);
+    expect(messageArg).toBe(options.message);
     expect(options.recordTileVersion).toHaveBeenCalledWith("0:0", 42);
     expect(options.receiveTileBatch).toHaveBeenCalledWith({
       t: "cellUpBatch",
@@ -199,11 +226,14 @@ describe("handleConnectionShardClientMessage", () => {
 
     await handleConnectionShardClientMessage(options);
 
-    expect(operationsMocks.handleResyncMessage).toHaveBeenCalledWith(
-      options.context,
-      options.client,
-      "0:0"
-    );
+    const resyncCall = operationsMocks.handleResyncMessage.mock.calls[0];
+    if (!resyncCall) {
+      throw new Error("Expected handleResyncMessage call");
+    }
+    const [contextArg, clientArg, tileArg] = resyncCall;
+    expectScopedContext(contextArg, options.context);
+    expect(clientArg).toBe(options.client);
+    expect(tileArg).toBe("0:0");
     expect(options.logEvent).toHaveBeenCalledWith("resyncTile", {
       uid: "u_a",
       tile: "0:0",

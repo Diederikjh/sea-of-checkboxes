@@ -103,6 +103,7 @@ export function createServerMessageHandler({
   onTileCellsChanged = () => {},
   setInteractionRestriction = () => {},
   onIdentityReceived = () => {},
+  onSubscriptionAck = () => {},
   getPendingSetCellOpsForTile = () => [],
   dropPendingSetCellOpsForTile = () => 0,
 }) {
@@ -283,6 +284,15 @@ export function createServerMessageHandler({
         setStatus(`Error: ${message.msg}${traceSuffix}`);
         break;
       }
+      case "subAck":
+        logger.protocol("sub_ack", {
+          cid: message.cid,
+          requestedCount: message.requestedCount,
+          changedCount: message.changedCount,
+          subscribedCount: message.subscribedCount,
+        });
+        onSubscriptionAck(message);
+        break;
       default:
         break;
     }

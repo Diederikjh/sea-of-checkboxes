@@ -54,6 +54,8 @@ export function createRenderLoop({
   transport,
   setStatus,
   perfProbe = createPerfProbe(),
+  onSubscriptionRebuildSubSent = () => {},
+  onSubscriptionRebuildSkipped = () => {},
 }) {
   let subscribedTiles = new Set();
   let visibleTiles = [];
@@ -61,6 +63,7 @@ export function createRenderLoop({
   let needsSubscriptionRefresh = true;
   let needsRender = true;
   let forceResubscribeVisibleTiles = false;
+  let pendingSubscriptionRebuildReason = null;
   const dirtyTileCells = new Map();
 
   const requestSubscriptionRefresh = ({
@@ -177,19 +180,50 @@ export function createRenderLoop({
       viewportWidth: app.renderer.width,
       viewportHeight: app.renderer.height,
       subscribedTiles,
-      transport,
       marginTiles: 1,
     });
+    const rebuildReason = pendingSubscriptionRebuildReason;
+    const isForcedRebuild = forceResubscribeVisibleTiles;
+    let rebuildSubSent = false;
+
+    if (updated.toSub.length > 0) {
+      const options =
+        rebuildReason && !isForcedRebuild
+          ? { subscriptionRebuild: { reason: rebuildReason } }
+          : undefined;
+      const sentMessage = transport.send({ t: "sub", tiles: updated.toSub }, options);
+      if (options) {
+        rebuildSubSent = true;
+        onSubscriptionRebuildSubSent(sentMessage, rebuildReason);
+      }
+    }
+
+    if (updated.toUnsub.length > 0) {
+      transport.send({ t: "unsub", tiles: updated.toUnsub });
+    }
 
     visibleTiles = updated.visibleTiles;
     subscribedTiles = updated.subscribedTiles;
     if (forceResubscribeVisibleTiles) {
       const tiles = Array.from(updated.subscribedTiles);
       if (tiles.length > 0) {
-        transport.send({ t: "sub", tiles });
+        const options = rebuildReason
+          ? { subscriptionRebuild: { reason: rebuildReason } }
+          : undefined;
+        const sentMessage = transport.send({ t: "sub", tiles }, options);
+        if (rebuildReason) {
+          rebuildSubSent = true;
+          onSubscriptionRebuildSubSent(sentMessage, rebuildReason);
+        }
       }
       forceResubscribeVisibleTiles = false;
     }
+    if (rebuildReason && !rebuildSubSent) {
+      onSubscriptionRebuildSkipped(rebuildReason, {
+        visibleTileCount: updated.subscribedTiles.size,
+      });
+    }
+    pendingSubscriptionRebuildReason = null;
     needsSubscriptionRefresh = false;
   };
 
@@ -270,14 +304,16 @@ export function createRenderLoop({
     markViewportDirty: markNeedsFullRefresh,
     markVisualDirty,
     markTileCellsDirty,
-    markTransportReconnected() {
+    markTransportReconnected(reason = "transport_reconnect") {
       // Rebuild shard-side subscriptions after WS reconnect or worker upgrade.
       requestSubscriptionRefresh({ resetSubscribedTiles: true });
+      pendingSubscriptionRebuildReason = reason;
     },
-    forceSubscriptionRebuild() {
+    forceSubscriptionRebuild(reason = "subscription_rebuild") {
       // Re-assert visible tile subscriptions when browser lifecycle events
       // (focus/visibility/pageshow) might have drifted shard watch state.
       requestSubscriptionRefresh({ resubscribeVisibleTiles: true });
+      pendingSubscriptionRebuildReason = reason;
     },
     handleResize: markNeedsFullRefresh,
     dispose() {

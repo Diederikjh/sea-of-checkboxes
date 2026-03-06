@@ -55,7 +55,21 @@ import {
 } from "./cursorGeometry";
 
 const CURSOR_VIEWPORT_MARGIN_PX = 24;
-const SUBSCRIPTION_REBUILD_SETCELL_GUARD_MS = 1_000;
+
+function createClientMessageIdFactory() {
+  let counter = 0;
+  return () => {
+    counter += 1;
+    return `c_${Date.now().toString(36)}_${counter.toString(36)}`;
+  };
+}
+
+function shouldAttachClientMessageId(message) {
+  return message.t === "sub"
+    || message.t === "unsub"
+    || message.t === "setCell"
+    || message.t === "resyncTile";
+}
 
 function formatByteCount(bytes) {
   if (bytes < 1024) {
@@ -98,10 +112,11 @@ function summarizeMessage(message) {
   switch (message.t) {
     case "sub":
     case "unsub":
-      return { t: message.t, tiles: message.tiles.length };
+      return { t: message.t, cid: message.cid ?? null, tiles: message.tiles.length };
     case "setCell":
       return {
         t: message.t,
+        cid: message.cid ?? null,
         tile: message.tile,
         i: message.i,
         v: message.v,
@@ -109,7 +124,7 @@ function summarizeMessage(message) {
         ...deriveBoardCoordFromSetCell(message.tile, message.i),
       };
     case "resyncTile":
-      return { t: message.t, tile: message.tile, haveVer: message.haveVer };
+      return { t: message.t, cid: message.cid ?? null, tile: message.tile, haveVer: message.haveVer };
     case "cur":
       return summarizeCursor(message);
     case "hello":
@@ -135,6 +150,14 @@ function summarizeMessage(message) {
       };
     case "err":
       return { t: message.t, code: message.code };
+    case "subAck":
+      return {
+        t: message.t,
+        cid: message.cid,
+        requestedCount: message.requestedCount,
+        changedCount: message.changedCount,
+        subscribedCount: message.subscribedCount,
+      };
     default:
       return { t: message.t };
   }
@@ -186,26 +209,90 @@ export async function startApp() {
       logger.other(...args);
     }
   };
-  let setCellGuardUntilMs = 0;
-  let setCellGuardTrigger = null;
-  const armSubscriptionRebuildSetCellGuard = (trigger) => {
-    setCellGuardUntilMs = Math.max(
-      setCellGuardUntilMs,
-      Date.now() + SUBSCRIPTION_REBUILD_SETCELL_GUARD_MS
-    );
-    setCellGuardTrigger = trigger;
+  const nextClientMessageId = createClientMessageIdFactory();
+  let subscriptionRebuildState = null;
+  let replayPendingAfterSubscriptionRebuild = false;
+  const beginSubscriptionRebuild = (trigger) => {
+    subscriptionRebuildState = {
+      trigger,
+      startedAtMs: Date.now(),
+      pendingCid: null,
+      pendingTiles: null,
+    };
+  };
+  const maybeScheduleReplayAfterRebuild = () => {
+    if (!replayPendingAfterSubscriptionRebuild) {
+      return;
+    }
+    replayPendingAfterSubscriptionRebuild = false;
+    setCellOutboxSync.scheduleReplay(0);
+  };
+  const completeSubscriptionRebuild = (source, fields = {}) => {
+    if (!subscriptionRebuildState) {
+      return;
+    }
+    const state = subscriptionRebuildState;
+    subscriptionRebuildState = null;
+    logOther("ws subscription_rebuild_complete", {
+      reason: state.trigger,
+      source,
+      durationMs: Math.max(0, Date.now() - state.startedAtMs),
+      ...(state.pendingCid ? { cid: state.pendingCid } : {}),
+      ...(typeof state.pendingTiles === "number" ? { tileCount: state.pendingTiles } : {}),
+      ...fields,
+    });
+    maybeScheduleReplayAfterRebuild();
+  };
+  const trackSubscriptionRebuildDispatch = (message, reason) => {
+    if (!subscriptionRebuildState || subscriptionRebuildState.trigger !== reason) {
+      subscriptionRebuildState = {
+        trigger: reason,
+        startedAtMs: Date.now(),
+        pendingCid: null,
+        pendingTiles: null,
+      };
+    }
+    subscriptionRebuildState.pendingCid = message.cid ?? null;
+    subscriptionRebuildState.pendingTiles = message.tiles.length;
+    logOther("ws subscription_rebuild_dispatched", {
+      reason,
+      cid: message.cid ?? null,
+      tileCount: message.tiles.length,
+    });
+  };
+  const handleSubscriptionRebuildSkipped = (reason, fields = {}) => {
+    if (!subscriptionRebuildState || subscriptionRebuildState.trigger !== reason) {
+      return;
+    }
+    completeSubscriptionRebuild("noop", fields);
+  };
+  const handleSubscriptionAck = (message) => {
+    if (!subscriptionRebuildState?.pendingCid) {
+      return;
+    }
+    if (message.cid !== subscriptionRebuildState.pendingCid) {
+      logOther("ws subscription_rebuild_ack_ignored", {
+        reason: subscriptionRebuildState.trigger,
+        expectedCid: subscriptionRebuildState.pendingCid,
+        cid: message.cid,
+      });
+      return;
+    }
+    completeSubscriptionRebuild("sub_ack", {
+      ackRequestedCount: message.requestedCount,
+      ackChangedCount: message.changedCount,
+      ackSubscribedCount: message.subscribedCount,
+    });
   };
   const getSetCellGuard = () => {
-    const remainingMs = setCellGuardUntilMs - Date.now();
-    if (remainingMs <= 0) {
-      setCellGuardTrigger = null;
+    if (!subscriptionRebuildState) {
       return null;
     }
     return {
       reason: "subscription_rebuild",
       message: "Waiting for tile subscriptions to resync...",
-      remainingMs,
-      ...(typeof setCellGuardTrigger === "string" ? { trigger: setCellGuardTrigger } : {}),
+      trigger: subscriptionRebuildState.trigger,
+      ...(subscriptionRebuildState.pendingCid ? { cid: subscriptionRebuildState.pendingCid } : {}),
     };
   };
 
@@ -402,14 +489,18 @@ export async function startApp() {
 
   const sendMessage = (message, options = {}) => {
     const trackSetCell = options.trackSetCell ?? true;
-    if (message.t === "cur" && !transportOnline) {
+    const preparedMessage = shouldAttachClientMessageId(message) && typeof message.cid !== "string"
+      ? { ...message, cid: nextClientMessageId() }
+      : message;
+    if (preparedMessage.t === "cur" && !transportOnline) {
       return;
     }
-    maybeLogFirstClientMessageAfterOpen(message);
+    maybeLogFirstClientMessageAfterOpen(preparedMessage);
     if (trackSetCell) {
-      setCellOutboxSync.trackOutgoingClientMessage(message);
+      setCellOutboxSync.trackOutgoingClientMessage(preparedMessage);
     }
-    sendToWireTransport(message);
+    sendToWireTransport(preparedMessage);
+    return preparedMessage;
   };
 
   const transport = {
@@ -448,8 +539,8 @@ export async function startApp() {
         },
       });
     },
-    send(message) {
-      sendMessage(message);
+    send(message, options) {
+      return sendMessage(message, options);
     },
     dispose() {
       wireTransport.dispose();
@@ -525,6 +616,8 @@ export async function startApp() {
     transport,
     setStatus,
     perfProbe,
+    onSubscriptionRebuildSubSent: trackSubscriptionRebuildDispatch,
+    onSubscriptionRebuildSkipped: handleSubscriptionRebuildSkipped,
   });
   let hasAppliedServerSpawn = sharedCamera !== null;
 
@@ -555,6 +648,7 @@ export async function startApp() {
       onIdentityReceived: ({ uid, name, token }) => {
         writeStoredIdentity({ uid, name, token });
       },
+      onSubscriptionAck: handleSubscriptionAck,
       getPendingSetCellOpsForTile: setCellOutboxSync.getPendingSetCellOpsForTile,
       dropPendingSetCellOpsForTile: setCellOutboxSync.dropPendingSetCellOpsForTile,
     }),
@@ -563,10 +657,10 @@ export async function startApp() {
         if (!reconnected) {
           return;
         }
-        armSubscriptionRebuildSetCellGuard("transport_reconnect");
-        renderLoop.markTransportReconnected();
+        beginSubscriptionRebuild("transport_reconnect");
+        renderLoop.markTransportReconnected("transport_reconnect");
         setStatus("Connection restored; resyncing visible tiles...");
-        setCellOutboxSync.scheduleReplay(1_000);
+        replayPendingAfterSubscriptionRebuild = true;
       },
       onClose: ({ disposed }) => {
         if (disposed) {
@@ -605,8 +699,8 @@ export async function startApp() {
   const isDocumentVisible = () =>
     typeof document === "undefined" || document.visibilityState === "visible";
   const forceSubscriptionRebuild = (reason) => {
-    armSubscriptionRebuildSetCellGuard(reason);
-    renderLoop.forceSubscriptionRebuild();
+    beginSubscriptionRebuild(reason);
+    renderLoop.forceSubscriptionRebuild(reason);
     logOther("ws subscription_rebuild", {
       reason,
       transportOnline,

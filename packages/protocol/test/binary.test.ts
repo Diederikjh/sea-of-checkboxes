@@ -41,11 +41,11 @@ describe("binary protocol codec", () => {
 
   it("roundtrips all client message variants", () => {
     const messages: ClientMessage[] = [
-      { t: "sub", tiles: ["0:0", "-4:9"] },
-      { t: "unsub", tiles: ["0:0"] },
-      { t: "setCell", tile: "-4:9", i: 4095, v: 1, op: "abc-123" },
+      { t: "sub", cid: "c_sub", tiles: ["0:0", "-4:9"] },
+      { t: "unsub", cid: "c_unsub", tiles: ["0:0"] },
+      { t: "setCell", cid: "c_set", tile: "-4:9", i: 4095, v: 1, op: "abc-123" },
       { t: "cur", x: 123_456.5, y: -999.25 },
-      { t: "resyncTile", tile: "-4:9", haveVer: 44 },
+      { t: "resyncTile", cid: "c_resync", tile: "-4:9", haveVer: 44 },
     ];
 
     for (const message of messages) {
@@ -90,6 +90,7 @@ describe("binary protocol codec", () => {
       { t: "curUp", uid: "u_remote", name: "Bob", x: 1200.75, y: -33.125 },
       { t: "err", code: "rate_limited", msg: "slow down" },
       { t: "err", code: "internal", msg: "Failed to process message", trace: "trace_1" },
+      { t: "subAck", cid: "c_sub", requestedCount: 2, changedCount: 2, subscribedCount: 2 },
     ];
 
     for (const message of messages) {
@@ -127,6 +128,7 @@ describe("binary protocol codec", () => {
   it("binary payloads are smaller than JSON for hot-path messages", () => {
     const clientBatchLike: ClientMessage = {
       t: "sub",
+      cid: "c_batch",
       tiles: Array.from({ length: 50 }, (_, index) => `${index}:${-index}`),
     };
 
@@ -149,8 +151,8 @@ describe("binary protocol codec", () => {
   });
 
   it("works with framing utilities", () => {
-    const one = encodeFrame(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
-    const two = encodeFrame(encodeClientMessageBinary({ t: "unsub", tiles: ["0:0"] }));
+    const one = encodeFrame(encodeClientMessageBinary({ t: "sub", cid: "c_1", tiles: ["0:0"] }));
+    const two = encodeFrame(encodeClientMessageBinary({ t: "unsub", cid: "c_2", tiles: ["0:0"] }));
 
     const joined = new Uint8Array(one.length + two.length);
     joined.set(one, 0);
@@ -168,15 +170,20 @@ describe("binary protocol codec", () => {
       return;
     }
 
-    expect(decodeClientMessageBinary(firstFrame)).toEqual({ t: "sub", tiles: ["0:0"] });
-    expect(decodeClientMessageBinary(secondFrame)).toEqual({ t: "unsub", tiles: ["0:0"] });
+    expect(decodeClientMessageBinary(firstFrame)).toEqual({ t: "sub", cid: "c_1", tiles: ["0:0"] });
+    expect(decodeClientMessageBinary(secondFrame)).toEqual({ t: "unsub", cid: "c_2", tiles: ["0:0"] });
   });
 
   it("rejects unknown tags and truncated payloads", () => {
     expect(() => decodeClientMessageBinary(Uint8Array.from([255]))).toThrow();
     expect(() => decodeServerMessageBinary(Uint8Array.from([255]))).toThrow();
 
-    const encodedClient = encodeClientMessageBinary({ t: "resyncTile", tile: "0:0", haveVer: 10 });
+    const encodedClient = encodeClientMessageBinary({
+      t: "resyncTile",
+      cid: "c_resync",
+      tile: "0:0",
+      haveVer: 10,
+    });
     const encodedServer = encodeServerMessageBinary({ t: "cellUp", tile: "0:0", i: 1, v: 1, ver: 3 });
 
     expect(() => decodeClientMessageBinary(encodedClient.slice(0, encodedClient.length - 1))).toThrow();

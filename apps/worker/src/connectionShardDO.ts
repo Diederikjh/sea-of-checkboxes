@@ -679,9 +679,10 @@ export class ConnectionShardDO {
     this.#sendServerMessage(client, snapshot);
   }
 
-  #sendBadTile(client: ConnectedClient, tileKey: string): void {
+  #sendBadTile(client: ConnectedClient, tileKey: string, fields: Record<string, unknown> = {}): void {
     this.#sendError(client, "bad_tile", `Invalid tile key ${tileKey}`, {
       tile: tileKey,
+      ...fields,
     });
   }
 
@@ -875,8 +876,8 @@ export class ConnectionShardDO {
       sendError: (client, code, msg, fields) => {
         this.#sendError(client, code, msg, fields);
       },
-      sendBadTile: (client, tileKey) => {
-        this.#sendBadTile(client, tileKey);
+      sendBadTile: (client, tileKey, fields) => {
+        this.#sendBadTile(client, tileKey, fields);
       },
       watchTile: (tileKey, action) => this.#watchTile(tileKey, action),
       setTileCell: (payload) => this.#setTileCell(payload),

@@ -34,6 +34,7 @@ function createHarness({
   const onVisualStateChanged = vi.fn();
   const onIdentityReceived = vi.fn();
   const onSpawnReceived = vi.fn();
+  const onSubscriptionAck = vi.fn();
 
   const handler = createServerMessageHandler({
     identityEl,
@@ -47,6 +48,7 @@ function createHarness({
     onVisualStateChanged,
     onSpawnReceived,
     onIdentityReceived,
+    onSubscriptionAck,
     getPendingSetCellOpsForTile,
     dropPendingSetCellOpsForTile,
   });
@@ -64,6 +66,7 @@ function createHarness({
     onVisualStateChanged,
     onSpawnReceived,
     onIdentityReceived,
+    onSubscriptionAck,
   };
 }
 
@@ -338,6 +341,27 @@ describe("server message handling", () => {
 
     expect(harness.statuses.at(-1)).toBe("Error: Invalid tile");
     expect(harness.restrictions).toEqual([]);
+  });
+
+  it("forwards subscription acknowledgements to the app callback", () => {
+    const harness = createHarness();
+
+    harness.handler({
+      t: "subAck",
+      cid: "c_sub_1",
+      requestedCount: 3,
+      changedCount: 2,
+      subscribedCount: 8,
+    });
+
+    expect(harness.onSubscriptionAck).toHaveBeenCalledWith({
+      t: "subAck",
+      cid: "c_sub_1",
+      requestedCount: 3,
+      changedCount: 2,
+      subscribedCount: 8,
+    });
+    expect(harness.statuses).toEqual([]);
   });
 
   it("includes server error trace ids in status and protocol logs", () => {

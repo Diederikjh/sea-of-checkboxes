@@ -37,7 +37,7 @@ export interface ConnectionShardDOOperationsContext {
   shardName(): string;
   sendServerMessage(client: ConnectedClient, message: ServerMessage): void;
   sendError(client: ConnectedClient, code: string, msg: string, fields?: Record<string, unknown>): void;
-  sendBadTile(client: ConnectedClient, tileKey: string): void;
+  sendBadTile(client: ConnectedClient, tileKey: string, fields?: Record<string, unknown>): void;
   watchTile(
     tileKey: string,
     action: "sub" | "unsub"

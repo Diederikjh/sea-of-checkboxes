@@ -26,6 +26,13 @@ export interface ConnectionShardClientMessageHandlerOptions {
   elapsedMs: (startMs: number) => number;
 }
 
+function messageCidFields(message: ClientMessage): Record<string, unknown> {
+  if (!("cid" in message) || typeof message.cid !== "string" || message.cid.length === 0) {
+    return {};
+  }
+  return { cid: message.cid };
+}
+
 export async function handleConnectionShardClientMessage(
   options: ConnectionShardClientMessageHandlerOptions
 ): Promise<void> {
@@ -45,12 +52,29 @@ export async function handleConnectionShardClientMessage(
     markLocalCursorDirty,
     elapsedMs,
   } = options;
+  const cidFields = messageCidFields(message);
+  const scopedContext: ConnectionShardDOOperationsContext = {
+    ...context,
+    sendError: (targetClient, code, msg, fields) => {
+      context.sendError(targetClient, code, msg, {
+        ...cidFields,
+        ...fields,
+      });
+    },
+    sendBadTile: (targetClient, tileKey, fields) => {
+      context.sendBadTile(targetClient, tileKey, {
+        ...cidFields,
+        ...fields,
+      });
+    },
+  };
 
   switch (message.t) {
     case "sub": {
-      const subResult = await handleSubMessage(context, client, message.tiles);
+      const subResult = await handleSubMessage(scopedContext, client, message.tiles);
       logEvent("sub", {
         uid,
+        ...cidFields,
         requested_count: subResult.requestedCount,
         changed_count: subResult.changedCount,
         invalid_count: subResult.invalidCount,
@@ -58,14 +82,31 @@ export async function handleConnectionShardClientMessage(
         subscribed_count: subResult.subscribedCount,
         clamped: subResult.clamped,
       });
+      if (typeof message.cid === "string") {
+        logEvent("subAck", {
+          uid,
+          cid: message.cid,
+          requested_count: subResult.requestedCount,
+          changed_count: subResult.changedCount,
+          subscribed_count: subResult.subscribedCount,
+        });
+        context.sendServerMessage(client, {
+          t: "subAck",
+          cid: message.cid,
+          requestedCount: subResult.requestedCount,
+          changedCount: subResult.changedCount,
+          subscribedCount: subResult.subscribedCount,
+        });
+      }
       cursorOnSubscriptionsChanged(true);
       refreshTilePullSchedule();
       return;
     }
     case "unsub": {
-      const unsubResult = await handleUnsubMessage(context, client, message.tiles);
+      const unsubResult = await handleUnsubMessage(scopedContext, client, message.tiles);
       logEvent("unsub", {
         uid,
+        ...cidFields,
         requested_count: unsubResult.requestedCount,
         changed_count: unsubResult.changedCount,
         subscribed_count: unsubResult.subscribedCount,
@@ -76,10 +117,11 @@ export async function handleConnectionShardClientMessage(
     }
     case "setCell": {
       const startMs = Date.now();
-      const setCellResult = await handleSetCellMessage(context, client, message);
+      const setCellResult = await handleSetCellMessage(scopedContext, client, message);
       if (setCellResult.reason === "not_subscribed" && setCellResult.notSubscribed) {
         logEvent("setcell_not_subscribed", {
           uid,
+          ...cidFields,
           tile: message.tile,
           i: message.i,
           v: message.v,
@@ -94,6 +136,7 @@ export async function handleConnectionShardClientMessage(
       }
       logEvent("setCell", {
         uid,
+        ...cidFields,
         tile: message.tile,
         i: message.i,
         v: message.v,
@@ -126,9 +169,10 @@ export async function handleConnectionShardClientMessage(
       return;
     }
     case "resyncTile":
-      await handleResyncMessage(context, client, message.tile);
+      await handleResyncMessage(scopedContext, client, message.tile);
       logEvent("resyncTile", {
         uid,
+        ...cidFields,
         tile: message.tile,
       });
       return;

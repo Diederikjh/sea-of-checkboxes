@@ -61,6 +61,15 @@ describe("server message schema matrix", () => {
 
     expect(parseServerMessage({ t: "err", code: "bad", msg: "Nope" }).t).toBe("err");
     expect(parseServerMessage({ t: "err", code: "bad", msg: "Nope", trace: "trace_1" }).t).toBe("err");
+    expect(
+      parseServerMessage({
+        t: "subAck",
+        cid: "c_sub_1",
+        requestedCount: 3,
+        changedCount: 2,
+        subscribedCount: 8,
+      }).t
+    ).toBe("subAck");
   });
 
   it("rejects unknown message discriminator", () => {
@@ -105,6 +114,16 @@ describe("server message schema matrix", () => {
     ).toThrow();
     expect(() => parseServerMessage({ t: "curUp", uid: "u", name: "n", x: 0, y: 0, extra: true })).toThrow();
     expect(() => parseServerMessage({ t: "err", code: "c", msg: "m", extra: true })).toThrow();
+    expect(() =>
+      parseServerMessage({
+        t: "subAck",
+        cid: "c_sub_1",
+        requestedCount: 1,
+        changedCount: 1,
+        subscribedCount: 1,
+        extra: true,
+      })
+    ).toThrow();
   });
 
   it("rejects invalid tile snapshot payload", () => {
@@ -201,5 +220,23 @@ describe("server message schema matrix", () => {
     expect(() => parseServerMessage({ t: "err", code: "", msg: "m" })).toThrow();
     expect(() => parseServerMessage({ t: "err", code: "c", msg: "" })).toThrow();
     expect(() => parseServerMessage({ t: "err", code: "c", msg: "m", trace: "" })).toThrow();
+    expect(() =>
+      parseServerMessage({
+        t: "subAck",
+        cid: "",
+        requestedCount: 1,
+        changedCount: 1,
+        subscribedCount: 1,
+      })
+    ).toThrow();
+    expect(() =>
+      parseServerMessage({
+        t: "subAck",
+        cid: "c_sub_1",
+        requestedCount: -1,
+        changedCount: 1,
+        subscribedCount: 1,
+      })
+    ).toThrow();
   });
 });

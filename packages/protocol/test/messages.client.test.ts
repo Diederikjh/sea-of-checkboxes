@@ -5,11 +5,12 @@ import { parseClientMessage } from "../src";
 
 describe("client message schema matrix", () => {
   it("parses all client message variants", () => {
-    expect(parseClientMessage({ t: "sub", tiles: ["0:0", "1:-2"] }).t).toBe("sub");
-    expect(parseClientMessage({ t: "unsub", tiles: ["0:0"] }).t).toBe("unsub");
+    expect(parseClientMessage({ t: "sub", cid: "c_sub", tiles: ["0:0", "1:-2"] }).t).toBe("sub");
+    expect(parseClientMessage({ t: "unsub", cid: "c_unsub", tiles: ["0:0"] }).t).toBe("unsub");
     expect(
       parseClientMessage({
         t: "setCell",
+        cid: "c_set",
         tile: "0:0",
         i: 0,
         v: 1,
@@ -17,7 +18,7 @@ describe("client message schema matrix", () => {
       }).t
     ).toBe("setCell");
     expect(parseClientMessage({ t: "cur", x: WORLD_MAX, y: -WORLD_MAX }).t).toBe("cur");
-    expect(parseClientMessage({ t: "resyncTile", tile: "0:0", haveVer: 10 }).t).toBe("resyncTile");
+    expect(parseClientMessage({ t: "resyncTile", cid: "c_resync", tile: "0:0", haveVer: 10 }).t).toBe("resyncTile");
   });
 
   it("rejects invalid discriminators and unknown payloads", () => {
@@ -107,5 +108,6 @@ describe("client message schema matrix", () => {
     expect(() => parseClientMessage({ t: "cur", x: Number.POSITIVE_INFINITY, y: 0 })).toThrow();
     expect(() => parseClientMessage({ t: "resyncTile", tile: "0:0", haveVer: -1 })).toThrow();
     expect(() => parseClientMessage({ t: "resyncTile", tile: "0:0", haveVer: 1.5 })).toThrow();
+    expect(() => parseClientMessage({ t: "sub", cid: "", tiles: ["0:0"] })).toThrow();
   });
 });

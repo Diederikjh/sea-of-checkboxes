@@ -25,6 +25,7 @@ export function hasValidVersionRange(fromVer: number, toVer: number): boolean {
 
 const tileKeySchema = z.string().regex(/^-?\d+:-?\d+$/);
 const bitValueSchema = z.union([z.literal(0), z.literal(1)]);
+const clientMessageIdSchema = z.string().min(1).max(128);
 
 const finiteNumberSchema = z.number().refine((value) => Number.isFinite(value), {
   message: "Expected finite number",
@@ -42,16 +43,19 @@ const cellIndexSchema = nonNegativeIntSchema.refine((value) => isCellIndexValid(
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const subMessageSchema = strictTaggedMessage("sub", {
+  cid: clientMessageIdSchema.optional(),
   tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
 });
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const unsubMessageSchema = strictTaggedMessage("unsub", {
+  cid: clientMessageIdSchema.optional(),
   tiles: z.array(tileKeySchema).max(MAX_TILES_SUBSCRIBED),
 });
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const setCellMessageSchema = strictTaggedMessage("setCell", {
+  cid: clientMessageIdSchema.optional(),
   tile: tileKeySchema,
   i: cellIndexSchema,
   v: bitValueSchema,
@@ -66,6 +70,7 @@ export const cursorMessageSchema = strictTaggedMessage("cur", {
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
 export const resyncTileMessageSchema = strictTaggedMessage("resyncTile", {
+  cid: clientMessageIdSchema.optional(),
   tile: tileKeySchema,
   haveVer: nonNegativeIntSchema,
 });
@@ -134,6 +139,14 @@ export const errorMessageSchema = strictTaggedMessage("err", {
   trace: z.string().min(1).optional(),
 });
 
+/** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */
+export const subAckMessageSchema = strictTaggedMessage("subAck", {
+  cid: clientMessageIdSchema,
+  requestedCount: nonNegativeIntSchema,
+  changedCount: nonNegativeIntSchema,
+  subscribedCount: nonNegativeIntSchema,
+});
+
 const serverMessageDiscriminatedSchema = z.discriminatedUnion("t", [
   helloMessageSchema,
   tileSnapshotSchema,
@@ -141,6 +154,7 @@ const serverMessageDiscriminatedSchema = z.discriminatedUnion("t", [
   cellUpdateBatchSchema,
   cursorUpdateSchema,
   errorMessageSchema,
+  subAckMessageSchema,
 ]);
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */

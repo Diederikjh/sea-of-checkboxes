@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   transportLifecycleHandlers: null,
   outboundMessages: [],
   inputHandlerArgs: null,
+  rebuildMessages: [],
   teardownInputHandlers: vi.fn(),
   windowAddEventListener: vi.fn(),
   windowRemoveEventListener: vi.fn(),
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   documentRemoveEventListener: vi.fn(),
   forceSubscriptionRebuild: vi.fn(),
   markTransportReconnected: vi.fn(),
+  rebuildCounter: 0,
 }));
 
 vi.mock("pixi.js", () => ({
@@ -111,11 +113,23 @@ vi.mock("../src/perfProbe", () => ({
 }));
 
 vi.mock("../src/renderLoop", () => ({
-  createRenderLoop: () => ({
+  createRenderLoop: (args) => ({
     markVisualDirty: vi.fn(),
     markTileCellsDirty: vi.fn(),
-    markTransportReconnected: mocks.markTransportReconnected,
-    forceSubscriptionRebuild: mocks.forceSubscriptionRebuild,
+    markTransportReconnected: vi.fn((reason = "transport_reconnect") => {
+      mocks.markTransportReconnected(reason);
+      mocks.rebuildCounter += 1;
+      const message = { t: "sub", cid: `c_rebuild_${mocks.rebuildCounter}`, tiles: ["0:0"] };
+      mocks.rebuildMessages.push(message);
+      args.onSubscriptionRebuildSubSent?.(message, reason);
+    }),
+    forceSubscriptionRebuild: vi.fn((reason = "subscription_rebuild") => {
+      mocks.forceSubscriptionRebuild(reason);
+      mocks.rebuildCounter += 1;
+      const message = { t: "sub", cid: `c_rebuild_${mocks.rebuildCounter}`, tiles: ["0:0"] };
+      mocks.rebuildMessages.push(message);
+      args.onSubscriptionRebuildSubSent?.(message, reason);
+    }),
     handleResize: vi.fn(),
     dispose: vi.fn(),
   }),
@@ -187,6 +201,8 @@ describe("app interaction overlays", () => {
     mocks.transportLifecycleHandlers = null;
     mocks.outboundMessages.length = 0;
     mocks.inputHandlerArgs = null;
+    mocks.rebuildMessages.length = 0;
+    mocks.rebuildCounter = 0;
     mocks.markTransportReconnected.mockReset();
     mocks.forceSubscriptionRebuild.mockReset();
     mocks.windowAddEventListener.mockClear();
@@ -363,9 +379,30 @@ describe("app interaction overlays", () => {
     lifecycle.onClose?.({ disposed: false });
     lifecycle.onOpen?.({ reconnected: true });
 
-    vi.advanceTimersByTime(1_000);
-    expect(mocks.outboundMessages).toHaveLength(2);
-    expect(mocks.outboundMessages[1]).toMatchObject({ t: "setCell", tile: "0:0", i: 1, v: 1 });
+    expect(mocks.outboundMessages).toHaveLength(1);
+
+    const rebuildMessage = mocks.rebuildMessages.at(-1);
+    if (!rebuildMessage) {
+      throw new Error("Expected reconnect rebuild message");
+    }
+    expect(inputArgs.getSetCellGuard()).toMatchObject({
+      reason: "subscription_rebuild",
+      trigger: "transport_reconnect",
+      cid: rebuildMessage.cid,
+    });
+
+    mocks.inboundMessageHandler?.({
+      t: "subAck",
+      cid: rebuildMessage.cid,
+      requestedCount: 1,
+      changedCount: 1,
+      subscribedCount: 1,
+    });
+    vi.advanceTimersByTime(0);
+    expect(inputArgs.getSetCellGuard()).toBeNull();
+    const setCellMessages = mocks.outboundMessages.filter((message) => message.t === "setCell");
+    expect(setCellMessages).toHaveLength(2);
+    expect(setCellMessages[1]).toMatchObject({ t: "setCell", tile: "0:0", i: 1, v: 1 });
 
     teardown();
   });
