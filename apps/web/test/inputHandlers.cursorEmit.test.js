@@ -33,9 +33,21 @@ function createInspectToggle() {
   };
 }
 
-function createHarness({ getActiveVisibleRemoteCursorCount = () => 0 } = {}) {
+function createHarness({
+  getActiveVisibleRemoteCursorCount = () => 0,
+  getSetCellGuard = () => null,
+  tileData = null,
+} = {}) {
   const canvasHarness = createCanvasHarness();
   const transport = { send: vi.fn() };
+  const setStatus = vi.fn();
+  const tileStore = {
+    get: vi.fn(() => tileData),
+    applyOptimistic: vi.fn(() => ({ applied: true })),
+  };
+  const heatStore = {
+    isLocallyDisabled: vi.fn(() => false),
+  };
 
   setupInputHandlers({
     canvas: canvasHarness.canvas,
@@ -43,22 +55,18 @@ function createHarness({ getActiveVisibleRemoteCursorCount = () => 0 } = {}) {
     getViewportSize: () => ({ width: 640, height: 480 }),
     zoomEl: {},
     transport,
-    tileStore: {
-      get: vi.fn(),
-      applyOptimistic: vi.fn(),
-    },
-    heatStore: {
-      isLocallyDisabled: vi.fn(() => false),
-    },
-    setStatus: vi.fn(),
+    tileStore,
+    heatStore,
+    setStatus,
     inspectToggleEl: createInspectToggle(),
     inspectLabelEl: { textContent: "" },
     editInfoPopupEl: { hidden: true, style: {} },
     apiBaseUrl: "http://worker.local",
     getActiveVisibleRemoteCursorCount,
+    getSetCellGuard,
   });
 
-  return { ...canvasHarness, transport };
+  return { ...canvasHarness, transport, setStatus, tileStore, heatStore };
 }
 
 describe("inputHandlers adaptive cursor emit policy", () => {
@@ -137,5 +145,53 @@ describe("inputHandlers adaptive cursor emit policy", () => {
     harness.emit("pointermove", { clientX: 300, clientY: 300 });
 
     expect(harness.transport.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks setCell initiation while subscription rebuild guard is active", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const harness = createHarness({
+      getSetCellGuard: () => ({
+        reason: "subscription_rebuild",
+        message: "Waiting for tile subscriptions to resync...",
+        remainingMs: 500,
+        trigger: "focus",
+      }),
+      tileData: { bits: new Uint8Array(512) },
+    });
+
+    harness.emit("pointerdown", { clientX: 320, clientY: 240 });
+
+    expect(harness.tileStore.applyOptimistic).not.toHaveBeenCalled();
+    expect(harness.transport.send).not.toHaveBeenCalled();
+    expect(harness.setStatus).toHaveBeenCalledWith("Waiting for tile subscriptions to resync...");
+  });
+
+  it("reverts a pending optimistic setCell if a rebuild guard appears before pointerup", () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_000);
+    let blocked = false;
+    const harness = createHarness({
+      getSetCellGuard: () =>
+        blocked
+          ? {
+              reason: "subscription_rebuild",
+              message: "Waiting for tile subscriptions to resync...",
+              remainingMs: 400,
+              trigger: "visibilitychange",
+            }
+          : null,
+      tileData: { bits: new Uint8Array(512) },
+    });
+
+    harness.emit("pointerdown", { clientX: 320, clientY: 240 });
+    blocked = true;
+    harness.emit("pointerup", { clientX: 320, clientY: 240 });
+
+    expect(harness.tileStore.applyOptimistic).toHaveBeenCalledTimes(2);
+    const firstCall = harness.tileStore.applyOptimistic.mock.calls[0];
+    const secondCall = harness.tileStore.applyOptimistic.mock.calls[1];
+    expect(firstCall[2]).toBe(1);
+    expect(secondCall[2]).toBe(0);
+    expect(harness.transport.send).not.toHaveBeenCalled();
+    expect(harness.setStatus).toHaveBeenCalledWith("Waiting for tile subscriptions to resync...");
   });
 });

@@ -58,7 +58,7 @@ function createContext() {
     sendServerMessage(client, message) {
       sent.push({ uid: client.uid, message });
     },
-    sendError(client, code, msg) {
+    sendError(client, code, msg, _fields) {
       errors.push({ uid: client.uid, code, msg });
     },
     sendBadTile(client, tileKey) {

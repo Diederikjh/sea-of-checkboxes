@@ -98,6 +98,7 @@ export function setupInputHandlers({
   onViewportChanged,
   onTileCellsChanged = () => {},
   getActiveVisibleRemoteCursorCount = () => 0,
+  getSetCellGuard = () => null,
 }) {
   let dragging = false;
   let dragStart = null;
@@ -138,6 +139,26 @@ export function setupInputHandlers({
     if (!enabled) {
       hideEditInfoPopup(editInfoPopupEl);
     }
+  };
+
+  const readSetCellGuard = () => {
+    const guard = getSetCellGuard();
+    if (!guard || typeof guard.message !== "string" || guard.message.length === 0) {
+      return null;
+    }
+    return guard;
+  };
+
+  const blockSetCell = ({ event, world, tileKey, cellIndex, guard }) => {
+    logger.ui("click_blocked", {
+      reason: guard.reason ?? "subscription_rebuild",
+      tile: tileKey,
+      i: cellIndex,
+      ...buildWorldPointerContext(event, world),
+      ...(typeof guard.remainingMs === "number" ? { remainingMs: guard.remainingMs } : {}),
+      ...(typeof guard.trigger === "string" ? { trigger: guard.trigger } : {}),
+    });
+    setStatus(guard.message);
   };
 
   setInspectMode(false);
@@ -181,6 +202,19 @@ export function setupInputHandlers({
     const nowMs = Date.now();
 
     if (heatStore.isLocallyDisabled(tileKey, cellIndex, nowMs)) {
+      pendingSetCell = null;
+      return;
+    }
+
+    const setCellGuard = readSetCellGuard();
+    if (setCellGuard) {
+      blockSetCell({
+        event,
+        world,
+        tileKey,
+        cellIndex,
+        guard: setCellGuard,
+      });
       pendingSetCell = null;
       return;
     }
@@ -319,6 +353,25 @@ export function setupInputHandlers({
     }
 
     if (pendingSetCell) {
+      const setCellGuard = readSetCellGuard();
+      if (setCellGuard) {
+        tileStore.applyOptimistic(
+          pendingSetCell.tileKey,
+          pendingSetCell.cellIndex,
+          pendingSetCell.currentValue
+        );
+        onTileCellsChanged(pendingSetCell.tileKey, [pendingSetCell.cellIndex]);
+        blockSetCell({
+          event,
+          world: pendingSetCell.world,
+          tileKey: pendingSetCell.tileKey,
+          cellIndex: pendingSetCell.cellIndex,
+          guard: setCellGuard,
+        });
+        pendingSetCell = null;
+        dragStart = null;
+        return;
+      }
       logger.ui("click_setCell", {
         ...buildWorldPointerContext(event, pendingSetCell.world),
         tile: pendingSetCell.tileKey,
@@ -359,6 +412,19 @@ export function setupInputHandlers({
         ...buildWorldPointerContext(event, world),
       });
       setStatus("Cell is cooling down locally; try again in a moment");
+      dragStart = null;
+      return;
+    }
+
+    const setCellGuard = readSetCellGuard();
+    if (setCellGuard) {
+      blockSetCell({
+        event,
+        world,
+        tileKey,
+        cellIndex,
+        guard: setCellGuard,
+      });
       dragStart = null;
       return;
     }

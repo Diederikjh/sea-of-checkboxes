@@ -55,6 +55,7 @@ import {
 } from "./cursorGeometry";
 
 const CURSOR_VIEWPORT_MARGIN_PX = 24;
+const SUBSCRIPTION_REBUILD_SETCELL_GUARD_MS = 1_000;
 
 function formatByteCount(bytes) {
   if (bytes < 1024) {
@@ -184,6 +185,28 @@ export async function startApp() {
     if (typeof logger.other === "function") {
       logger.other(...args);
     }
+  };
+  let setCellGuardUntilMs = 0;
+  let setCellGuardTrigger = null;
+  const armSubscriptionRebuildSetCellGuard = (trigger) => {
+    setCellGuardUntilMs = Math.max(
+      setCellGuardUntilMs,
+      Date.now() + SUBSCRIPTION_REBUILD_SETCELL_GUARD_MS
+    );
+    setCellGuardTrigger = trigger;
+  };
+  const getSetCellGuard = () => {
+    const remainingMs = setCellGuardUntilMs - Date.now();
+    if (remainingMs <= 0) {
+      setCellGuardTrigger = null;
+      return null;
+    }
+    return {
+      reason: "subscription_rebuild",
+      message: "Waiting for tile subscriptions to resync...",
+      remainingMs,
+      ...(typeof setCellGuardTrigger === "string" ? { trigger: setCellGuardTrigger } : {}),
+    };
   };
 
   const app = new Application({
@@ -540,6 +563,7 @@ export async function startApp() {
         if (!reconnected) {
           return;
         }
+        armSubscriptionRebuildSetCellGuard("transport_reconnect");
         renderLoop.markTransportReconnected();
         setStatus("Connection restored; resyncing visible tiles...");
         setCellOutboxSync.scheduleReplay(1_000);
@@ -572,6 +596,7 @@ export async function startApp() {
     onViewportChanged: renderLoop.markViewportDirty,
     onTileCellsChanged: renderLoop.markTileCellsDirty,
     getActiveVisibleRemoteCursorCount,
+    getSetCellGuard,
   });
 
   const onResize = () => {
@@ -580,6 +605,7 @@ export async function startApp() {
   const isDocumentVisible = () =>
     typeof document === "undefined" || document.visibilityState === "visible";
   const forceSubscriptionRebuild = (reason) => {
+    armSubscriptionRebuildSetCellGuard(reason);
     renderLoop.forceSubscriptionRebuild();
     logOther("ws subscription_rebuild", {
       reason,

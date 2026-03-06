@@ -134,7 +134,7 @@ describe("handleConnectionShardCursorBatchIngress", () => {
     );
   });
 
-  it("ingests valid batches and keeps the trace active through the publish window", async () => {
+  it("ingests valid batches and clears the active trace after ingress completes", async () => {
     const harness = createHarness();
 
     const response = await harness.handle(requestWithTrace({
@@ -153,15 +153,8 @@ describe("handleConnectionShardCursorBatchIngress", () => {
         trace_id: "trace-ok",
       })
     );
-    expect(harness.traceState.activeTraceContext()).toEqual({
-      traceId: "trace-ok",
-      traceHop: 1,
-      traceOrigin: "shard-origin",
-    });
-    expect(harness.getPublishSuppressedUntilMs()).toBe(1_300);
-
-    harness.setNowMs(1_301);
     expect(harness.traceState.activeTraceContext()).toBeNull();
+    expect(harness.getPublishSuppressedUntilMs()).toBe(1_300);
   });
 
   it("rejects invalid cursor batches with a 400 response", async () => {

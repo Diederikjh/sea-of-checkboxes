@@ -36,7 +36,7 @@ export interface ConnectionShardDOOperationsContext {
   tileToClients: Map<string, Set<string>>;
   shardName(): string;
   sendServerMessage(client: ConnectedClient, message: ServerMessage): void;
-  sendError(client: ConnectedClient, code: string, msg: string): void;
+  sendError(client: ConnectedClient, code: string, msg: string, fields?: Record<string, unknown>): void;
   sendBadTile(client: ConnectedClient, tileKey: string): void;
   watchTile(
     tileKey: string,
@@ -104,7 +104,8 @@ function recordWithinLimit(
 
 function consumeChurnOrError(
   context: ConnectionShardDOOperationsContext,
-  client: ConnectedClient
+  client: ConnectedClient,
+  fields?: Record<string, unknown>
 ): boolean {
   const timestamps = client.churnTimestamps ?? [];
   client.churnTimestamps = timestamps;
@@ -116,7 +117,7 @@ function consumeChurnOrError(
   );
 
   if (!allowed) {
-    context.sendError(client, "churn_limit", "Tile churn limit exceeded");
+    context.sendError(client, "churn_limit", "Tile churn limit exceeded", fields);
     return false;
   }
 
@@ -125,7 +126,8 @@ function consumeChurnOrError(
 
 function consumeSetCellRateOrError(
   context: ConnectionShardDOOperationsContext,
-  client: ConnectedClient
+  client: ConnectedClient,
+  fields?: Record<string, unknown>
 ): boolean {
   const nowMs = context.nowMs();
   const burstTimestamps = client.setCellBurstTimestamps ?? [];
@@ -149,7 +151,7 @@ function consumeSetCellRateOrError(
   );
 
   if (!burstAllowed || !sustainedAllowed) {
-    context.sendError(client, "setcell_limit", "setCell rate limit exceeded");
+    context.sendError(client, "setcell_limit", "setCell rate limit exceeded", fields);
     return false;
   }
 
@@ -195,13 +197,15 @@ export async function handleSubMessage(
     }
 
     if (client.subscribed.size >= MAX_TILES_SUBSCRIBED) {
-      context.sendError(client, "sub_limit", `Max ${MAX_TILES_SUBSCRIBED} tiles subscribed`);
+      context.sendError(client, "sub_limit", `Max ${MAX_TILES_SUBSCRIBED} tiles subscribed`, {
+        tile: tileKey,
+      });
       result.clamped = true;
       result.subscribedCount = client.subscribed.size;
       return result;
     }
 
-    if (!consumeChurnOrError(context, client)) {
+    if (!consumeChurnOrError(context, client, { tile: tileKey })) {
       result.clamped = true;
       result.subscribedCount = client.subscribed.size;
       return result;
@@ -232,7 +236,12 @@ export async function handleSubMessage(
         if (subscribers.size === 0) {
           context.tileToClients.delete(tileKey);
         }
-        context.sendError(client, watchResult.code ?? "watch_rejected", watchResult.msg ?? "Tile unavailable");
+        context.sendError(
+          client,
+          watchResult.code ?? "watch_rejected",
+          watchResult.msg ?? "Tile unavailable",
+          { tile: tileKey }
+        );
         result.rejectedCount += 1;
         continue;
       }
@@ -262,7 +271,7 @@ export async function handleUnsubMessage(
       continue;
     }
 
-    if (!consumeChurnOrError(context, client)) {
+    if (!consumeChurnOrError(context, client, { tile: tileKey })) {
       result.subscribedCount = client.subscribed.size;
       return result;
     }
@@ -288,7 +297,12 @@ export async function handleSetCellMessage(
 
   if (!client.subscribed.has(message.tile)) {
     const nowMs = context.nowMs();
-    context.sendError(client, "not_subscribed", `Tile ${message.tile} is not currently subscribed`);
+    context.sendError(client, "not_subscribed", `Tile ${message.tile} is not currently subscribed`, {
+      tile: message.tile,
+      i: message.i,
+      v: message.v,
+      op: message.op,
+    });
     await context.sendSnapshotToClient(client, message.tile);
     const connectionAgeMs =
       typeof client.connectedAtMs === "number"
@@ -307,7 +321,12 @@ export async function handleSetCellMessage(
     };
   }
 
-  if (!consumeSetCellRateOrError(context, client)) {
+  if (!consumeSetCellRateOrError(context, client, {
+    tile: message.tile,
+    i: message.i,
+    v: message.v,
+    op: message.op,
+  })) {
     return { accepted: false, changed: false, reason: "setcell_limit" };
   }
 
@@ -323,7 +342,13 @@ export async function handleSetCellMessage(
   });
 
   if (!result?.accepted) {
-    context.sendError(client, "setcell_rejected", result?.reason ?? "Rejected");
+    context.sendError(client, "setcell_rejected", result?.reason ?? "Rejected", {
+      tile: message.tile,
+      i: message.i,
+      v: message.v,
+      op: message.op,
+      ...(result?.reason ? { rejected_reason: result.reason } : {}),
+    });
     return {
       accepted: false,
       changed: false,

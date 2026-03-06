@@ -227,4 +227,41 @@ describe("ConnectionShardCursorHubController", () => {
       });
     });
   });
+
+  it("keeps the trace captured at dirty time for a delayed publish", async () => {
+    const local = cursor("u_local");
+    const harness = createControllerHarness({
+      watchResponses: [null],
+      localSnapshot: [local],
+      canRelayNow: false,
+      activeTraceContext: {
+        traceId: "trace-2",
+        traceHop: 1,
+        traceOrigin: "shard-remote",
+      },
+    });
+
+    harness.controller.refreshWatchState();
+    await waitFor(() => {
+      expect(harness.gateway.watchCalls.length).toBe(1);
+    });
+
+    harness.controller.markLocalCursorDirty();
+    harness.setActiveTraceContext(null);
+    harness.setCanRelayNow(true);
+    harness.controller.markLocalCursorDirty();
+
+    await waitFor(() => {
+      expect(harness.gateway.publishCalls).toHaveLength(1);
+      expect(harness.gateway.publishCalls[0]).toEqual({
+        from: "shard-a",
+        updates: [local],
+        trace: {
+          traceId: "trace-2",
+          traceHop: 1,
+          traceOrigin: "shard-remote",
+        },
+      });
+    });
+  });
 });

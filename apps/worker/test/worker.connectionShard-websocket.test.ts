@@ -1037,6 +1037,22 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(typeof event?.connection_age_ms).toBe("number");
       expect((event?.connection_age_ms as number)).toBeGreaterThanOrEqual(0);
       expect((event?.connection_age_ms as number)).toBeLessThan(10_000);
+
+      const errEvent = events.find(
+        (entry) =>
+          entry.scope === "connection_shard_do"
+          && entry.event === "server_error_sent"
+          && entry.uid === "u_reconnect"
+          && entry.code === "not_subscribed"
+      );
+
+      expect(errEvent).toMatchObject({
+        msg: "Tile 0:0 is not currently subscribed",
+        tile: "0:0",
+        i: 7,
+        v: 1,
+        op: "op_before_resub",
+      });
     } finally {
       logSpy.mockRestore();
     }
@@ -1752,7 +1768,7 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(countCursorRelaySubrequests(harness)).toBe(0);
   });
 
-  it("propagates the active cursor trace when hub publishing from inbound cursor-batch processing", async () => {
+  it("does not leak an inbound cursor trace into later local hub publishes", async () => {
     const harness = createRelayHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
       uid: "u_a",
@@ -1798,9 +1814,9 @@ describe("ConnectionShardDO websocket handling", () => {
       return entry.request.method === "POST" && url.pathname === "/publish";
     });
     expect(publishRequest).toBeDefined();
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-id")).toBe("trace-prop");
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-hop")).toBe("1");
-    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-origin")).toBe("shard-origin");
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-id")).toBeNull();
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-hop")).toBeNull();
+    expect(publishRequest?.request.headers.get("x-sea-cursor-trace-origin")).toBeNull();
   });
 
   it("does not generate timer-driven cursor relay from inbound batches", async () => {

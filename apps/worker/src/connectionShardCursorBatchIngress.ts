@@ -91,7 +91,6 @@ export async function handleConnectionShardCursorBatchIngress(
     receiveBatch(batch);
     return new Response(null, { status: 204 });
   } finally {
-    traceState.rememberIngressTraceForPublish(incomingTrace, publishSuppressionMs);
     traceState.restoreActiveTrace(previousTrace);
     setIngressDepth(Math.max(0, currentIngressDepth() - 1));
     extendPublishSuppressedUntil(nowMs() + publishSuppressionMs);

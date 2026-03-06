@@ -13,8 +13,6 @@ export class ConnectionShardCursorTraceState {
   #traceCacheMax: number;
   #activeTrace: CursorTraceContext | null;
   #recentTraceSeenAt: Map<string, number>;
-  #recentPublishTrace: CursorTraceContext | null;
-  #recentPublishTraceUntilMs: number;
 
   constructor(options: {
     nowMs: () => number;
@@ -26,8 +24,6 @@ export class ConnectionShardCursorTraceState {
     this.#traceCacheMax = options.traceCacheMax ?? DEFAULT_TRACE_CACHE_MAX;
     this.#activeTrace = null;
     this.#recentTraceSeenAt = new Map();
-    this.#recentPublishTrace = null;
-    this.#recentPublishTraceUntilMs = 0;
   }
 
   readFromRequest(request: Request): CursorTraceContext | null {
@@ -92,37 +88,13 @@ export class ConnectionShardCursorTraceState {
     this.#activeTrace = previous;
   }
 
-  rememberIngressTraceForPublish(trace: CursorTraceContext | null, publishWindowMs: number): void {
-    if (!trace) {
-      return;
-    }
-
-    this.#recentPublishTrace = trace;
-    this.#recentPublishTraceUntilMs = Math.max(
-      this.#recentPublishTraceUntilMs,
-      this.#nowMs() + publishWindowMs
-    );
-  }
-
   activeTraceContext(): CursorTraceContext | null {
-    if (this.#activeTrace) {
-      return this.#activeTrace;
-    }
-
-    if (this.#recentPublishTrace && this.#nowMs() < this.#recentPublishTraceUntilMs) {
-      return this.#recentPublishTrace;
-    }
-
-    this.#recentPublishTrace = null;
-    this.#recentPublishTraceUntilMs = 0;
-    return null;
+    return this.#activeTrace;
   }
 
   clear(): void {
     this.#activeTrace = null;
     this.#recentTraceSeenAt.clear();
-    this.#recentPublishTrace = null;
-    this.#recentPublishTraceUntilMs = 0;
   }
 
   #pruneRecentTraces(): void {

@@ -40,10 +40,9 @@ describe("ConnectionShardCursorTraceState", () => {
     expect(state.hasSeenRecentTrace("trace-1")).toBe(false);
   });
 
-  it("keeps the last ingress trace active through the publish suppression window", () => {
-    let nowMs = 5_000;
+  it("only exposes the active trace while ingress work is on the stack", () => {
     const state = new ConnectionShardCursorTraceState({
-      nowMs: () => nowMs,
+      nowMs: () => 5_000,
     });
     const trace = {
       traceId: "trace-2",
@@ -56,10 +55,6 @@ describe("ConnectionShardCursorTraceState", () => {
     expect(state.activeTraceContext()).toEqual(trace);
 
     state.restoreActiveTrace(previous);
-    state.rememberIngressTraceForPublish(trace, 100);
-    expect(state.activeTraceContext()).toEqual(trace);
-
-    nowMs = 5_101;
     expect(state.activeTraceContext()).toBeNull();
   });
 });
