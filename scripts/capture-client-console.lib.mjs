@@ -198,10 +198,53 @@ export function formatRemoteObject(arg) {
   if (Object.hasOwn(arg, "unserializableValue")) {
     return String(arg.unserializableValue);
   }
+  if (arg && typeof arg === "object" && arg.preview && typeof arg.preview === "object") {
+    const previewText = formatRemoteObjectPreview(arg.preview, arg.subtype);
+    if (previewText) {
+      return previewText;
+    }
+  }
   if (typeof arg.description === "string" && arg.description.length > 0) {
     return arg.description;
   }
   return arg.type ?? "unknown";
+}
+
+function formatRemoteObjectPreview(preview, subtype) {
+  const properties = Array.isArray(preview.properties) ? preview.properties : [];
+  if (properties.length === 0) {
+    return null;
+  }
+
+  if (subtype === "array") {
+    const values = properties
+      .filter((property) => /^\d+$/.test(property.name))
+      .sort((left, right) => Number.parseInt(left.name, 10) - Number.parseInt(right.name, 10))
+      .map((property) => formatPreviewPropertyValue(property));
+    const suffix = preview.overflow ? ", ..." : "";
+    return `[${values.join(", ")}${suffix}]`;
+  }
+
+  const entries = properties.map((property) => {
+    const key = JSON.stringify(property.name);
+    const value = formatPreviewPropertyValue(property);
+    return `${key}:${value}`;
+  });
+  const suffix = preview.overflow ? ", ..." : "";
+  return `{${entries.join(", ")}${suffix}}`;
+}
+
+function formatPreviewPropertyValue(property) {
+  if (Object.hasOwn(property, "value")) {
+    return JSON.stringify(property.value);
+  }
+  if (typeof property.valuePreview === "object" && property.valuePreview !== null) {
+    return formatRemoteObjectPreview(property.valuePreview, property.subtype) ?? "Object";
+  }
+  if (typeof property.type === "string" && property.type !== "undefined") {
+    return JSON.stringify(property.value ?? property.type);
+  }
+  return JSON.stringify(property.value ?? null);
 }
 
 export function formatLine(kind, message) {

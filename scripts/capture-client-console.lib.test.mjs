@@ -65,5 +65,36 @@ describe("capture-client-console lib", () => {
     expect(formatRemoteObject({ value: { a: 1 } })).toBe('{"a":1}');
     expect(formatRemoteObject({ unserializableValue: "-0" })).toBe("-0");
     expect(formatRemoteObject({ description: "Symbol(x)" })).toBe("Symbol(x)");
+    expect(
+      formatRemoteObject({
+        type: "object",
+        description: "Object",
+        preview: {
+          overflow: false,
+          properties: [
+            { name: "code", type: "string", value: "setcell_not_subscribed" },
+            { name: "msg", type: "string", value: "subscribe first" },
+            { name: "trace", type: "string", value: "ctrace_123" },
+            { name: "cid", type: "string", value: "c_123" },
+          ],
+        },
+      })
+    ).toBe(
+      '{"code":"setcell_not_subscribed", "msg":"subscribe first", "trace":"ctrace_123", "cid":"c_123"}'
+    );
+    expect(
+      formatRemoteObject({
+        type: "object",
+        subtype: "array",
+        description: "Array(2)",
+        preview: {
+          overflow: true,
+          properties: [
+            { name: "0", type: "string", value: "a" },
+            { name: "1", type: "string", value: "b" },
+          ],
+        },
+      })
+    ).toBe('["a", "b", ...]');
   });
 });
