@@ -278,4 +278,41 @@ describe("render loop cursor dirty patching", () => {
       { subscriptionRebuild: { reason: "subscription_rebuild" } }
     );
   });
+
+  it("clears a rebuild via skip callback when there are no visible tiles to resubscribe", () => {
+    const { app, tick } = createAppHarness();
+    const skipped = vi.fn();
+
+    mocks.reconcileSubscriptions.mockReturnValue({
+      visibleTiles: [],
+      subscribedTiles: new Set(),
+      toSub: [],
+      toUnsub: [],
+    });
+
+    const loop = createRenderLoop({
+      app,
+      graphics: {},
+      camera: { x: 0, y: 0, cellPixelSize: 16 },
+      tileStore: {},
+      heatStore: {
+        decay: () => false,
+      },
+      cursors: new Map(),
+      cursorLabels: { update: vi.fn() },
+      transport: { send: vi.fn() },
+      setStatus: () => {},
+      onSubscriptionRebuildSkipped: skipped,
+    });
+
+    tick();
+    skipped.mockClear();
+
+    loop.forceSubscriptionRebuild("visibilitychange");
+    tick();
+
+    expect(skipped).toHaveBeenCalledWith("visibilitychange", {
+      visibleTileCount: 0,
+    });
+  });
 });

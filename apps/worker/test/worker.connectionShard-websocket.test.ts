@@ -389,6 +389,26 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
+  it("does not send subAck for legacy subscribe messages without a cid", async () => {
+    const harness = createHarness();
+    const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_legacy",
+      name: "Legacy",
+      shard: "shard-a",
+    });
+
+    serverSocket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+
+    await waitFor(() => {
+      const tileStub = harness.tileOwners.getByName("0:0");
+      expect(tileStub.watchRequests.length).toBe(1);
+    });
+
+    const messages = decodeMessages(serverSocket);
+    expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    expect(messages.some((message) => message.t === "subAck")).toBe(false);
+  });
+
   it("rejects setCell for unsubscribed tiles and sends snapshot", async () => {
     const harness = createHarness();
     const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {

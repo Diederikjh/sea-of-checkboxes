@@ -407,6 +407,50 @@ describe("app interaction overlays", () => {
     teardown();
   });
 
+  it("keeps the rebuild guard active until the matching subAck arrives", async () => {
+    const teardown = await startApp();
+    const lifecycle = mocks.transportLifecycleHandlers;
+    const inputArgs = mocks.inputHandlerArgs;
+    if (!lifecycle || !inputArgs) {
+      throw new Error("Expected transport lifecycle handlers and input handler args");
+    }
+
+    lifecycle.onOpen?.({ reconnected: true });
+
+    const rebuildMessage = mocks.rebuildMessages.at(-1);
+    if (!rebuildMessage) {
+      throw new Error("Expected reconnect rebuild message");
+    }
+
+    expect(inputArgs.getSetCellGuard()).toMatchObject({
+      reason: "subscription_rebuild",
+      trigger: "transport_reconnect",
+      cid: rebuildMessage.cid,
+    });
+
+    mocks.inboundMessageHandler?.({
+      t: "subAck",
+      cid: "c_other_rebuild",
+      requestedCount: 1,
+      changedCount: 1,
+      subscribedCount: 1,
+    });
+    expect(inputArgs.getSetCellGuard()).toMatchObject({
+      cid: rebuildMessage.cid,
+    });
+
+    mocks.inboundMessageHandler?.({
+      t: "subAck",
+      cid: rebuildMessage.cid,
+      requestedCount: 1,
+      changedCount: 1,
+      subscribedCount: 1,
+    });
+    expect(inputArgs.getSetCellGuard()).toBeNull();
+
+    teardown();
+  });
+
   it("forces a subscription rebuild on focus/pageshow and visible lifecycle transitions", async () => {
     const teardown = await startApp();
 
