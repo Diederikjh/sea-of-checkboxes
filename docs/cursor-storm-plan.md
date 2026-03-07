@@ -25,6 +25,29 @@ But the dangerous push path is still live:
 
 That leaves the system in a half-migrated state where the storm-prone topology still handles live traffic.
 
+## Current Status
+
+Phase 1 is now deployed and has changed the traffic shape in live captures:
+
+- repo server tail is now dominated by `GET /cursor-state`
+- normal hub watch traffic is still present
+- the old hub-push `/cursor-batch` pattern is not visible in the latest repo tail
+
+Latest observations from `2026-03-07` captures:
+
+- latest repo server tail showed `207` `GET /cursor-state` requests
+- the same tail showed `0` `/cursor-batch`, `0` `Subrequest depth limit exceeded`, and `0` `server_error_sent`
+- clients still received websocket `err {"code":"internal","msg":"Failed to process message"}` packets
+- one normal-window rebuild took `8442ms`
+- rebuild blocking still worked, and some `setCell` failures happened only after rebuild completion
+
+Interpretation:
+
+- the plan direction is still correct
+- Phase 1 reduced or removed the visible hub-push path in the latest repo capture
+- the next bottleneck is likely broad pull behavior and missing server-side observability, not just the old hub fanout loop
+- watched-peer scoping and poll dampening are now immediate follow-up work, not optional optimization
+
 ## Goal
 
 Keep `CursorHubDO` only for watch membership and related best-effort metadata. Remove hub-driven cursor update fanout from normal operation. Make remote cursor state converge through adaptive pull from peer shards.
@@ -125,28 +148,43 @@ Tests:
 - add regression:
   - hub configured + publish disabled still results in active pull
 
-### Phase 3: Narrow peer polling to watched shards
+Status:
+- implemented
+- latest repo tail confirms pull is now the dominant visible cursor path
+
+### Phase 3: Narrow peer polling to watched shards and dampen pull bursts
 
 Purpose:
-- reduce cost once pull is primary
+- reduce cost now that pull is primary
+- avoid broad synchronized polling bursts across shards
 
 Code changes:
 - change hub watch response to return peer shard membership or equivalent watch scope
 - cache that scope in `ConnectionShardDO`
 - poll only relevant peer shards instead of all peers from static topology
+- add jitter and/or concurrency caps so peer pulls do not run in lockstep
+- ensure adaptive pull backs off aggressively when repeated polls are quiet
+- keep immediate reheating when real local interaction resumes
 
 Behavior changes:
 - adaptive pull is scoped to shards that currently matter
 - idle cost drops without restoring push recursion risk
+- rebuilds and reconnects should not trigger broad all-peer pull bursts
 
 Exit criteria:
 - shard polls only watched peers
+- shard does not fan out all-peer pull cycles during steady-state idle
 - remote cursor visibility remains correct during subscribe/unsubscribe churn
+- rebuild latency drops from the current worst-case multi-second path
+- client idle CPU is materially lower during no-change periods
 
 Tests:
 - add targeted tests for watched-peer scoping
 - add reconnect / rebuild coverage so watched-peer scope refreshes correctly
 - verify no polling occurs to irrelevant peers
+- add coverage for jitter / capped scheduling behavior at the controller level
+- add coverage that quiet polling backs off even when many peers exist
+- add coverage that local activity reheats only the relevant polling scope
 
 ### Phase 4: Retire push-only compatibility code
 
@@ -215,6 +253,26 @@ The lowest-risk first implementation batch is:
 
 This should materially reduce storm risk without needing the full watched-peer optimization first.
 
+### Updated priority after Phase 1
+
+The next batch should not be treated as optional tuning.
+
+Based on the latest `2026-03-07` captures:
+
+- peer-scoped polling is now the highest-priority topology change
+- pull dampening needs to land in the same batch:
+  - jitter
+  - concurrency caps
+  - stronger quiet-period backoff
+- server-side pull-cycle logging should be added so `err/internal` can be correlated even when tail misses websocket message context
+
+The practical ordering is now:
+
+1. narrow polling to watched peers
+2. add pull burst dampening
+3. add pull-cycle observability
+4. only then consider deleting more compatibility code
+
 ### Operational checks after each batch
 
 - check Cloudflare logs for any fresh `Subrequest depth limit exceeded`
@@ -227,12 +285,15 @@ This should materially reduce storm risk without needing the full watched-peer o
 - Should watched-peer scope be returned directly by `/watch`, or derived from another hub endpoint?
 - Do we want a temporary feature flag for hub publish removal, or is direct cutover acceptable in this environment?
 - Is recent-edit activity still worth keeping in `CursorHubDO`, or should that also move out of the hub later?
+- Should pull-cycle logging live in `ConnectionShardDO` directly, or in a dedicated cursor pull controller extracted from it?
 
-## First Execution Batch
+## Next Execution Batch
 
 Implement next:
 
-1. remove hub cursor publish from `ConnectionShardCursorHubController`
-2. remove hub publish API usage from `ConnectionShardCursorHubGateway`
-3. allow adaptive cursor pull to run while hub watch remains enabled
-4. update websocket, hub controller, and hub tests to match the new flow
+1. return watched-peer scope from hub watch flow
+2. cache watched-peer scope in `ConnectionShardDO`
+3. poll only watched peers instead of the full shard set
+4. add jitter and concurrency caps to cursor pull scheduling
+5. add structured pull-cycle logs so polling bursts and failures are visible in tail captures
+6. update websocket, hub controller, and pull-path tests to match the new flow
