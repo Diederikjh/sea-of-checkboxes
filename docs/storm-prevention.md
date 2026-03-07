@@ -150,6 +150,13 @@ Recommended query order during an incident:
    - `cursor_batch_reentrant_drop`
 9. If no guard events appear, inspect the ingress or pull path that emitted the first recursive event for that trace.
 
+Recent pull-path captures add one more concrete pattern to check:
+
+- the failure may be asymmetric
+- one client can receive remote cursor packets promptly while the reverse direction is delayed by about `60s`
+- during that same window, one shard can show successful `cursor_pull_peer` to its watched peer while the reverse shard fails every nested reverse-direction pull with `Subrequest depth limit exceeded`
+- if that happens, inspect the failing shard's inbound `GET /cursor-state` request chain first and verify that it did not start timer- or local-activity-driven peer pull work before the current request unwound
+
 What a healthy capture usually shows:
 
 - isolated `cursor_batch_ingress` events
@@ -162,6 +169,10 @@ What a storm capture usually shows:
 - one or a small number of dominant `trace_id` values
 - repeated `/cursor-batch` ingress on the same second
 - many `internal_error` records with `Subrequest depth limit exceeded`
+- or, on the newer pull path, a narrow watched pair where:
+  - one side keeps succeeding on `GET /cursor-state`
+  - the reverse side emits `internal_error` / `server_error_sent`
+  - the failing side starts nested `cursor_pull_cycle` / `cursor_pull_peer` work inside inbound `/cursor-state`
 
 ## Review Checklist (PRs)
 
@@ -184,4 +195,8 @@ Before merging any fanout/topology change:
 4. If the client captured `[trace ...]`, pivot historical worker logs to that trace immediately with `pnpm logs:server:query`.
 5. If one `requestId` dominates recursion errors, treat as request-chain loop.
 6. Verify whether the path is ingress, fanout, or nested pull and disable/decouple the synchronous part first.
-7. Deploy fix with added guard + test before re-enabling full fanout.
+7. In paired-client runs, verify whether the issue is directional:
+   - one side receives remote cursors promptly
+   - the other side waits about `30-60s` or fails entirely
+   - if so, inspect the failing shard's inbound `/cursor-state` chains before widening the search
+8. Deploy fix with added guard + test before re-enabling full fanout.

@@ -79,6 +79,24 @@ Latest observations from `2026-03-07` captures:
   - in both cases the incoming request is already `GET /cursor-state` with `x-sea-cursor-pull: 1` and `x-sea-cursor-trace-origin: shard-6`
   - while handling that incoming pull, the target shard still starts local `cursor_pull_cycle` work and issues failing `cursor_pull_peer` calls back out to peers
   - only after those nested peer pulls fail with `Subrequest depth limit exceeded` do we emit `internal_error` and `server_error_sent`
+- latest paired multi-window run (`2026-03-07T20:17Z`) shows the remaining failure in a simpler watched pair:
+  - private-window client received the main-window cursor quickly: first tag `105` at `2026-03-07T20:17:45.292Z`, about `2.5s` after `hello`
+  - main-window client did not receive the private-window cursor until `2026-03-07T20:18:25.325Z`, about `60.2s` after `hello`
+  - the private-window client then received `8` websocket `internal` errors from `20:18:26.893Z` through `20:18:30.610Z`
+- the matching limited repo server tail for that run was dominated by `https://connection-shard.internal/cursor-state` and showed a live `shard-4 <-> shard-1` pull pair around `20:18:25Z`
+- targeted historical worker queries for the same window confirm:
+  - `37` `cursor_pull_cycle`
+  - `37` `cursor_pull_peer`
+  - `5` `internal_error`
+  - `5` `server_error_sent`
+  - all `5` pull-path client-visible errors were on `shard-1` under `GET /cursor-state`
+  - in the same window, `shard-4 -> shard-1` `cursor_pull_peer` remained successful while `shard-1 -> shard-4` repeatedly failed with `Subrequest depth limit exceeded`
+  - request `M0T0FQWIQMGHGBXP` shows the exact failing shape:
+    - inbound `GET /cursor-state` arrives on `shard-1` with `x-sea-cursor-pull: 1` and `x-sea-cursor-trace-origin: shard-4`
+    - while still handling that request, `shard-1` emits `cursor_pull_cycle`
+    - the nested `shard-1 -> shard-4` `cursor_pull_peer` fails immediately with recursion
+    - then `internal_error` and `server_error_sent` are emitted for the same request
+  - `shard-4` also emitted a no-op `subAck` under `GET /cursor-state` at `2026-03-07T20:18:31.738Z` with `changed_count: 0`
 
 Interpretation:
 
@@ -95,6 +113,9 @@ Interpretation:
 - the new historical query results make that stricter:
   - pull is not only correlated with incoming `/cursor-state`
   - in the failing traces, nested peer polling is actually happening inside the active `/cursor-state` request chain
+- the latest paired run adds a directional symptom:
+  - one watched direction can still look healthy while the reverse direction is delayed by about `60s` and then fails
+  - we need to treat one-way visibility plus reverse-direction recursion as an explicit validation failure, not as partial success
 - peer pull failures still need to stay best-effort and must not surface websocket `internal` errors during normal cursor sync
 - Phase 3 is implemented in repo, but its live exit criteria are not yet met in Cloudflare logs
 
@@ -296,7 +317,9 @@ Behavior changes:
 - `A <-> B` and `A/B/C` failures remain useful regression examples, but they are not the design limit
 - pull ticks must not inherit websocket or cursor-state request ancestry deeply enough to hit the subrequest limit
 - handling an inbound `GET /cursor-state` must not immediately trigger another outbound peer poll burst inside that same request chain
+- handling an inbound `GET /cursor-state` must not start timer- or local-activity-driven peer pull work before that request unwinds
 - first remote cursor visibility should happen promptly after watch scope and subscription are established
+- remote cursor visibility must be prompt in both directions across a watched pair, not only on one side
 - stable subscriptions should not emit repeated `subAck` responses with no effective change
 - pull-path failures must remain diagnosable server-side without degrading one client's cursor stream
 
@@ -304,6 +327,7 @@ Exit criteria:
 - no `Subrequest depth limit exceeded` in scoped pull captures across representative watched topologies, up to the full shard set used in production
 - no client-visible `server_error_sent` / `internal` websocket errors caused by `GET /cursor-state`
 - first remote `curUp` arrives within a short bounded interval after initial subscribe / rebuild, not about `60s` later
+- watched peers do not show one-way success where `A -> B` visibility is prompt but `B -> A` visibility is delayed or fails
 - steady-state logs do not show repeated `subAck` churn with `changed_count: 0`
 - scoped peer polling remains narrow after reconnect / unsubscribe transitions
 - adding more watched peers does not turn narrow pull into synchronized or recursive graph-wide traffic
@@ -314,6 +338,7 @@ Tests:
 - add regression coverage that a watched three-shard topology does not create recursive pull ancestry through a shared peer
 - add regression coverage for wider watched topologies, including star and near-full-shard watch sets, with bounded pull scheduling and no recursive amplification
 - add regression coverage that `/cursor-state` ingress does not directly recurse into nested outbound peer polls
+- add regression coverage that inbound `/cursor-state` on one side of a watched pair cannot start a reverse-direction pull cycle from timer or local-activity wake in the same request chain
 - add coverage that remote cursor ingestion does not count as local activity for pull wake purposes
 - add coverage for stricter timer floor / single-flight pull scheduling
 - add coverage for detached pull execution if we move pull ticks off request ancestry explicitly
@@ -329,7 +354,7 @@ Status:
   - fallback trace propagation on internal websocket errors without an active cursor trace
 - still pending live validation:
   - confirm representative watched topologies no longer recurse in raw Cloudflare logs
-  - confirm first remote `curUp` latency drops in paired client logs
+  - confirm first remote `curUp` latency drops in paired client logs in both directions
   - confirm repeated steady-state `subAck` churn is reduced or at least better explained by the new logs
 
 ### Phase 4: Retire push-only compatibility code
@@ -415,16 +440,20 @@ Based on the latest `2026-03-07` captures:
   - pull work must run detached from websocket and cursor-state request ancestry
 - rebuild / resubscribe churn now needs the same priority as pull dampening
 - client-visible pull-path errors are still a correctness issue, not just an observability gap
-- error correlation still needs improvement because the client currently sees `trace:null` even when the server has concrete `requestId`s
+- the latest paired run narrows the immediate bug further:
+  - `shard-4 -> shard-1` can succeed repeatedly while `shard-1 -> shard-4` recurses
+  - inbound `/cursor-state` on `shard-1` is still allowed to start nested reverse-direction peer pulls
+  - no-op `subAck` can still be emitted during `GET /cursor-state`
 
 The practical ordering is now:
 
 1. redeploy the Phase 3b scheduler / trace changes
-2. move pull execution fully off live request ancestry if current deployment still shows `GET /ws` / `GET /cursor-state`-bound pull chains
-3. validate scoped polling in raw server logs
-4. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
-5. confirm rebuild / resubscribe churn and first-visibility latency improved
-6. only then consider deleting more compatibility code
+2. stop inbound `GET /cursor-state` handling from starting nested peer pull work in the same request chain, including timer and local-activity wakes
+3. move pull execution fully off live request ancestry if current deployment still shows `GET /ws` / `GET /cursor-state`-bound pull chains
+4. validate scoped polling in raw server logs
+5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
+6. confirm rebuild / resubscribe churn and bidirectional first-visibility latency improved
+7. only then consider deleting more compatibility code
 
 Phase 3 code landed in repo, but the latest Cloudflare logs show that validation is not yet complete. Phase 3b is now the gate before deleting more compatibility code.
 
@@ -439,6 +468,7 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 - check whether any watched peer graph, including wider `5`- to `7`-shard scopes, degenerates into recursive or synchronized pull traffic
 - check whether repeated `subAck` with `changed_count: 0` is still happening during steady state
 - check whether first remote cursor visibility is still delayed after initial subscribe or rebuild
+- check whether cursor visibility is asymmetric across the two clients, even if only one side reports errors
 - check whether `cursor_pull_peer` is still running under websocket `GET /ws` or nested `GET /cursor-state` request ids
 - verify client CPU drops during idle periods
 - verify remote cursors still appear and expire correctly
@@ -459,8 +489,10 @@ Implement next:
    - no client-visible internal errors
    - sane limited tail plus sane historical worker query results
 2. redeploy or validate the current Phase 3b repo changes in the multi-client case
-3. inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry
-4. if so, detach pull execution before doing more tuning
-5. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
-6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved
-7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
+3. inspect whether inbound `GET /cursor-state` handling is still starting nested reverse-direction peer pull work
+4. if so, block that ingress-time re-entry before doing more tuning
+5. inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry
+6. if so, detach pull execution before doing more tuning
+7. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
+8. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved in both directions
+9. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
