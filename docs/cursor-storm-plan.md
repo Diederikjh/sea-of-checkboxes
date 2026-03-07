@@ -73,6 +73,12 @@ Latest observations from `2026-03-07` captures:
 - the request ancestry is now clearer in raw logs:
   - many ramp-up `cursor_pull_peer` records ran under websocket `GET /ws` request ids
   - failure-window `cursor_pull_peer`, `internal_error`, and `server_error_sent` records all ran under `GET /cursor-state`
+- targeted historical queries using `pnpm logs:server:query` now confirm the missing backend detail for client-visible traces:
+  - client trace `ctrace_2987a7d4-ab82-4b37-b392-53f71021d6ab` resolves to request `3JKQL8WFLCMNOL0X` on `shard-4`
+  - client trace `ctrace_50ef5ffb-712b-48d8-9e11-9499acdfb6b5` resolves to request `X1ZEYMS33CR1H9KH` on `shard-5`
+  - in both cases the incoming request is already `GET /cursor-state` with `x-sea-cursor-pull: 1` and `x-sea-cursor-trace-origin: shard-6`
+  - while handling that incoming pull, the target shard still starts local `cursor_pull_cycle` work and issues failing `cursor_pull_peer` calls back out to peers
+  - only after those nested peer pulls fail with `Subrequest depth limit exceeded` do we emit `internal_error` and `server_error_sent`
 
 Interpretation:
 
@@ -86,6 +92,9 @@ Interpretation:
   - we should treat those as examples of a more general watched-graph storm risk, not as the upper bound of the problem
 - repeated `sub` / `subAck` with `changed_count: 0` plus delayed first `curUp` means rebuild or resubscribe churn is now part of the failure mode
 - the raw `requestId` / `trigger` fields strongly suggest pull ticks are still executing on live websocket or cursor-state request ancestry instead of a fully detached background context
+- the new historical query results make that stricter:
+  - pull is not only correlated with incoming `/cursor-state`
+  - in the failing traces, nested peer polling is actually happening inside the active `/cursor-state` request chain
 - peer pull failures still need to stay best-effort and must not surface websocket `internal` errors during normal cursor sync
 - Phase 3 is implemented in repo, but its live exit criteria are not yet met in Cloudflare logs
 
@@ -275,6 +284,7 @@ Purpose:
 
 Code changes:
 - ensure pull execution is detached from websocket and cursor-state request ancestry rather than running under active `GET /ws` or `GET /cursor-state` chains
+- ensure `/cursor-state` ingress itself never directly starts nested peer pull work before the current request unwinds
 - ensure remote cursor application does not reheat peer polling as if it were fresh local activity
 - enforce a stricter minimum interval / single-flight guard so timer wakes cannot pile up into near-lockstep recursive pulls across the watched graph
 - avoid immediately re-arming pull on unchanged scoped peer results
@@ -285,6 +295,7 @@ Behavior changes:
 - watched peer graphs must not recurse, amplify, or synchronize into storm behavior during normal operation, even as additional peers enter scope
 - `A <-> B` and `A/B/C` failures remain useful regression examples, but they are not the design limit
 - pull ticks must not inherit websocket or cursor-state request ancestry deeply enough to hit the subrequest limit
+- handling an inbound `GET /cursor-state` must not immediately trigger another outbound peer poll burst inside that same request chain
 - first remote cursor visibility should happen promptly after watch scope and subscription are established
 - stable subscriptions should not emit repeated `subAck` responses with no effective change
 - pull-path failures must remain diagnosable server-side without degrading one client's cursor stream
@@ -302,6 +313,7 @@ Tests:
 - add regression coverage that reciprocal watched peers do not recursively reheat each other
 - add regression coverage that a watched three-shard topology does not create recursive pull ancestry through a shared peer
 - add regression coverage for wider watched topologies, including star and near-full-shard watch sets, with bounded pull scheduling and no recursive amplification
+- add regression coverage that `/cursor-state` ingress does not directly recurse into nested outbound peer polls
 - add coverage that remote cursor ingestion does not count as local activity for pull wake purposes
 - add coverage for stricter timer floor / single-flight pull scheduling
 - add coverage for detached pull execution if we move pull ticks off request ancestry explicitly
@@ -418,6 +430,9 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 
 ### Operational checks after each batch
 
+- capture one limited server tail plus paired normal/private client logs first
+- wait about `2 minutes` for Cloudflare historical worker logs to settle before treating query results as complete
+- use `pnpm logs:server:query` to pull missing backend detail by time window, `trace_id`, and `requestId`
 - check Cloudflare logs for any fresh `Subrequest depth limit exceeded`
 - check whether any normal cursor interaction still emits `POST /cursor-batch`
 - check whether any `GET /cursor-state` failure surfaced as websocket `internal` / `server_error_sent`
@@ -439,9 +454,13 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 
 Implement next:
 
-1. redeploy the current Phase 3b repo changes
-2. inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry
-3. if so, detach pull execution before doing more tuning
-4. validate against raw Cloudflare server logs plus paired client logs
-5. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved
-6. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
+1. run a single-client sanity capture first and confirm that one-client behavior is quiet:
+   - no unexpected pull churn
+   - no client-visible internal errors
+   - sane limited tail plus sane historical worker query results
+2. redeploy or validate the current Phase 3b repo changes in the multi-client case
+3. inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry
+4. if so, detach pull execution before doing more tuning
+5. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
+6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved
+7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests

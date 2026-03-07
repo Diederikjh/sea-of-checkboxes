@@ -128,14 +128,27 @@ Client correlation:
 
 Recommended query order during an incident:
 
-1. Group recursion errors by `requestId`.
-2. Group `/cursor-batch` logs by `trace_id`.
-3. Check whether the same `trace_id` appears with increasing `trace_hop`.
-4. Check for guard events:
+1. Capture three first-pass logs:
+   - limited server tail
+   - normal-window client log
+   - private-window client log
+2. Wait about `2 minutes` for Cloudflare stored worker logs to settle before assuming the historical query results are complete.
+3. Pivot from the client logs first:
+   - compare normal vs private behavior
+   - extract client-visible `trace` ids
+   - note whether first remote visibility is delayed or asymmetric
+4. Group recursion errors by `requestId`.
+5. Group relevant logs by `trace_id`.
+6. Check whether the same `trace_id` appears with increasing `trace_hop`.
+7. If the limited tail is incomplete, use `pnpm logs:server:query` to fetch:
+   - the trace-specific rows
+   - the full request chain by `requestId`
+   - the surrounding failure window by path and event
+8. Check for guard events:
    - `cursor_batch_loop_guard_drop`
    - `cursor_batch_duplicate_trace_drop`
    - `cursor_batch_reentrant_drop`
-5. If no guard events appear, inspect the fanout path that emitted `cursor_batch_ingress` for that trace.
+9. If no guard events appear, inspect the ingress or pull path that emitted the first recursive event for that trace.
 
 What a healthy capture usually shows:
 
@@ -165,9 +178,10 @@ Before merging any fanout/topology change:
 
 ## Incident Response (Quick)
 
-1. Capture server + client logs (`docs/debug-log-capture.md`).
-2. Group by `requestId`, path, `trace_id`, and message.
-3. If one `requestId` dominates recursion errors, treat as request-chain loop.
-4. If the client captured `[trace ...]`, pivot server logs to that trace immediately.
-5. Verify whether the path is ingress or fanout and disable/decouple synchronous fanout first.
-6. Deploy fix with added guard + test before re-enabling full fanout.
+1. Capture limited server tail plus two client logs: normal window and private window (`docs/debug-log-capture.md`).
+2. Wait about `2 minutes` for Cloudflare historical worker logs to settle.
+3. Group by `requestId`, path, `trace_id`, and message.
+4. If the client captured `[trace ...]`, pivot historical worker logs to that trace immediately with `pnpm logs:server:query`.
+5. If one `requestId` dominates recursion errors, treat as request-chain loop.
+6. Verify whether the path is ingress, fanout, or nested pull and disable/decouple the synchronous part first.
+7. Deploy fix with added guard + test before re-enabling full fanout.

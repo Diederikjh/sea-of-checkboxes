@@ -7,6 +7,7 @@
     "dev:web": "pnpm --filter sea-of-checkboxes dev",
     "dev:worker": "pnpm --filter @sea/worker dev",
     "logs:server:capture": "node scripts/capture-worker-logs.mjs",
+    "logs:server:query": "node scripts/query-worker-logs.mjs",
     "logs:client:capture": "node scripts/capture-client-console.mjs",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
