@@ -51,6 +51,7 @@ import {
   ConnectionShardCursorPullScheduler,
   type CursorPullWakeReason,
 } from "./connectionShardCursorPullScheduler";
+import { ConnectionShardCursorPullIngressGate } from "./connectionShardCursorPullIngressGate";
 import { ConnectionShardCursorHubGateway } from "./cursorHubGateway";
 import { ConnectionShardCursorHubController } from "./connectionShardCursorHubController";
 import { peerShardNames } from "./sharding";
@@ -120,6 +121,7 @@ export class ConnectionShardDO {
   #tilePullQuietStreak: number;
   #cursorPullInFlight: boolean;
   #cursorPullScheduler: ConnectionShardCursorPullScheduler;
+  #cursorPullIngressGate: ConnectionShardCursorPullIngressGate;
   #cursorPullIntervalMs: number;
   #cursorPullQuietStreak: number;
   #cursorPullActiveUntilMs: number;
@@ -179,6 +181,15 @@ export class ConnectionShardDO {
       },
       minIntervalMs: CURSOR_PULL_INTERVAL_MIN_MS,
       jitterMs: CURSOR_PULL_JITTER_MS,
+    });
+    this.#cursorPullIngressGate = new ConnectionShardCursorPullIngressGate({
+      deferDetachedTask: (task) => this.#deferDetachedTask(task),
+      onFlush: (wakeReason) => {
+        this.#scheduleCursorPullTick(
+          wakeReason === "timer" ? CURSOR_PULL_INTERVAL_MIN_MS : 0,
+          wakeReason
+        );
+      },
     });
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
@@ -327,6 +338,9 @@ export class ConnectionShardDO {
       } finally {
         this.#cursorStateIngressDepth = Math.max(0, this.#cursorStateIngressDepth - 1);
         this.#cursorTraceState.restoreActiveTrace(previousTrace);
+        if (this.#cursorStateIngressDepth === 0) {
+          this.#cursorPullIngressGate.flushAfterIngressExited();
+        }
       }
     }
 
@@ -969,6 +983,7 @@ export class ConnectionShardDO {
   #refreshCursorPullSchedule(): void {
     if (this.#clients.size === 0) {
       this.#cursorPullScheduler.reset();
+      this.#cursorPullIngressGate.reset();
       this.#cursorPullInFlight = false;
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
@@ -978,6 +993,7 @@ export class ConnectionShardDO {
 
     if (this.#peerShardNames(this.#currentShardName()).length === 0) {
       this.#cursorPullScheduler.reset();
+      this.#cursorPullIngressGate.reset();
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
@@ -1011,6 +1027,10 @@ export class ConnectionShardDO {
     wakeReason: CursorPullWakeReason = "timer"
   ): void {
     if (this.#clients.size === 0) {
+      return;
+    }
+    if (this.#cursorStateIngressDepth > 0) {
+      this.#cursorPullIngressGate.defer(wakeReason);
       return;
     }
     this.#cursorPullScheduler.schedule(delayMs, wakeReason);
@@ -1075,7 +1095,12 @@ export class ConnectionShardDO {
       return;
     }
 
-    if (this.#cursorPullInFlight || this.#cursorStateIngressDepth > 0) {
+    if (this.#cursorStateIngressDepth > 0) {
+      this.#cursorPullIngressGate.defer(wakeReason);
+      return;
+    }
+
+    if (this.#cursorPullInFlight) {
       this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MIN_MS, "timer");
       return;
     }
@@ -1131,7 +1156,7 @@ export class ConnectionShardDO {
     this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
     this.#cursorPullQuietStreak = 0;
 
-    if (!this.#cursorPullInFlight && this.#cursorStateIngressDepth === 0) {
+    if (!this.#cursorPullInFlight) {
       this.#scheduleCursorPullTick(0, "local_activity");
     }
   }
@@ -1162,7 +1187,7 @@ export class ConnectionShardDO {
     }
 
     this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_ACTIVITY_WINDOW_MS;
-    if (!this.#cursorPullInFlight && this.#cursorStateIngressDepth === 0) {
+    if (!this.#cursorPullInFlight) {
       this.#clearCursorPullTimer();
       this.#scheduleCursorPullTick(0, "watch_scope_change");
     }

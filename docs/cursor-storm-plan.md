@@ -136,6 +136,7 @@ Repo status after the current implementation batch:
   - cursor pull wakeups are coalesced behind a real minimum interval instead of repeated `clear + schedule(0)` churn
   - local cursor activity now reheats pull promptly without opening a sustained hot window on every heartbeat
   - pull requests now carry trace headers, and fallback trace IDs are attached to client-visible internal errors even when no active cursor trace exists
+  - inbound `GET /cursor-state` now defers queued pull wakes until after the request unwinds instead of re-arming timer or local-activity pull work inside the live ingress chain
   - worker regressions now cover local reheat coalescing and fallback internal-error trace correlation
 
 ## Goal
@@ -351,6 +352,7 @@ Status:
 - worker regressions now cover:
   - local cursor reheats coalescing behind the stricter timer floor
   - repeated local cursor activity not stacking immediate pull bursts
+  - deferred cursor-pull wake flushing after `/cursor-state` ingress exits
   - fallback trace propagation on internal websocket errors without an active cursor trace
 - still pending live validation:
   - confirm representative watched topologies no longer recurse in raw Cloudflare logs
@@ -489,10 +491,8 @@ Implement next:
    - no client-visible internal errors
    - sane limited tail plus sane historical worker query results
 2. redeploy or validate the current Phase 3b repo changes in the multi-client case
-3. inspect whether inbound `GET /cursor-state` handling is still starting nested reverse-direction peer pull work
-4. if so, block that ingress-time re-entry before doing more tuning
-5. inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry
-6. if so, detach pull execution before doing more tuning
-7. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
-8. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved in both directions
-9. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
+3. validate whether the new `/cursor-state` ingress deferral removes nested reverse-direction peer pulls in the paired-client case
+4. if nested pull is still visible, inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
+5. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
+6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved in both directions
+7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
