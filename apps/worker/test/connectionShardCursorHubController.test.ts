@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { CursorPresence, CursorRelayBatch } from "../src/cursorRelay";
 import { ConnectionShardCursorHubController } from "../src/connectionShardCursorHubController";
+import type { CursorHubWatchResponse } from "../src/cursorHubGateway";
 import { waitFor } from "./helpers/waitFor";
 
 class MockCursorHubGateway {
   watchCalls: Array<{ shard: string; action: "sub" | "unsub" }> = [];
-  watchResponses: Array<CursorRelayBatch | null> = [];
+  watchResponses: Array<CursorHubWatchResponse | null> = [];
 
-  async watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorRelayBatch | null> {
+  async watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorHubWatchResponse | null> {
     this.watchCalls.push({ shard, action });
     return this.watchResponses.shift() ?? null;
   }
@@ -16,10 +17,11 @@ class MockCursorHubGateway {
 
 function createControllerHarness(options: {
   hasClients?: boolean;
-  watchResponses?: Array<CursorRelayBatch | null>;
+  watchResponses?: Array<CursorHubWatchResponse | null>;
 }) {
   let hasClients = options.hasClients ?? true;
   const ingested: CursorRelayBatch[] = [];
+  const watchedPeerShards: string[][] = [];
   const gateway = new MockCursorHubGateway();
   gateway.watchResponses = [...(options.watchResponses ?? [])];
 
@@ -29,6 +31,9 @@ function createControllerHarness(options: {
     currentShardName: () => "shard-a",
     ingestBatch: (batch) => {
       ingested.push(batch);
+    },
+    updateWatchedPeerShards: (peerShards) => {
+      watchedPeerShards.push([...peerShards]);
     },
     deferDetachedTask: (task) => {
       void task();
@@ -41,6 +46,7 @@ function createControllerHarness(options: {
     controller,
     gateway,
     ingested,
+    watchedPeerShards,
     setHasClients(value: boolean) {
       hasClients = value;
     },
@@ -61,12 +67,15 @@ function cursor(uid: string): CursorPresence {
 
 describe("ConnectionShardCursorHubController", () => {
   it("registers watch and ingests snapshot updates when clients are present", async () => {
-    const snapshot: CursorRelayBatch = {
-      from: "shard-b",
-      updates: [cursor("u_remote")],
+    const watchState: CursorHubWatchResponse = {
+      snapshot: {
+        from: "shard-b",
+        updates: [cursor("u_remote")],
+      },
+      peerShards: ["shard-b", "shard-c"],
     };
     const harness = createControllerHarness({
-      watchResponses: [snapshot],
+      watchResponses: [watchState],
     });
 
     harness.controller.refreshWatchState();
@@ -75,7 +84,8 @@ describe("ConnectionShardCursorHubController", () => {
       expect(harness.gateway.watchCalls).toEqual([
         { shard: "shard-a", action: "sub" },
       ]);
-      expect(harness.ingested).toEqual([snapshot]);
+      expect(harness.ingested).toEqual([watchState.snapshot]);
+      expect(harness.watchedPeerShards).toEqual([["shard-b", "shard-c"]]);
     });
   });
 
@@ -89,6 +99,7 @@ describe("ConnectionShardCursorHubController", () => {
 
     expect(harness.gateway.watchCalls).toEqual([]);
     expect(harness.ingested).toEqual([]);
+    expect(harness.watchedPeerShards).toEqual([[]]);
   });
 
   it("unsubscribes when clients drop to zero", async () => {
@@ -111,6 +122,7 @@ describe("ConnectionShardCursorHubController", () => {
         { shard: "shard-a", action: "sub" },
         { shard: "shard-a", action: "unsub" },
       ]);
+      expect(harness.watchedPeerShards.at(-1)).toEqual([]);
     });
   });
 

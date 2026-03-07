@@ -106,15 +106,21 @@ describe("CursorHubDO", () => {
     const subA = await postWatch(harness.hub, "shard-a", "sub");
     expect(subA.status).toBe(200);
     await expect(subA.json()).resolves.toEqual({
-      from: "cursor-hub",
-      updates: [],
+      snapshot: {
+        from: "cursor-hub",
+        updates: [],
+      },
+      peerShards: [],
     });
 
     const subB = await postWatch(harness.hub, "shard-b", "sub");
     expect(subB.status).toBe(200);
     await expect(subB.json()).resolves.toEqual({
-      from: "cursor-hub",
-      updates: [],
+      snapshot: {
+        from: "cursor-hub",
+        updates: [],
+      },
+      peerShards: ["shard-a"],
     });
 
     const publish = await postPublish(harness.hub, "shard-a", [
@@ -197,18 +203,21 @@ describe("CursorHubDO", () => {
     const subC = await postWatch(harness.hub, "shard-c", "sub");
     expect(subC.status).toBe(200);
     await expect(subC.json()).resolves.toEqual({
-      from: "cursor-hub",
-      updates: [
-        {
-          uid: "u_a",
-          name: "Alice",
-          x: 2.5,
-          y: 2.5,
-          seenAt: nowMs,
-          seq: 2,
-          tileKey: "0:0",
-        },
-      ],
+      snapshot: {
+        from: "cursor-hub",
+        updates: [
+          {
+            uid: "u_a",
+            name: "Alice",
+            x: 2.5,
+            y: 2.5,
+            seenAt: nowMs,
+            seq: 2,
+            tileKey: "0:0",
+          },
+        ],
+      },
+      peerShards: ["shard-a", "shard-b"],
     });
 
     await postPublish(harness.hub, "shard-a", [
@@ -224,8 +233,12 @@ describe("CursorHubDO", () => {
     ]);
     const subD = await postWatch(harness.hub, "shard-d", "sub");
     expect(subD.status).toBe(200);
-    const snapshotD = (await subD.json()) as { updates: Array<{ uid: string }> };
-    expect(snapshotD.updates.some((update) => update.uid === "u_stale")).toBe(false);
+    const snapshotD = (await subD.json()) as {
+      snapshot: { updates: Array<{ uid: string }> };
+      peerShards: string[];
+    };
+    expect(snapshotD.snapshot.updates.some((update) => update.uid === "u_stale")).toBe(false);
+    expect(snapshotD.peerShards).toEqual(["shard-a", "shard-b", "shard-c"]);
   });
 
   it("returns from publish without waiting for downstream shard fanout", async () => {

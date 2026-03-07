@@ -78,6 +78,8 @@ const CURSOR_PULL_INTERVAL_IDLE_MAX_MS = 1_500;
 const CURSOR_PULL_INTERVAL_IDLE_BACKOFF_STEP_MS = 300;
 const CURSOR_PULL_IDLE_STREAK_BEFORE_LONG_BACKOFF = 4;
 const CURSOR_PULL_ACTIVITY_WINDOW_MS = 500;
+const CURSOR_PULL_JITTER_MS = 25;
+const CURSOR_PULL_CONCURRENCY = 2;
 const CURSOR_HUB_NAME = "global";
 const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
 const CURSOR_BATCH_TRACE_MAX_HOP = 1;
@@ -111,6 +113,8 @@ export class ConnectionShardDO {
   #cursorPullIntervalMs: number;
   #cursorPullQuietStreak: number;
   #cursorPullActiveUntilMs: number;
+  #cursorPullPeerShards: string[];
+  #cursorPullWakeReason: string | null;
   #cursorStateIngressDepth: number;
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
@@ -143,6 +147,8 @@ export class ConnectionShardDO {
     this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
     this.#cursorPullQuietStreak = 0;
     this.#cursorPullActiveUntilMs = 0;
+    this.#cursorPullPeerShards = [];
+    this.#cursorPullWakeReason = null;
     this.#cursorStateIngressDepth = 0;
     this.#cursorHubPublishSuppressedUntilMs = 0;
     this.#cursorTraceState = new ConnectionShardCursorTraceState({
@@ -199,6 +205,7 @@ export class ConnectionShardDO {
       hasClients: () => this.#clients.size > 0,
       currentShardName: () => this.#currentShardName(),
       ingestBatch: (batch) => this.#ingestCursorBatchWithIngress(batch),
+      updateWatchedPeerShards: (peerShards) => this.#updateCursorPullPeerShards(peerShards),
       deferDetachedTask: (task) => this.#deferDetachedTask(task),
       maybeUnrefTimer: (timer) => this.#maybeUnrefTimer(timer),
     });
@@ -726,6 +733,9 @@ export class ConnectionShardDO {
   }
 
   #peerShardNames(currentShard: string): string[] {
+    if (this.#cursorHubController.isEnabled()) {
+      return this.#cursorPullPeerShards;
+    }
     return peerShardNames(currentShard);
   }
 
@@ -943,7 +953,7 @@ export class ConnectionShardDO {
     this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
     this.#cursorPullQuietStreak = 0;
     this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_ACTIVITY_WINDOW_MS;
-    this.#scheduleCursorPullTick(0);
+    this.#scheduleCursorPullTick(0, "schedule_refresh");
   }
 
   #refreshCursorHubWatchState(): void {
@@ -962,15 +972,22 @@ export class ConnectionShardDO {
     this.#maybeUnrefTimer(this.#tilePullTimer);
   }
 
-  #scheduleCursorPullTick(delayMs: number = this.#cursorPullIntervalMs): void {
+  #scheduleCursorPullTick(
+    delayMs: number = this.#cursorPullIntervalMs,
+    wakeReason: "local_activity" | "schedule_refresh" | "timer" | "watch_scope_change" = "timer"
+  ): void {
     if (this.#cursorPullTimer || this.#clients.size === 0) {
       return;
     }
 
+    const effectiveDelayMs = this.#cursorPullDelayMs(delayMs);
+    this.#cursorPullWakeReason = wakeReason;
     this.#cursorPullTimer = setTimeout(() => {
       this.#cursorPullTimer = null;
-      void this.#runCursorPullTick();
-    }, Math.max(0, delayMs));
+      const scheduledWakeReason = this.#cursorPullWakeReason ?? "timer";
+      this.#cursorPullWakeReason = null;
+      void this.#runCursorPullTick(scheduledWakeReason);
+    }, effectiveDelayMs);
     this.#maybeUnrefTimer(this.#cursorPullTimer);
   }
 
@@ -990,6 +1007,7 @@ export class ConnectionShardDO {
 
     clearTimeout(this.#cursorPullTimer);
     this.#cursorPullTimer = null;
+    this.#cursorPullWakeReason = null;
   }
 
   async #runTilePullTick(): Promise<void> {
@@ -1033,23 +1051,31 @@ export class ConnectionShardDO {
     );
   }
 
-  async #runCursorPullTick(): Promise<void> {
+  #cursorPullDelayMs(delayMs: number): number {
+    const baseDelayMs = Math.max(0, delayMs);
+    if (baseDelayMs === 0) {
+      return 0;
+    }
+    return baseDelayMs + Math.floor(Math.random() * (CURSOR_PULL_JITTER_MS + 1));
+  }
+
+  async #runCursorPullTick(wakeReason: string): Promise<void> {
     if (this.#clients.size === 0) {
       return;
     }
 
     if (this.#cursorPullInFlight || this.#cursorStateIngressDepth > 0) {
-      this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MIN_MS);
+      this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MIN_MS, "timer");
       return;
     }
 
     this.#cursorPullInFlight = true;
     try {
-      const deltaObserved = await this.#pollPeerCursorStates();
+      const deltaObserved = await this.#pollPeerCursorStates(wakeReason);
       this.#updateCursorPullInterval(deltaObserved);
     } finally {
       this.#cursorPullInFlight = false;
-      this.#scheduleCursorPullTick(this.#cursorPullIntervalMs);
+      this.#scheduleCursorPullTick(this.#cursorPullIntervalMs, "timer");
     }
   }
 
@@ -1095,8 +1121,48 @@ export class ConnectionShardDO {
     this.#clearCursorPullTimer();
 
     if (!this.#cursorPullInFlight && this.#cursorStateIngressDepth === 0) {
-      this.#scheduleCursorPullTick(0);
+      this.#scheduleCursorPullTick(0, "local_activity");
     }
+  }
+
+  #updateCursorPullPeerShards(peerShards: string[]): void {
+    const nextPeerShards = this.#sanitizeCursorPullPeerShards(peerShards);
+    if (
+      nextPeerShards.length === this.#cursorPullPeerShards.length
+      && nextPeerShards.every((peerShard, index) => peerShard === this.#cursorPullPeerShards[index])
+    ) {
+      return;
+    }
+
+    this.#cursorPullPeerShards = nextPeerShards;
+    this.#logEvent("cursor_pull_scope", {
+      peer_count: nextPeerShards.length,
+      peers: nextPeerShards,
+    });
+
+    if (this.#clients.size === 0) {
+      return;
+    }
+
+    if (nextPeerShards.length === 0) {
+      this.#clearCursorPullTimer();
+      this.#cursorPullActiveUntilMs = 0;
+      return;
+    }
+
+    this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_ACTIVITY_WINDOW_MS;
+    if (!this.#cursorPullInFlight && this.#cursorStateIngressDepth === 0) {
+      this.#clearCursorPullTimer();
+      this.#scheduleCursorPullTick(0, "watch_scope_change");
+    }
+  }
+
+  #sanitizeCursorPullPeerShards(peerShards: string[]): string[] {
+    const currentShard = this.#currentShardName();
+    const allowedPeerShards = new Set(peerShardNames(currentShard));
+    return Array.from(new Set(peerShards))
+      .filter((peerShard) => allowedPeerShards.has(peerShard))
+      .sort();
   }
 
   #pruneStaleTilePullState(): void {
@@ -1109,21 +1175,41 @@ export class ConnectionShardDO {
     }
   }
 
-  async #pollPeerCursorStates(): Promise<boolean> {
+  async #pollPeerCursorStates(wakeReason: string): Promise<boolean> {
+    const startMs = this.#nowMs();
     const peers = this.#peerShardNames(this.#currentShardName());
     if (peers.length === 0) {
       this.#cursorCoordinator.onCursorPollTick();
+      this.#logEvent("cursor_pull_cycle", {
+        wake_reason: wakeReason,
+        peer_count: 0,
+        delta_observed: false,
+        duration_ms: elapsedMs(startMs),
+      });
       return false;
     }
 
-    const deltaObserved = (
-      await Promise.all(peers.map((peerShard) => this.#pollPeerCursorState(peerShard)))
-    ).some(Boolean);
+    let deltaObserved = false;
+    for (let index = 0; index < peers.length; index += CURSOR_PULL_CONCURRENCY) {
+      const peerChunk = peers.slice(index, index + CURSOR_PULL_CONCURRENCY);
+      const chunkDeltaObserved = (
+        await Promise.all(peerChunk.map((peerShard) => this.#pollPeerCursorState(peerShard, wakeReason)))
+      ).some(Boolean);
+      deltaObserved = deltaObserved || chunkDeltaObserved;
+    }
     this.#cursorCoordinator.onCursorPollTick();
+    this.#logEvent("cursor_pull_cycle", {
+      wake_reason: wakeReason,
+      peer_count: peers.length,
+      delta_observed: deltaObserved,
+      concurrency: CURSOR_PULL_CONCURRENCY,
+      duration_ms: elapsedMs(startMs),
+    });
     return deltaObserved;
   }
 
-  async #pollPeerCursorState(peerShard: string): Promise<boolean> {
+  async #pollPeerCursorState(peerShard: string, wakeReason: string): Promise<boolean> {
+    const startMs = this.#nowMs();
     try {
       const stub = this.#env.CONNECTION_SHARD.getByName(peerShard);
       const response = await stub.fetch("https://connection-shard.internal/cursor-state", {
@@ -1133,17 +1219,52 @@ export class ConnectionShardDO {
         },
       });
       if (!response.ok) {
+        this.#logEvent("cursor_pull_peer", {
+          target_shard: peerShard,
+          wake_reason: wakeReason,
+          ok: false,
+          response_status: response.status,
+          update_count: 0,
+          duration_ms: elapsedMs(startMs),
+        });
         return false;
       }
 
       const batch = await readJson<CursorRelayBatch>(response);
       if (!batch || !isValidCursorRelayBatch(batch)) {
+        this.#logEvent("cursor_pull_peer", {
+          target_shard: peerShard,
+          wake_reason: wakeReason,
+          ok: false,
+          response_status: response.status,
+          update_count: 0,
+          error_message: "Invalid cursor-state payload",
+          duration_ms: elapsedMs(startMs),
+        });
         return false;
       }
 
-      return this.#ingestCursorBatchWithIngress(batch);
-    } catch {
-      // Cursor pull is best-effort.
+      const deltaObserved = this.#ingestCursorBatchWithIngress(batch);
+      this.#logEvent("cursor_pull_peer", {
+        target_shard: peerShard,
+        wake_reason: wakeReason,
+        ok: true,
+        response_status: response.status,
+        update_count: batch.updates.length,
+        delta_observed: deltaObserved,
+        duration_ms: elapsedMs(startMs),
+      });
+      return deltaObserved;
+    } catch (error) {
+      this.#logEvent("cursor_pull_peer", {
+        target_shard: peerShard,
+        wake_reason: wakeReason,
+        ok: false,
+        update_count: 0,
+        duration_ms: elapsedMs(startMs),
+        ...this.#errorFields(error),
+      });
+      // Cursor pull is best-effort and must not surface client-visible failures.
       return false;
     }
   }

@@ -1,7 +1,8 @@
 import type { CursorRelayBatch } from "./cursorRelay";
+import type { CursorHubWatchResponse } from "./cursorHubGateway";
 
 export interface ConnectionShardCursorHubGatewayLike {
-  watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorRelayBatch | null>;
+  watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorHubWatchResponse | null>;
 }
 
 interface ConnectionShardCursorHubControllerOptions {
@@ -9,6 +10,7 @@ interface ConnectionShardCursorHubControllerOptions {
   hasClients: () => boolean;
   currentShardName: () => string;
   ingestBatch: (batch: CursorRelayBatch) => void;
+  updateWatchedPeerShards: (peerShards: string[]) => void;
   deferDetachedTask: (task: () => Promise<void>) => void;
   maybeUnrefTimer: (timer: ReturnType<typeof setTimeout>) => void;
   watchRenewMs?: number;
@@ -19,6 +21,7 @@ export class ConnectionShardCursorHubController {
   #hasClients: () => boolean;
   #currentShardName: () => string;
   #ingestBatch: (batch: CursorRelayBatch) => void;
+  #updateWatchedPeerShards: (peerShards: string[]) => void;
   #deferDetachedTask: (task: () => Promise<void>) => void;
   #maybeUnrefTimer: (timer: ReturnType<typeof setTimeout>) => void;
   #watchRenewMs: number;
@@ -33,6 +36,7 @@ export class ConnectionShardCursorHubController {
     this.#hasClients = options.hasClients;
     this.#currentShardName = options.currentShardName;
     this.#ingestBatch = options.ingestBatch;
+    this.#updateWatchedPeerShards = options.updateWatchedPeerShards;
     this.#deferDetachedTask = options.deferDetachedTask;
     this.#maybeUnrefTimer = options.maybeUnrefTimer;
     this.#watchRenewMs = options.watchRenewMs ?? 60_000;
@@ -54,6 +58,7 @@ export class ConnectionShardCursorHubController {
 
     if (!this.#hasClients()) {
       this.#clearWatchRenewTimer();
+      this.#updateWatchedPeerShards([]);
       if (this.#subscribed) {
         this.#queueWatch("unsub");
       } else {
@@ -88,15 +93,17 @@ export class ConnectionShardCursorHubController {
     this.#watchInFlight = true;
 
     try {
-      const snapshot = await this.#gateway.watchShard(this.#currentShardName(), action);
+      const watchState = await this.#gateway.watchShard(this.#currentShardName(), action);
       if (action === "sub") {
         this.#subscribed = true;
         this.#scheduleWatchRenew(this.#watchRenewMs);
-        if (snapshot && snapshot.updates.length > 0) {
-          this.#ingestBatch(snapshot);
+        this.#updateWatchedPeerShards(watchState?.peerShards ?? []);
+        if (watchState?.snapshot && watchState.snapshot.updates.length > 0) {
+          this.#ingestBatch(watchState.snapshot);
         }
       } else {
         this.#subscribed = false;
+        this.#updateWatchedPeerShards([]);
       }
     } catch {
       // Hub watch registration is best-effort.

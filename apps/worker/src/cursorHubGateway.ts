@@ -12,6 +12,11 @@ export interface CursorHubWatchRequest {
   action: "sub" | "unsub";
 }
 
+export interface CursorHubWatchResponse {
+  snapshot: CursorRelayBatch;
+  peerShards: string[];
+}
+
 export interface CursorHubRecordActivityRequest {
   from: string;
   x: number;
@@ -27,6 +32,19 @@ export interface CursorHubSpawnSampleResponse {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function isValidCursorHubWatchResponse(value: unknown): value is CursorHubWatchResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<CursorHubWatchResponse>;
+  if (!isValidCursorRelayBatch(candidate.snapshot)) {
+    return false;
+  }
+  return Array.isArray(candidate.peerShards)
+    && candidate.peerShards.every((peerShard) => typeof peerShard === "string" && peerShard.length > 0);
 }
 
 function isValidSpawnSampleResponse(value: unknown): value is CursorHubSpawnSampleResponse {
@@ -50,7 +68,7 @@ export class ConnectionShardCursorHubGateway {
     this.#hubName = options.hubName;
   }
 
-  async watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorRelayBatch | null> {
+  async watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorHubWatchResponse | null> {
     const response = await this.#namespace.getByName(this.#hubName).fetch("https://cursor-hub.internal/watch", {
       method: "POST",
       headers: {
@@ -70,12 +88,19 @@ export class ConnectionShardCursorHubGateway {
       return null;
     }
 
-    const batch = await readJson<CursorRelayBatch>(response);
-    if (!batch || !isValidCursorRelayBatch(batch)) {
-      return null;
+    const payload = await readJson<CursorHubWatchResponse | CursorRelayBatch>(response);
+    if (isValidCursorHubWatchResponse(payload)) {
+      return payload;
     }
 
-    return batch;
+    if (isValidCursorRelayBatch(payload)) {
+      return {
+        snapshot: payload,
+        peerShards: [],
+      };
+    }
+
+    return null;
   }
 
   async publishRecentEdit(params: CursorHubRecordActivityRequest): Promise<void> {

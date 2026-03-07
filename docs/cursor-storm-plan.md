@@ -55,6 +55,15 @@ Interpretation:
 - watched-peer scoping and poll dampening are now immediate follow-up work, not optional optimization
 - peer pull failures need to stay best-effort and must not surface websocket `internal` errors during normal cursor sync
 
+Repo status after the current implementation batch:
+
+- Phase 3 is now implemented in repo
+- hub `/watch` now returns both snapshot data and peer shard scope
+- `ConnectionShardDO` now caches watched peer scope and polls only those peers when the hub is enabled
+- cursor pull now uses jittered timer scheduling and capped peer concurrency
+- structured `cursor_pull_scope`, `cursor_pull_peer`, and `cursor_pull_cycle` logs now exist for pull-path observability
+- worker regressions now cover watched-peer scoping, concurrency caps, jittered polling, and non-fatal pull failures
+
 ## Goal
 
 Keep `CursorHubDO` only for watch membership and related best-effort metadata. Remove hub-driven cursor update fanout from normal operation. Make remote cursor state converge through adaptive pull from peer shards.
@@ -198,6 +207,17 @@ Tests:
 - add coverage that pull failures stay best-effort and do not emit websocket `server_error_sent`
 - add coverage that jitter / concurrency caps prevent lockstep all-peer pull bursts
 
+Status:
+
+- implemented in repo
+- targeted worker tests now cover:
+  - watched-peer polling only touching relevant shards
+  - quiet pull backoff with scoped peers
+  - local activity reheating scoped pull immediately
+  - capped in-flight peer pulls
+  - jitter delaying timer-driven pull ticks
+  - pull failures remaining non-fatal to websocket clients
+
 ### Phase 4: Retire push-only compatibility code
 
 Purpose:
@@ -288,6 +308,8 @@ The practical ordering is now:
 4. add pull-cycle observability
 5. only then consider deleting more compatibility code
 
+This ordering is now complete in repo for Phase 3. The next step is live validation against Cloudflare logs before deleting more compatibility code.
+
 ### Operational checks after each batch
 
 - check Cloudflare logs for any fresh `Subrequest depth limit exceeded`
@@ -307,10 +329,8 @@ The practical ordering is now:
 
 Implement next:
 
-1. return watched-peer scope from hub watch flow
-2. cache watched-peer scope in `ConnectionShardDO`
-3. poll only watched peers instead of the full shard set
-4. add jitter and concurrency caps to cursor pull scheduling
-5. make peer pull failures non-fatal to websocket clients
-6. add structured pull-cycle logs with source shard, target shard, wake reason, latency, update count, and error
-7. update websocket, hub controller, and pull-path tests to match the new flow
+1. validate the Phase 3 rollout in Cloudflare logs
+2. confirm that normal cursor interaction no longer produces broad all-peer `GET /cursor-state` bursts
+3. confirm that pull-path failures no longer surface websocket `internal` / `server_error_sent`
+4. decide whether Phase 4 can start in this environment
+5. if validation is clean, remove push-only compatibility code and trim the now-redundant push-path tests

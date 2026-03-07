@@ -38,6 +38,11 @@ interface CursorHubWatchRequest {
   action: "sub" | "unsub";
 }
 
+interface CursorHubWatchResponse {
+  snapshot: CursorRelayBatch;
+  peerShards: string[];
+}
+
 interface CursorHubPublishRequest {
   from: string;
   updates: CursorPresence[];
@@ -187,7 +192,7 @@ export class CursorHubDO {
         subscriber_count: this.#subscribers.size,
         duration_ms: elapsedMs(startMs),
       });
-      return jsonResponse(this.#snapshotForShard(payload.shard));
+      return jsonResponse(this.#watchResponseForShard(payload.shard));
     }
 
     this.#subscribers.delete(payload.shard);
@@ -296,13 +301,19 @@ export class CursorHubDO {
     });
   }
 
-  #snapshotForShard(shard: string): CursorRelayBatch {
+  #watchResponseForShard(shard: string): CursorHubWatchResponse {
     const updates = Array.from(this.#cursorByUid.values())
       .filter((entry) => entry.shard !== shard)
       .map((entry) => entry.presence);
+    const peerShards = Array.from(this.#subscribers)
+      .filter((peerShard) => peerShard !== shard)
+      .sort();
     return {
-      from: CURSOR_HUB_INTERNAL_SHARD,
-      updates,
+      snapshot: {
+        from: CURSOR_HUB_INTERNAL_SHARD,
+        updates,
+      },
+      peerShards,
     };
   }
 
