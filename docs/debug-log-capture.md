@@ -70,7 +70,6 @@ Required environment:
 - preferred dedicated overrides:
   - `CLOUDFLARE_LOG_QUERY_API_TOKEN`
   - `CLOUDFLARE_LOG_QUERY_ACCOUNT_ID`
-  - optional for SQL zone queries: `CLOUDFLARE_LOG_QUERY_ZONE_ID`
 - fallback overrides:
   - `CLOUDFLARE_API_TOKEN`
   - `CLOUDFLARE_ACCOUNT_ID`
@@ -82,17 +81,6 @@ Recommended local setup:
 export CLOUDFLARE_LOG_QUERY_API_TOKEN=...
 export CLOUDFLARE_LOG_QUERY_ACCOUNT_ID=...
 ```
-
-Optional alternate backend:
-
-```bash
-pnpm logs:server:query --backend log-explorer-sql --query-scope account --sql-table access_requests --sql-time-column CreatedAt --filter Action:eq:login
-```
-
-This uses Cloudflare Log Explorer SQL rather than Workers Observability. As of the current
-Cloudflare Log Explorer dataset list, Workers Logs are not listed as a supported Log Explorer
-dataset, so this is a fallback utility for other account or zone log datasets rather than a
-replacement for worker log search.
 
 ## 2) Launch normal-window client and capture browser console logs
 

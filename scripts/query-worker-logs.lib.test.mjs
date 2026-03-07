@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyWorkerLogPostFilters,
-  buildLogExplorerSqlQuery,
-  buildLogExplorerSqlRequest,
   buildWorkerLogQueryRequest,
-  buildCloudflareAuthHeaders,
   extractWorkerLogEvents,
   formatWorkerLogQueryResult,
   parseWorkerLogQueryArgs,
@@ -39,7 +36,6 @@ describe("query-worker-logs lib", () => {
     expect(options).toMatchObject({
       accountId: "acc_123",
       apiToken: "tok_123",
-      backend: "telemetry",
       worker: "worker-a",
       lastMinutes: 5,
       limit: 25,
@@ -92,46 +88,6 @@ describe("query-worker-logs lib", () => {
     });
   });
 
-  it("builds simple log explorer sql from filters and timeframe", () => {
-    const options = parseWorkerLogQueryArgs(
-      [
-        "--backend",
-        "log-explorer-sql",
-        "--sql-table",
-        "access_requests",
-        "--sql-time-column",
-        "CreatedAt",
-        "--filter",
-        "Action:eq:login",
-        "--filter",
-        "Allowed:eq:bool:true",
-        "--limit",
-        "10",
-      ],
-      {
-        env: {
-          CLOUDFLARE_LOG_QUERY_ACCOUNT_ID: "acc_123",
-          CLOUDFLARE_LOG_QUERY_API_TOKEN: "tok_123",
-        },
-      }
-    );
-
-    expect(
-      buildLogExplorerSqlQuery(options, {
-        now: new Date("2026-03-07T10:00:00.000Z"),
-      })
-    ).toBe(
-      "SELECT * FROM access_requests WHERE Action = 'login' AND Allowed = TRUE AND CreatedAt >= '2026-03-07T09:45:00.000Z' AND CreatedAt <= '2026-03-07T10:00:00.000Z' LIMIT 10"
-    );
-
-    const request = buildLogExplorerSqlRequest(options, {
-      now: new Date("2026-03-07T10:00:00.000Z"),
-    });
-    expect(request.method).toBe("GET");
-    expect(request.url).toContain("/accounts/acc_123/logs/explorer/query/sql?query=");
-    expect(decodeURIComponent(request.url.split("?query=")[1])).toContain("FROM access_requests");
-  });
-
   it("resolves auth from wrangler commands when env vars are absent", () => {
     const calls = [];
     const resolved = resolveCloudflareAuth(
@@ -167,20 +123,6 @@ describe("query-worker-logs lib", () => {
       ["pnpm", ["dlx", "wrangler", "auth", "token", "--json"]],
       ["pnpm", ["dlx", "wrangler", "whoami", "--json"]],
     ]);
-  });
-
-  it("builds API key auth headers when needed", () => {
-    expect(
-      buildCloudflareAuthHeaders({
-        type: "api_key",
-        key: "key_123",
-        email: "user@example.com",
-      })
-    ).toEqual({
-      "X-Auth-Key": "key_123",
-      "X-Auth-Email": "user@example.com",
-      "Content-Type": "application/json",
-    });
   });
 
   it("prefers dedicated log-query env vars over generic Cloudflare vars", () => {
@@ -233,23 +175,6 @@ describe("query-worker-logs lib", () => {
     expect(formatWorkerLogQueryResult(payload, { format: "summary" })).toContain(
       "connection_shard_do:2"
     );
-  });
-
-  it("formats tabular sql results in summary mode", () => {
-    const payload = {
-      result: [
-        {
-          createdat: "2025-01-14T18:17:55Z",
-          action: "login",
-          allowed: true,
-        },
-      ],
-    };
-
-    const text = formatWorkerLogQueryResult(payload, { format: "summary" });
-    expect(text).toContain("events=1");
-    expect(text).toContain("columns=createdat, action, allowed");
-    expect(text).toContain('"action":"login"');
   });
 
   it("applies post-filters against nested telemetry event fields", () => {

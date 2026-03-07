@@ -5,8 +5,6 @@ import path from "node:path";
 
 import {
   applyWorkerLogPostFilters,
-  buildLogExplorerSqlRequest,
-  buildLogExplorerSqlQuery,
   buildWorkerLogQueryRequest,
   formatWorkerLogQueryResult,
   parseWorkerLogQueryArgs,
@@ -24,20 +22,11 @@ async function main() {
   }
 
   if (options.dryRun) {
-    const dryRunPayload =
-      options.backend === "log-explorer-sql"
-        ? {
-            backend: options.backend,
-            queryScope: options.queryScope,
-            accountId: options.accountId || "<account-id>",
-            zoneId: options.zoneId || "",
-            query: buildLogExplorerSqlQuery(options),
-          }
-        : buildWorkerLogQueryRequest({
-            ...options,
-            accountId: options.accountId || "<account-id>",
-            auth: { type: "api_token", token: "<dry-run>" },
-          }).body;
+    const dryRunPayload = buildWorkerLogQueryRequest({
+      ...options,
+      accountId: options.accountId || "<account-id>",
+      auth: { type: "api_token", token: "<dry-run>" },
+    }).body;
     process.stdout.write(`${JSON.stringify(dryRunPayload, null, 2)}\n`);
     return;
   }
@@ -52,14 +41,11 @@ async function main() {
     );
   }
 
-  const request =
-    options.backend === "log-explorer-sql"
-      ? buildLogExplorerSqlRequest(options)
-      : buildWorkerLogQueryRequest(options);
+  const request = buildWorkerLogQueryRequest(options);
   const response = await fetch(request.url, {
-    method: request.method ?? "POST",
+    method: "POST",
     headers: request.headers,
-    body: request.body ? JSON.stringify(request.body) : undefined,
+    body: JSON.stringify(request.body),
   });
   const payload = await response.json();
 
@@ -68,10 +54,13 @@ async function main() {
     throw new Error(`Cloudflare query failed (${response.status}): ${errors}`);
   }
 
-  const filteredPayload =
-    options.backend === "telemetry"
-      ? replaceWorkerLogEvents(payload, applyWorkerLogPostFilters(payload?.result?.events?.events ?? payload?.result?.events ?? payload?.result ?? [], options).slice(0, options.limit))
-      : payload;
+  const filteredPayload = replaceWorkerLogEvents(
+    payload,
+    applyWorkerLogPostFilters(
+      payload?.result?.events?.events ?? payload?.result?.events ?? payload?.result ?? [],
+      options
+    ).slice(0, options.limit)
+  );
   const output = formatWorkerLogQueryResult(filteredPayload, options);
   if (options.output) {
     fs.mkdirSync(path.dirname(options.output), { recursive: true });

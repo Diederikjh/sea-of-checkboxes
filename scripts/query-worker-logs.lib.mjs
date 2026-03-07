@@ -8,8 +8,6 @@ const DEFAULT_FORMAT = "summary";
 const DEFAULT_LIMIT = 100;
 const DEFAULT_LAST_MINUTES = 15;
 const DEFAULT_WRANGLER_COMMAND = ["pnpm", "dlx", "wrangler"];
-const DEFAULT_BACKEND = "telemetry";
-const DEFAULT_QUERY_SCOPE = "account";
 
 function buildTimestamp() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
@@ -110,75 +108,6 @@ function addStringFilter(filters, key, value, operation = "eq") {
   });
 }
 
-function pushExactFilter(filters, rawSpec) {
-  filters.push({
-    ...rawSpec,
-    mode: "server",
-  });
-}
-
-function quoteSqlIdentifier(rawValue) {
-  if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
-    throw new Error("Missing SQL identifier.");
-  }
-  const value = rawValue.trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-    throw new Error(`Invalid SQL identifier: ${rawValue}`);
-  }
-  return value;
-}
-
-function quoteSqlValue(value, type) {
-  if (type === "number") {
-    if (!Number.isFinite(value)) {
-      throw new Error(`Invalid SQL numeric value: ${String(value)}`);
-    }
-    return String(value);
-  }
-  if (type === "bool") {
-    return value ? "TRUE" : "FALSE";
-  }
-  const stringValue = String(value).replaceAll("'", "''");
-  return `'${stringValue}'`;
-}
-
-function buildSqlPredicate(filter) {
-  const column = quoteSqlIdentifier(filter.key);
-  const type = filter.type ?? (typeof filter.value === "number" ? "number" : "string");
-  const operation = String(filter.operation ?? "eq").toLowerCase();
-  if (operation === "eq") {
-    return `${column} = ${quoteSqlValue(filter.value, type)}`;
-  }
-  if (operation === "neq") {
-    return `${column} != ${quoteSqlValue(filter.value, type)}`;
-  }
-  if (operation === "gt") {
-    return `${column} > ${quoteSqlValue(filter.value, type)}`;
-  }
-  if (operation === "gte") {
-    return `${column} >= ${quoteSqlValue(filter.value, type)}`;
-  }
-  if (operation === "lt") {
-    return `${column} < ${quoteSqlValue(filter.value, type)}`;
-  }
-  if (operation === "lte") {
-    return `${column} <= ${quoteSqlValue(filter.value, type)}`;
-  }
-  if (operation === "contains") {
-    return `${column} LIKE ${quoteSqlValue(`%${String(filter.value)}%`, "string")}`;
-  }
-  if (operation === "prefix") {
-    return `${column} LIKE ${quoteSqlValue(`${String(filter.value)}%`, "string")}`;
-  }
-  if (operation === "suffix") {
-    return `${column} LIKE ${quoteSqlValue(`%${String(filter.value)}`, "string")}`;
-  }
-  if (operation === "like") {
-    return `${column} LIKE ${quoteSqlValue(String(filter.value), "string")}`;
-  }
-  throw new Error(`Unsupported SQL filter operation: ${filter.operation}`);
-}
-
 export function parseWorkerLogQueryArgs(
   argv,
   {
@@ -191,11 +120,6 @@ export function parseWorkerLogQueryArgs(
     accountId: env.CLOUDFLARE_LOG_QUERY_ACCOUNT_ID?.trim() ?? env.CLOUDFLARE_ACCOUNT_ID?.trim() ?? "",
     apiToken:
       env.CLOUDFLARE_LOG_QUERY_API_TOKEN?.trim() ?? env.CLOUDFLARE_API_TOKEN?.trim() ?? "",
-    apiKey: env.CLOUDFLARE_LOG_QUERY_API_KEY?.trim() ?? env.CLOUDFLARE_API_KEY?.trim() ?? "",
-    email: env.CLOUDFLARE_LOG_QUERY_EMAIL?.trim() ?? env.CLOUDFLARE_EMAIL?.trim() ?? "",
-    backend: DEFAULT_BACKEND,
-    queryScope: DEFAULT_QUERY_SCOPE,
-    zoneId: env.CLOUDFLARE_LOG_QUERY_ZONE_ID?.trim() ?? env.CLOUDFLARE_ZONE_ID?.trim() ?? "",
     worker: DEFAULT_WORKER,
     dataset: DEFAULT_DATASET,
     view: DEFAULT_VIEW,
@@ -207,10 +131,6 @@ export function parseWorkerLogQueryArgs(
     output: null,
     filters: [],
     postFilters: [],
-    sql: "",
-    sqlTable: "",
-    sqlSelect: "*",
-    sqlTimeColumn: "",
     dryRun: false,
     help: false,
   };
@@ -225,24 +145,6 @@ export function parseWorkerLogQueryArgs(
     }
     if (arg === "--dry-run") {
       options.dryRun = true;
-      continue;
-    }
-    if (arg === "--backend") {
-      options.backend = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--backend=")) {
-      options.backend = arg.slice("--backend=".length).trim();
-      continue;
-    }
-    if (arg === "--query-scope") {
-      options.queryScope = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--query-scope=")) {
-      options.queryScope = arg.slice("--query-scope=".length).trim();
       continue;
     }
     if (arg === "-a" || arg === "--account-id") {
@@ -261,33 +163,6 @@ export function parseWorkerLogQueryArgs(
     }
     if (arg.startsWith("--api-token=")) {
       options.apiToken = arg.slice("--api-token=".length).trim();
-      continue;
-    }
-    if (arg === "--api-key") {
-      options.apiKey = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--api-key=")) {
-      options.apiKey = arg.slice("--api-key=".length).trim();
-      continue;
-    }
-    if (arg === "--email") {
-      options.email = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--email=")) {
-      options.email = arg.slice("--email=".length).trim();
-      continue;
-    }
-    if (arg === "--zone-id") {
-      options.zoneId = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--zone-id=")) {
-      options.zoneId = arg.slice("--zone-id=".length).trim();
       continue;
     }
     if (arg === "-w" || arg === "--worker") {
@@ -372,7 +247,7 @@ export function parseWorkerLogQueryArgs(
       continue;
     }
     if (arg === "--request-id") {
-      pushExactFilter(options.filters, {
+      options.filters.push({
         key: "$metadata.requestId",
         operation: "eq",
         type: "string",
@@ -472,69 +347,17 @@ export function parseWorkerLogQueryArgs(
       continue;
     }
     if (arg === "--filter") {
-      const filter = parseFilterSpec(resolveArgValue(args, index, arg));
-      if (options.backend === "log-explorer-sql") {
-        options.filters.push(filter);
-      } else {
-        options.postFilters.push(filter);
-      }
+      options.postFilters.push(parseFilterSpec(resolveArgValue(args, index, arg)));
       index += 1;
       continue;
     }
     if (arg.startsWith("--filter=")) {
-      const filter = parseFilterSpec(arg.slice("--filter=".length));
-      if (options.backend === "log-explorer-sql") {
-        options.filters.push(filter);
-      } else {
-        options.postFilters.push(filter);
-      }
-      continue;
-    }
-    if (arg === "--sql") {
-      options.sql = resolveArgValue(args, index, arg);
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--sql=")) {
-      options.sql = arg.slice("--sql=".length);
-      continue;
-    }
-    if (arg === "--sql-table") {
-      options.sqlTable = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--sql-table=")) {
-      options.sqlTable = arg.slice("--sql-table=".length).trim();
-      continue;
-    }
-    if (arg === "--sql-select") {
-      options.sqlSelect = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--sql-select=")) {
-      options.sqlSelect = arg.slice("--sql-select=".length).trim();
-      continue;
-    }
-    if (arg === "--sql-time-column") {
-      options.sqlTimeColumn = resolveArgValue(args, index, arg).trim();
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--sql-time-column=")) {
-      options.sqlTimeColumn = arg.slice("--sql-time-column=".length).trim();
+      options.postFilters.push(parseFilterSpec(arg.slice("--filter=".length)));
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  if (!["telemetry", "log-explorer-sql"].includes(options.backend)) {
-    throw new Error(`Invalid --backend value: ${options.backend}`);
-  }
-  if (!["account", "zone"].includes(options.queryScope)) {
-    throw new Error(`Invalid --query-scope value: ${options.queryScope}`);
-  }
   if (!["events", "adaptive_groups", "timeseries", "initial"].includes(options.view)) {
     throw new Error(`Invalid --view value: ${options.view}`);
   }
@@ -549,12 +372,6 @@ export function parseWorkerLogQueryArgs(
   }
   if (options.from && options.to && Date.parse(options.from) >= Date.parse(options.to)) {
     throw new Error(`Invalid timeframe: --from must be earlier than --to`);
-  }
-  if (options.queryScope === "zone" && !options.zoneId) {
-    throw new Error(`Missing --zone-id for --query-scope zone`);
-  }
-  if (options.backend === "log-explorer-sql" && !options.sql && !options.sqlTable) {
-    throw new Error(`Log Explorer SQL mode requires --sql or --sql-table.`);
   }
   if (!options.output && options.format === "json") {
     options.output = resolvePath("logs", `server-query-${makeTimestamp()}.json`);
@@ -697,60 +514,11 @@ export function replaceWorkerLogEvents(payload, events) {
   return payload;
 }
 
-export function buildLogExplorerSqlQuery(options, { now = new Date() } = {}) {
-  if (typeof options.sql === "string" && options.sql.trim().length > 0) {
-    return options.sql.trim();
-  }
-
-  const table = quoteSqlIdentifier(options.sqlTable);
-  const select =
-    typeof options.sqlSelect === "string" && options.sqlSelect.trim().length > 0
-      ? options.sqlSelect.trim()
-      : "*";
-  const end = options.to ? new Date(options.to) : now;
-  const start = options.from ? new Date(options.from) : new Date(end.getTime() - options.lastMinutes * 60_000);
-  const predicates = options.filters.map((filter) => buildSqlPredicate(filter));
-  if (options.sqlTimeColumn) {
-    const timeColumn = quoteSqlIdentifier(options.sqlTimeColumn);
-    predicates.push(`${timeColumn} >= ${quoteSqlValue(start.toISOString(), "string")}`);
-    predicates.push(`${timeColumn} <= ${quoteSqlValue(end.toISOString(), "string")}`);
-  }
-  const whereClause = predicates.length > 0 ? ` WHERE ${predicates.join(" AND ")}` : "";
-  return `SELECT ${select} FROM ${table}${whereClause} LIMIT ${options.limit}`;
-}
-
-export function buildLogExplorerSqlRequest(options, { now = new Date() } = {}) {
-  const auth = options.auth ?? buildCloudflareAuthFromOptions(options);
-  const scopePath =
-    options.queryScope === "zone"
-      ? `zones/${options.zoneId}`
-      : `accounts/${options.accountId}`;
-  const query = buildLogExplorerSqlQuery(options, { now });
-  return {
-    url: `https://api.cloudflare.com/client/v4/${scopePath}/logs/explorer/query/sql?query=${encodeURIComponent(query)}`,
-    headers: buildCloudflareAuthHeaders(auth),
-    method: "GET",
-    query,
-  };
-}
-
 export function buildCloudflareAuthFromOptions(options) {
   if (typeof options.apiToken === "string" && options.apiToken.length > 0) {
     return {
       type: "api_token",
       token: options.apiToken,
-    };
-  }
-  if (
-    typeof options.apiKey === "string" &&
-    options.apiKey.length > 0 &&
-    typeof options.email === "string" &&
-    options.email.length > 0
-  ) {
-    return {
-      type: "api_key",
-      key: options.apiKey,
-      email: options.email,
     };
   }
   return null;
@@ -763,13 +531,6 @@ export function buildCloudflareAuthHeaders(auth) {
   if ((auth.type === "api_token" || auth.type === "oauth") && typeof auth.token === "string") {
     return {
       Authorization: `Bearer ${auth.token}`,
-      "Content-Type": "application/json",
-    };
-  }
-  if (auth.type === "api_key" && typeof auth.key === "string" && typeof auth.email === "string") {
-    return {
-      "X-Auth-Key": auth.key,
-      "X-Auth-Email": auth.email,
       "Content-Type": "application/json",
     };
   }
@@ -814,27 +575,12 @@ export function resolveCloudflareAuth(
 
   const envApiToken =
     env.CLOUDFLARE_LOG_QUERY_API_TOKEN?.trim() ?? env.CLOUDFLARE_API_TOKEN?.trim() ?? "";
-  const envApiKey =
-    env.CLOUDFLARE_LOG_QUERY_API_KEY?.trim() ?? env.CLOUDFLARE_API_KEY?.trim() ?? "";
-  const envEmail =
-    env.CLOUDFLARE_LOG_QUERY_EMAIL?.trim() ?? env.CLOUDFLARE_EMAIL?.trim() ?? "";
   if (envApiToken) {
     return {
       accountId,
       auth: {
         type: "api_token",
         token: envApiToken,
-      },
-      source: "env",
-    };
-  }
-  if (envApiKey && envEmail) {
-    return {
-      accountId,
-      auth: {
-        type: "api_key",
-        key: envApiKey,
-        email: envEmail,
       },
       source: "env",
     };
@@ -869,20 +615,6 @@ export function resolveCloudflareAuth(
     accountId = pickAccountIdFromWhoami(whoamiPayload);
   }
 
-  if (tokenPayload?.type === "api_key") {
-    if (!tokenPayload.key || !tokenPayload.email) {
-      throw new Error("wrangler auth token --json returned api_key auth without key/email.");
-    }
-    return {
-      accountId,
-      auth: {
-        type: "api_key",
-        key: tokenPayload.key,
-        email: tokenPayload.email,
-      },
-      source: "wrangler",
-    };
-  }
   if ((tokenPayload?.type === "api_token" || tokenPayload?.type === "oauth") && tokenPayload.token) {
     return {
       accountId,
@@ -984,13 +716,8 @@ Usage:
   pnpm logs:server:query [options]
 
 Options:
-  --backend <name>        telemetry | log-explorer-sql (default: ${DEFAULT_BACKEND})
-  --query-scope <name>    account | zone for log-explorer-sql (default: ${DEFAULT_QUERY_SCOPE})
   -a, --account-id <id>   Cloudflare account ID (default: CLOUDFLARE_LOG_QUERY_ACCOUNT_ID, then CLOUDFLARE_ACCOUNT_ID, else wrangler whoami)
-  --zone-id <id>          Cloudflare zone ID for --query-scope zone (default: CLOUDFLARE_LOG_QUERY_ZONE_ID, then CLOUDFLARE_ZONE_ID)
   --api-token <token>     Cloudflare API token (default: CLOUDFLARE_LOG_QUERY_API_TOKEN, then CLOUDFLARE_API_TOKEN, else wrangler auth token)
-  --api-key <key>         Cloudflare API key (default: CLOUDFLARE_LOG_QUERY_API_KEY, then CLOUDFLARE_API_KEY)
-  --email <email>         Cloudflare email for API key auth (default: CLOUDFLARE_LOG_QUERY_EMAIL, then CLOUDFLARE_EMAIL)
   -w, --worker <name>     Worker script name (default: ${DEFAULT_WORKER})
   --dataset <name>        Telemetry dataset (default: ${DEFAULT_DATASET})
   --view <name>           events | adaptive_groups | timeseries | initial (default: ${DEFAULT_VIEW})
@@ -1011,10 +738,6 @@ Options:
   --path <path>           Filter on request path
   --outcome <name>        Filter on $workers.outcome
   --filter <spec>         Extra filter: key:operation:value or key:operation:type:value
-  --sql <query>           Raw SQL for --backend log-explorer-sql
-  --sql-table <name>      Build simple SQL against this table for --backend log-explorer-sql
-  --sql-select <expr>     SELECT clause for generated SQL (default: *)
-  --sql-time-column <id>  Add timeframe predicates on this SQL column
   --dry-run               Print the request body without calling Cloudflare
   -h, --help              Show this help
 
@@ -1022,10 +745,5 @@ Examples:
   pnpm logs:server:query --last 10m --event internal_error
   pnpm logs:server:query --last 5m --trace-id ctrace_123 --format ndjson
   pnpm logs:server:query --from 2026-03-07T09:52:00Z --to 2026-03-07T09:53:00Z --path /cursor-state --event cursor_pull_peer
-  pnpm logs:server:query --backend log-explorer-sql --query-scope account --sql-table access_requests --sql-time-column CreatedAt --filter Action:eq:login
-
-Notes:
-  Log Explorer SQL and Workers Observability are separate Cloudflare products.
-  As of the current Cloudflare Log Explorer dataset list, Workers Logs are not listed as a supported Log Explorer dataset.
 `;
 }
