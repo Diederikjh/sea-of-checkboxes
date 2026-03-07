@@ -33,12 +33,16 @@ import { handleConnectionShardClientMessage } from "./connectionShardClientMessa
 import { ConnectionShardSetCellQueue } from "./connectionShardSetCellQueue";
 import {
   type CursorRelayBatch,
+  type CursorTraceContext,
   isValidCursorRelayBatch,
 } from "./cursorRelay";
 import { ConnectionShardTileBatchOrderTracker } from "./connectionShardTileBatchOrder";
 import { CursorCoordinator } from "./cursorCoordinator";
 import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import {
+  CURSOR_TRACE_HOP_HEADER,
+  CURSOR_TRACE_ID_HEADER,
+  CURSOR_TRACE_ORIGIN_HEADER,
   ConnectionShardCursorTraceState,
 } from "./connectionShardCursorTrace";
 import { ConnectionShardCursorHubGateway } from "./cursorHubGateway";
@@ -88,6 +92,19 @@ type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
   | "tile_batch_cooldown";
 
+type CursorPullWakeReason =
+  | "local_activity"
+  | "schedule_refresh"
+  | "timer"
+  | "watch_scope_change";
+
+function createCursorTraceId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `cursor-${Date.now()}-${Math.floor(Math.random() * 1_000_000_000).toString(16)}`;
+}
+
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -110,11 +127,14 @@ export class ConnectionShardDO {
   #tilePullQuietStreak: number;
   #cursorPullInFlight: boolean;
   #cursorPullTimer: ReturnType<typeof setTimeout> | null;
+  #cursorPullScheduledAtMs: number | null;
   #cursorPullIntervalMs: number;
   #cursorPullQuietStreak: number;
   #cursorPullActiveUntilMs: number;
   #cursorPullPeerShards: string[];
-  #cursorPullWakeReason: string | null;
+  #cursorPullWakeReason: CursorPullWakeReason | null;
+  #cursorPullLastStartedAtMs: number;
+  #cursorPullLastCompletedAtMs: number;
   #cursorStateIngressDepth: number;
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
@@ -144,11 +164,14 @@ export class ConnectionShardDO {
     this.#tilePullQuietStreak = 0;
     this.#cursorPullInFlight = false;
     this.#cursorPullTimer = null;
+    this.#cursorPullScheduledAtMs = null;
     this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
     this.#cursorPullQuietStreak = 0;
     this.#cursorPullActiveUntilMs = 0;
     this.#cursorPullPeerShards = [];
     this.#cursorPullWakeReason = null;
+    this.#cursorPullLastStartedAtMs = 0;
+    this.#cursorPullLastCompletedAtMs = 0;
     this.#cursorStateIngressDepth = 0;
     this.#cursorHubPublishSuppressedUntilMs = 0;
     this.#cursorTraceState = new ConnectionShardCursorTraceState({
@@ -300,6 +323,8 @@ export class ConnectionShardDO {
     }
 
     if (url.pathname === "/cursor-state" && request.method === "GET") {
+      const pullTrace = this.#cursorTraceState.readFromRequest(request);
+      const previousTrace = this.#cursorTraceState.pushActiveTrace(pullTrace);
       this.#cursorStateIngressDepth += 1;
       try {
         return jsonResponse({
@@ -308,6 +333,7 @@ export class ConnectionShardDO {
         } satisfies CursorRelayBatch);
       } finally {
         this.#cursorStateIngressDepth = Math.max(0, this.#cursorStateIngressDepth - 1);
+        this.#cursorTraceState.restoreActiveTrace(previousTrace);
       }
     }
 
@@ -492,12 +518,18 @@ export class ConnectionShardDO {
         elapsedMs,
       });
     } catch (error) {
+      const traceContext = this.#resolveErrorTraceContext("internal");
       this.#logEvent("internal_error", {
         uid,
-        ...this.#cursorTraceState.traceFields(this.#cursorTraceState.activeTraceContext()),
+        ...this.#cursorTraceState.traceFields(traceContext),
         ...this.#errorFields(error),
       });
-      this.#sendError(client, "internal", "Failed to process message");
+      this.#sendError(
+        client,
+        "internal",
+        "Failed to process message",
+        this.#cursorTraceState.traceFields(traceContext)
+      );
     }
   }
 
@@ -708,7 +740,7 @@ export class ConnectionShardDO {
     msg: string,
     fields: Record<string, unknown> = {}
   ): void {
-    const activeTrace = this.#cursorTraceState.activeTraceContext();
+    const activeTrace = this.#resolveErrorTraceContext(code, fields);
     this.#logEvent("server_error_sent", {
       uid: client.uid,
       code,
@@ -722,6 +754,40 @@ export class ConnectionShardDO {
       msg,
       ...(activeTrace ? { trace: activeTrace.traceId } : {}),
     });
+  }
+
+  #resolveErrorTraceContext(
+    code: string,
+    fields: Record<string, unknown> = {}
+  ): CursorTraceContext | null {
+    const activeTrace = this.#traceContextFromFields(fields) ?? this.#cursorTraceState.activeTraceContext();
+    if (activeTrace) {
+      return activeTrace;
+    }
+
+    if (code !== "internal") {
+      return null;
+    }
+
+    return {
+      traceId: createCursorTraceId(),
+      traceHop: 0,
+      traceOrigin: this.#currentShardName(),
+    };
+  }
+
+  #traceContextFromFields(fields: Record<string, unknown>): CursorTraceContext | null {
+    const traceId = typeof fields.trace_id === "string" ? fields.trace_id : null;
+    const traceHop = typeof fields.trace_hop === "number" ? fields.trace_hop : null;
+    const traceOrigin = typeof fields.trace_origin === "string" ? fields.trace_origin : null;
+    if (!traceId || traceHop === null || !traceOrigin) {
+      return null;
+    }
+    return {
+      traceId,
+      traceHop,
+      traceOrigin,
+    };
   }
 
   #currentShardName(): string {
@@ -974,16 +1040,39 @@ export class ConnectionShardDO {
 
   #scheduleCursorPullTick(
     delayMs: number = this.#cursorPullIntervalMs,
-    wakeReason: "local_activity" | "schedule_refresh" | "timer" | "watch_scope_change" = "timer"
+    wakeReason: CursorPullWakeReason = "timer"
   ): void {
-    if (this.#cursorPullTimer || this.#clients.size === 0) {
+    if (this.#clients.size === 0) {
       return;
     }
 
-    const effectiveDelayMs = this.#cursorPullDelayMs(delayMs);
+    const nowMs = this.#nowMs();
+    const floorDelayMs = Math.max(0, this.#cursorPullEarliestRunAtMs(delayMs, wakeReason) - nowMs);
+    const effectiveDelayMs = wakeReason === "timer"
+      ? this.#cursorPullDelayMs(floorDelayMs)
+      : floorDelayMs;
+    const scheduledAtMs = nowMs + effectiveDelayMs;
+
+    if (this.#cursorPullTimer) {
+      const existingScheduledAtMs = this.#cursorPullScheduledAtMs ?? Number.POSITIVE_INFINITY;
+      const existingWakeReason = this.#cursorPullWakeReason ?? "timer";
+      if (scheduledAtMs >= existingScheduledAtMs) {
+        if (this.#cursorPullWakePriority(wakeReason) > this.#cursorPullWakePriority(existingWakeReason)) {
+          this.#cursorPullWakeReason = wakeReason;
+        }
+        return;
+      }
+
+      clearTimeout(this.#cursorPullTimer);
+      this.#cursorPullTimer = null;
+      this.#cursorPullScheduledAtMs = null;
+    }
+
     this.#cursorPullWakeReason = wakeReason;
+    this.#cursorPullScheduledAtMs = scheduledAtMs;
     this.#cursorPullTimer = setTimeout(() => {
       this.#cursorPullTimer = null;
+      this.#cursorPullScheduledAtMs = null;
       const scheduledWakeReason = this.#cursorPullWakeReason ?? "timer";
       this.#cursorPullWakeReason = null;
       void this.#runCursorPullTick(scheduledWakeReason);
@@ -1007,6 +1096,7 @@ export class ConnectionShardDO {
 
     clearTimeout(this.#cursorPullTimer);
     this.#cursorPullTimer = null;
+    this.#cursorPullScheduledAtMs = null;
     this.#cursorPullWakeReason = null;
   }
 
@@ -1059,7 +1149,41 @@ export class ConnectionShardDO {
     return baseDelayMs + Math.floor(Math.random() * (CURSOR_PULL_JITTER_MS + 1));
   }
 
-  async #runCursorPullTick(wakeReason: string): Promise<void> {
+  #cursorPullEarliestRunAtMs(
+    delayMs: number,
+    wakeReason: CursorPullWakeReason
+  ): number {
+    const nowMs = this.#nowMs();
+    const requestedAtMs = nowMs + Math.max(0, delayMs);
+    if (wakeReason === "timer") {
+      return requestedAtMs;
+    }
+
+    const lastRunAtMs = Math.max(this.#cursorPullLastStartedAtMs, this.#cursorPullLastCompletedAtMs);
+    if (lastRunAtMs <= 0) {
+      return requestedAtMs;
+    }
+
+    return Math.max(requestedAtMs, lastRunAtMs + CURSOR_PULL_INTERVAL_MIN_MS);
+  }
+
+  #cursorPullWakePriority(
+    wakeReason: CursorPullWakeReason
+  ): number {
+    switch (wakeReason) {
+      case "local_activity":
+        return 3;
+      case "watch_scope_change":
+        return 2;
+      case "schedule_refresh":
+        return 1;
+      case "timer":
+      default:
+        return 0;
+    }
+  }
+
+  async #runCursorPullTick(wakeReason: CursorPullWakeReason): Promise<void> {
     if (this.#clients.size === 0) {
       return;
     }
@@ -1070,11 +1194,13 @@ export class ConnectionShardDO {
     }
 
     this.#cursorPullInFlight = true;
+    this.#cursorPullLastStartedAtMs = this.#nowMs();
     try {
       const deltaObserved = await this.#pollPeerCursorStates(wakeReason);
       this.#updateCursorPullInterval(deltaObserved);
     } finally {
       this.#cursorPullInFlight = false;
+      this.#cursorPullLastCompletedAtMs = this.#nowMs();
       this.#scheduleCursorPullTick(this.#cursorPullIntervalMs, "timer");
     }
   }
@@ -1117,8 +1243,6 @@ export class ConnectionShardDO {
 
     this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
     this.#cursorPullQuietStreak = 0;
-    this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_ACTIVITY_WINDOW_MS;
-    this.#clearCursorPullTimer();
 
     if (!this.#cursorPullInFlight && this.#cursorStateIngressDepth === 0) {
       this.#scheduleCursorPullTick(0, "local_activity");
@@ -1175,7 +1299,7 @@ export class ConnectionShardDO {
     }
   }
 
-  async #pollPeerCursorStates(wakeReason: string): Promise<boolean> {
+  async #pollPeerCursorStates(wakeReason: CursorPullWakeReason): Promise<boolean> {
     const startMs = this.#nowMs();
     const peers = this.#peerShardNames(this.#currentShardName());
     if (peers.length === 0) {
@@ -1208,14 +1332,18 @@ export class ConnectionShardDO {
     return deltaObserved;
   }
 
-  async #pollPeerCursorState(peerShard: string, wakeReason: string): Promise<boolean> {
+  async #pollPeerCursorState(peerShard: string, wakeReason: CursorPullWakeReason): Promise<boolean> {
     const startMs = this.#nowMs();
+    const pullTraceId = createCursorTraceId();
     try {
       const stub = this.#env.CONNECTION_SHARD.getByName(peerShard);
       const response = await stub.fetch("https://connection-shard.internal/cursor-state", {
         method: "GET",
         headers: {
           "x-sea-cursor-pull": "1",
+          [CURSOR_TRACE_ID_HEADER]: pullTraceId,
+          [CURSOR_TRACE_HOP_HEADER]: "0",
+          [CURSOR_TRACE_ORIGIN_HEADER]: this.#currentShardName(),
         },
       });
       if (!response.ok) {
@@ -1225,6 +1353,7 @@ export class ConnectionShardDO {
           ok: false,
           response_status: response.status,
           update_count: 0,
+          trace_id: pullTraceId,
           duration_ms: elapsedMs(startMs),
         });
         return false;
@@ -1238,6 +1367,7 @@ export class ConnectionShardDO {
           ok: false,
           response_status: response.status,
           update_count: 0,
+          trace_id: pullTraceId,
           error_message: "Invalid cursor-state payload",
           duration_ms: elapsedMs(startMs),
         });
@@ -1252,6 +1382,7 @@ export class ConnectionShardDO {
         response_status: response.status,
         update_count: batch.updates.length,
         delta_observed: deltaObserved,
+        trace_id: pullTraceId,
         duration_ms: elapsedMs(startMs),
       });
       return deltaObserved;
@@ -1261,6 +1392,7 @@ export class ConnectionShardDO {
         wake_reason: wakeReason,
         ok: false,
         update_count: 0,
+        trace_id: pullTraceId,
         duration_ms: elapsedMs(startMs),
         ...this.#errorFields(error),
       });

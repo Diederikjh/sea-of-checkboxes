@@ -77,6 +77,11 @@ Repo status after the current implementation batch:
   - repeated `subAck` churn with no actual subscription change
   - delayed first remote cursor visibility
   - client-visible `internal` errors still triggered by pull-path recursion
+- Phase 3b scheduler and trace fixes are now implemented in repo:
+  - cursor pull wakeups are coalesced behind a real minimum interval instead of repeated `clear + schedule(0)` churn
+  - local cursor activity now reheats pull promptly without opening a sustained hot window on every heartbeat
+  - pull requests now carry trace headers, and fallback trace IDs are attached to client-visible internal errors even when no active cursor trace exists
+  - worker regressions now cover local reheat coalescing and fallback internal-error trace correlation
 
 ## Goal
 
@@ -270,6 +275,18 @@ Tests:
 - add rebuild coverage for suppressing redundant steady-state `subAck`
 - add coverage that client-visible internal errors carry usable request or trace correlation
 
+Status:
+
+- implemented in repo
+- worker regressions now cover:
+  - local cursor reheats coalescing behind the stricter timer floor
+  - repeated local cursor activity not stacking immediate pull bursts
+  - fallback trace propagation on internal websocket errors without an active cursor trace
+- still pending live validation:
+  - confirm scoped `A <-> B` pairs no longer recurse in raw Cloudflare logs
+  - confirm first remote `curUp` latency drops in paired client logs
+  - confirm repeated steady-state `subAck` churn is reduced or at least better explained by the new logs
+
 ### Phase 4: Retire push-only compatibility code
 
 Purpose:
@@ -354,10 +371,10 @@ Based on the latest `2026-03-07` captures:
 
 The practical ordering is now:
 
-1. validate scoped polling in raw server logs
-2. break reciprocal `2`-shard pull recursion
-3. suppress rebuild / resubscribe churn
-4. make client-visible pull errors fully correlated
+1. redeploy the Phase 3b scheduler / trace changes
+2. validate scoped polling in raw server logs
+3. confirm reciprocal `2`-shard pull recursion is gone
+4. confirm rebuild / resubscribe churn and first-visibility latency improved
 5. only then consider deleting more compatibility code
 
 Phase 3 code landed in repo, but the latest Cloudflare logs show that validation is not yet complete. Phase 3b is now the gate before deleting more compatibility code.
@@ -384,8 +401,8 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 
 Implement next:
 
-1. implement Phase 3b follow-up work for reciprocal pull loops and rebuild churn
-2. add the new regressions for reciprocal watched peers, timer floors, and redundant `subAck`
-3. redeploy and validate against raw Cloudflare server logs plus paired client logs
-4. confirm that first remote cursor visibility is prompt and that `GET /cursor-state` no longer surfaces websocket `internal` / `server_error_sent`
+1. redeploy the current Phase 3b repo changes
+2. validate against raw Cloudflare server logs plus paired client logs
+3. confirm that scoped peer pulls no longer recurse and that client-visible internal errors now carry usable trace IDs
+4. check whether repeated steady-state `subAck` churn and delayed first remote `curUp` are resolved or need a narrower rebuild-side follow-up
 5. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests

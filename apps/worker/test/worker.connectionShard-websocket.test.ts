@@ -1539,8 +1539,51 @@ describe("ConnectionShardDO websocket handling", () => {
       await vi.advanceTimersByTimeAsync(74);
       expect(countCursorStatePullRequests(harness)).toBe(26);
 
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(150);
       expect(countCursorStatePullRequests(harness)).toBe(28);
+      randomSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces repeated local cursor activity into one prompt cursor-state reheat", async () => {
+    vi.useFakeTimers();
+    try {
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+      const harness = createRelayHarness();
+      setCursorHubWatchResponse(harness, {
+        peerShards: ["shard-1"],
+      });
+      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
+
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(countCursorStatePullRequests(harness)).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(150 + 225 + 300 + 300 + 300 + 300);
+      const beforeReheat = countCursorStatePullRequests(harness);
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 1.5 }));
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.75, y: 1.75 }));
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 3.0, y: 2.0 }));
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
+
+      await vi.advanceTimersByTimeAsync(149);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 2);
       randomSpy.mockRestore();
     } finally {
       vi.useRealTimers();
@@ -2109,6 +2152,57 @@ describe("ConnectionShardDO websocket handling", () => {
             && entry.code === "internal"
         )
       ).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("includes fallback trace ids on internal websocket errors without an active cursor trace", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createHarness();
+      harness.tileOwners.getByName("0:0").setPathError("/watch", new Error("watch exploded"));
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-a",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({
+        t: "sub",
+        cid: "c_sub_trace",
+        tiles: ["0:0"],
+      }));
+
+      let errorMessage: Extract<ServerMessage, { t: "err" }> | undefined;
+      await waitFor(() => {
+        errorMessage = decodeMessages(socket).find(
+          (message): message is Extract<ServerMessage, { t: "err" }> =>
+            message.t === "err" && message.code === "internal"
+        );
+        expect(errorMessage?.trace).toEqual(expect.any(String));
+      });
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "internal_error"
+            && entry.uid === "u_a"
+            && entry.trace_id === errorMessage?.trace
+        )
+      ).toBe(true);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "server_error_sent"
+            && entry.uid === "u_a"
+            && entry.code === "internal"
+            && entry.trace_id === errorMessage?.trace
+        )
+      ).toBe(true);
     } finally {
       logSpy.mockRestore();
     }

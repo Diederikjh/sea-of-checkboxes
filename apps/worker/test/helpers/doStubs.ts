@@ -49,6 +49,7 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
   readonly requests: RecordedRequest[];
   #defaultStatus: number;
   #neverResolvePaths: Set<string>;
+  #errorByPath: Map<string, Error>;
   #statusByPath: Map<string, number>;
   #jsonResponseByPath: Map<string, { status: number; body: string }>;
 
@@ -57,6 +58,7 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
     this.requests = [];
     this.#defaultStatus = options.defaultStatus ?? 204;
     this.#neverResolvePaths = new Set();
+    this.#errorByPath = new Map();
     this.#statusByPath = new Map();
     this.#jsonResponseByPath = new Map();
   }
@@ -71,6 +73,14 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
 
   setPathStatus(pathname: string, status: number): void {
     this.#statusByPath.set(pathname, status);
+  }
+
+  setPathError(pathname: string, error: Error | null): void {
+    if (!error) {
+      this.#errorByPath.delete(pathname);
+      return;
+    }
+    this.#errorByPath.set(pathname, error);
   }
 
   setJsonPathResponse(pathname: string, body: unknown, status: number = 200): void {
@@ -102,6 +112,11 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
       return new Promise<Response>(() => {});
     }
 
+    const configuredError = this.#errorByPath.get(url.pathname);
+    if (configuredError) {
+      throw configuredError;
+    }
+
     const jsonResponse = this.#jsonResponseByPath.get(url.pathname);
     if (jsonResponse) {
       return new Response(jsonResponse.body, {
@@ -131,6 +146,7 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
   readonly requests: RecordedRequest[];
   readonly watchRequests: TileWatchRequest[];
   readonly setCellRequests: TileSetCellRequest[];
+  #errorByPath: Map<string, Error>;
   #versions: Map<string, number>;
   #watchersByTile: Map<string, Set<string>>;
   #encodedEmptyBits: string;
@@ -142,6 +158,7 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
     this.requests = [];
     this.watchRequests = [];
     this.setCellRequests = [];
+    this.#errorByPath = new Map();
     this.#versions = new Map();
     this.#watchersByTile = new Map();
     this.#encodedEmptyBits = encodeRle64(createEmptyTileState().bits);
@@ -160,6 +177,14 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
     return next;
   }
 
+  setPathError(pathname: string, error: Error | null): void {
+    if (!error) {
+      this.#errorByPath.delete(pathname);
+      return;
+    }
+    this.#errorByPath.set(pathname, error);
+  }
+
   async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
     const request = toRequest(input, init);
     const url = new URL(request.url);
@@ -176,6 +201,11 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
       request: new Request(request.url, requestInit),
       body,
     });
+
+    const configuredError = this.#errorByPath.get(url.pathname);
+    if (configuredError) {
+      throw configuredError;
+    }
 
     if (url.pathname === "/watch" && request.method === "POST") {
       const payload = JSON.parse(body) as TileWatchRequest;
