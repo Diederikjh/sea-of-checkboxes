@@ -40,13 +40,20 @@ Latest observations from `2026-03-07` captures:
 - clients still received websocket `err {"code":"internal","msg":"Failed to process message"}` packets
 - one normal-window rebuild took `8442ms`
 - rebuild blocking still worked, and some `setCell` failures happened only after rebuild completion
+- attached `2026-03-07T06:08:38.982Z` capture showed `784` `GET /cursor-state` requests
+- that same capture touched `8` distinct `ConnectionShardDO` instances on the pull path
+- the same capture still showed `0` `/cursor-batch`
+- all `3` `Subrequest depth limit exceeded` records in that capture were on `GET /cursor-state`
+- `2` of those recursion errors surfaced as `internal_error` and `server_error_sent` on `shard-1`
+- the same capture showed only two `sub` events while pull traffic still spanned all `8` shard DOs
 
 Interpretation:
 
 - the plan direction is still correct
 - Phase 1 reduced or removed the visible hub-push path in the latest repo capture
-- the next bottleneck is likely broad pull behavior and missing server-side observability, not just the old hub fanout loop
+- the next bottleneck is broad synchronized pull behavior and missing server-side observability, not the old hub fanout loop
 - watched-peer scoping and poll dampening are now immediate follow-up work, not optional optimization
+- peer pull failures need to stay best-effort and must not surface websocket `internal` errors during normal cursor sync
 
 ## Goal
 
@@ -170,13 +177,16 @@ Behavior changes:
 - adaptive pull is scoped to shards that currently matter
 - idle cost drops without restoring push recursion risk
 - rebuilds and reconnects should not trigger broad all-peer pull bursts
+- pull-path failures remain best-effort and do not surface websocket `internal` errors to clients
 
 Exit criteria:
 - shard polls only watched peers
 - shard does not fan out all-peer pull cycles during steady-state idle
+- single-client subscribe or rebuild flows do not wake a full `8`-shard pull mesh
 - remote cursor visibility remains correct during subscribe/unsubscribe churn
 - rebuild latency drops from the current worst-case multi-second path
 - client idle CPU is materially lower during no-change periods
+- pull-path failures do not emit client-visible `server_error_sent` / `internal` websocket errors
 
 Tests:
 - add targeted tests for watched-peer scoping
@@ -185,6 +195,8 @@ Tests:
 - add coverage for jitter / capped scheduling behavior at the controller level
 - add coverage that quiet polling backs off even when many peers exist
 - add coverage that local activity reheats only the relevant polling scope
+- add coverage that pull failures stay best-effort and do not emit websocket `server_error_sent`
+- add coverage that jitter / concurrency caps prevent lockstep all-peer pull bursts
 
 ### Phase 4: Retire push-only compatibility code
 
@@ -265,18 +277,22 @@ Based on the latest `2026-03-07` captures:
   - concurrency caps
   - stronger quiet-period backoff
 - server-side pull-cycle logging should be added so `err/internal` can be correlated even when tail misses websocket message context
+- the current all-peer pull topology is still too wide: one small active watch set can coincide with pull traffic across all `8` shard DOs
+- pull-path errors must be treated as a correctness issue, not just an observability gap, because they are still capable of surfacing client-visible websocket failures
 
 The practical ordering is now:
 
 1. narrow polling to watched peers
 2. add pull burst dampening
-3. add pull-cycle observability
-4. only then consider deleting more compatibility code
+3. make pull failures non-fatal to clients
+4. add pull-cycle observability
+5. only then consider deleting more compatibility code
 
 ### Operational checks after each batch
 
 - check Cloudflare logs for any fresh `Subrequest depth limit exceeded`
 - check whether any normal cursor interaction still emits `POST /cursor-batch`
+- check whether any `GET /cursor-state` failure surfaced as websocket `internal` / `server_error_sent`
 - verify client CPU drops during idle periods
 - verify remote cursors still appear and expire correctly
 
@@ -295,5 +311,6 @@ Implement next:
 2. cache watched-peer scope in `ConnectionShardDO`
 3. poll only watched peers instead of the full shard set
 4. add jitter and concurrency caps to cursor pull scheduling
-5. add structured pull-cycle logs so polling bursts and failures are visible in tail captures
-6. update websocket, hub controller, and pull-path tests to match the new flow
+5. make peer pull failures non-fatal to websocket clients
+6. add structured pull-cycle logs with source shard, target shard, wake reason, latency, update count, and error
+7. update websocket, hub controller, and pull-path tests to match the new flow
