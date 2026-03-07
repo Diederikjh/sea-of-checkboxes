@@ -12,6 +12,7 @@ import {
   type CursorPresence,
   type CursorRelayBatch,
 } from "./cursorRelay";
+import { createCursorTraceId } from "./connectionShardCursorTrace";
 import {
   elapsedMs,
   logStructuredEvent,
@@ -84,10 +85,6 @@ function clamp(value: number, min: number, max: number): number {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-function createCursorTraceId(): string {
-  return `ctrace_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function isValidWatchRequest(value: unknown): value is CursorHubWatchRequest {

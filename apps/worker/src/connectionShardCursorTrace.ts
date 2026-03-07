@@ -7,6 +7,52 @@ export const CURSOR_TRACE_ORIGIN_HEADER = "x-sea-cursor-trace-origin";
 const DEFAULT_TRACE_CACHE_TTL_MS = 30_000;
 const DEFAULT_TRACE_CACHE_MAX = 2_048;
 
+export function createCursorTraceId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `ctrace_${crypto.randomUUID()}`;
+  }
+  return `ctrace_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function cursorTraceContextFromFields(
+  fields: Record<string, unknown>
+): CursorTraceContext | null {
+  const traceId = typeof fields.trace_id === "string" ? fields.trace_id : null;
+  const traceHop = typeof fields.trace_hop === "number" ? fields.trace_hop : null;
+  const traceOrigin = typeof fields.trace_origin === "string" ? fields.trace_origin : null;
+  if (!traceId || traceHop === null || !traceOrigin) {
+    return null;
+  }
+  return {
+    traceId,
+    traceHop,
+    traceOrigin,
+  };
+}
+
+export function resolveCursorErrorTraceContext(options: {
+  code: string;
+  fields?: Record<string, unknown>;
+  activeTrace: CursorTraceContext | null;
+  traceOrigin: string;
+}): CursorTraceContext | null {
+  const fieldTrace = options.fields ? cursorTraceContextFromFields(options.fields) : null;
+  if (fieldTrace) {
+    return fieldTrace;
+  }
+  if (options.activeTrace) {
+    return options.activeTrace;
+  }
+  if (options.code !== "internal") {
+    return null;
+  }
+  return {
+    traceId: createCursorTraceId(),
+    traceHop: 0,
+    traceOrigin: options.traceOrigin,
+  };
+}
+
 export class ConnectionShardCursorTraceState {
   #nowMs: () => number;
   #traceCacheTtlMs: number;

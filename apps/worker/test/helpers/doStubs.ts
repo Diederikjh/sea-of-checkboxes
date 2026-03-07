@@ -22,6 +22,32 @@ function toRequest(input: Request | string, init?: RequestInit): Request {
   return typeof input === "string" ? new Request(input, init) : input;
 }
 
+function cloneRecordedRequest(request: Request, body: string): Request {
+  const method = request.method.toUpperCase();
+  const requestInit: RequestInit = {
+    method,
+    headers: new Headers(request.headers),
+  };
+  if (method !== "GET" && method !== "HEAD" && body.length > 0) {
+    requestInit.body = body;
+  }
+  return new Request(request.url, requestInit);
+}
+
+async function recordRequest(requests: RecordedRequest[], input: Request | string, init?: RequestInit) {
+  const request = toRequest(input, init);
+  const body = await request.text();
+  requests.push({
+    request: cloneRecordedRequest(request, body),
+    body,
+  });
+  return {
+    request,
+    body,
+    url: new URL(request.url),
+  };
+}
+
 export class StubNamespace<TStub extends DurableObjectStubLike> {
   readonly stubs: Map<string, TStub>;
   readonly requestedNames: string[];
@@ -91,23 +117,7 @@ export class RecordingDurableObjectStub implements DurableObjectStubLike {
   }
 
   async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
-    const request = toRequest(input, init);
-    const body = await request.text();
-    const method = request.method.toUpperCase();
-    const requestInit: RequestInit = {
-      method,
-      headers: new Headers(request.headers),
-    };
-    if (method !== "GET" && method !== "HEAD" && body.length > 0) {
-      requestInit.body = body;
-    }
-    const recorded = new Request(request.url, requestInit);
-    this.requests.push({
-      request: recorded,
-      body,
-    });
-
-    const url = new URL(request.url);
+    const { url } = await recordRequest(this.requests, input, init);
     if (this.#neverResolvePaths.has(url.pathname)) {
       return new Promise<Response>(() => {});
     }
@@ -186,21 +196,7 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
   }
 
   async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
-    const request = toRequest(input, init);
-    const url = new URL(request.url);
-    const body = await request.text();
-    const method = request.method.toUpperCase();
-    const requestInit: RequestInit = {
-      method,
-      headers: new Headers(request.headers),
-    };
-    if (method !== "GET" && method !== "HEAD" && body.length > 0) {
-      requestInit.body = body;
-    }
-    this.requests.push({
-      request: new Request(request.url, requestInit),
-      body,
-    });
+    const { request, body, url } = await recordRequest(this.requests, input, init);
 
     const configuredError = this.#errorByPath.get(url.pathname);
     if (configuredError) {

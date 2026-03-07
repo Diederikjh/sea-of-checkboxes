@@ -40,11 +40,17 @@ import { ConnectionShardTileBatchOrderTracker } from "./connectionShardTileBatch
 import { CursorCoordinator } from "./cursorCoordinator";
 import { ConnectionShardTileGateway } from "./connectionShardTileGateway";
 import {
+  createCursorTraceId,
+  resolveCursorErrorTraceContext,
   CURSOR_TRACE_HOP_HEADER,
   CURSOR_TRACE_ID_HEADER,
   CURSOR_TRACE_ORIGIN_HEADER,
   ConnectionShardCursorTraceState,
 } from "./connectionShardCursorTrace";
+import {
+  ConnectionShardCursorPullScheduler,
+  type CursorPullWakeReason,
+} from "./connectionShardCursorPullScheduler";
 import { ConnectionShardCursorHubGateway } from "./cursorHubGateway";
 import { ConnectionShardCursorHubController } from "./connectionShardCursorHubController";
 import { peerShardNames } from "./sharding";
@@ -92,19 +98,6 @@ type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
   | "tile_batch_cooldown";
 
-type CursorPullWakeReason =
-  | "local_activity"
-  | "schedule_refresh"
-  | "timer"
-  | "watch_scope_change";
-
-function createCursorTraceId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `cursor-${Date.now()}-${Math.floor(Math.random() * 1_000_000_000).toString(16)}`;
-}
-
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
   #env: Env;
@@ -126,15 +119,11 @@ export class ConnectionShardDO {
   #tilePullIntervalMs: number;
   #tilePullQuietStreak: number;
   #cursorPullInFlight: boolean;
-  #cursorPullTimer: ReturnType<typeof setTimeout> | null;
-  #cursorPullScheduledAtMs: number | null;
+  #cursorPullScheduler: ConnectionShardCursorPullScheduler;
   #cursorPullIntervalMs: number;
   #cursorPullQuietStreak: number;
   #cursorPullActiveUntilMs: number;
   #cursorPullPeerShards: string[];
-  #cursorPullWakeReason: CursorPullWakeReason | null;
-  #cursorPullLastStartedAtMs: number;
-  #cursorPullLastCompletedAtMs: number;
   #cursorStateIngressDepth: number;
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
@@ -163,15 +152,10 @@ export class ConnectionShardDO {
     this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
     this.#tilePullQuietStreak = 0;
     this.#cursorPullInFlight = false;
-    this.#cursorPullTimer = null;
-    this.#cursorPullScheduledAtMs = null;
     this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
     this.#cursorPullQuietStreak = 0;
     this.#cursorPullActiveUntilMs = 0;
     this.#cursorPullPeerShards = [];
-    this.#cursorPullWakeReason = null;
-    this.#cursorPullLastStartedAtMs = 0;
-    this.#cursorPullLastCompletedAtMs = 0;
     this.#cursorStateIngressDepth = 0;
     this.#cursorHubPublishSuppressedUntilMs = 0;
     this.#cursorTraceState = new ConnectionShardCursorTraceState({
@@ -187,6 +171,15 @@ export class ConnectionShardDO {
     this.#socketPairFactory = options.socketPairFactory ?? createRuntimeSocketPairFactory();
     this.#upgradeResponseFactory =
       options.upgradeResponseFactory ?? createCloudflareUpgradeResponseFactory();
+    this.#cursorPullScheduler = new ConnectionShardCursorPullScheduler({
+      nowMs: () => this.#nowMs(),
+      maybeUnrefTimer: (timer) => this.#maybeUnrefTimer(timer),
+      onTick: (wakeReason) => {
+        void this.#runCursorPullTick(wakeReason);
+      },
+      minIntervalMs: CURSOR_PULL_INTERVAL_MIN_MS,
+      jitterMs: CURSOR_PULL_JITTER_MS,
+    });
     this.#cursorCoordinator = new CursorCoordinator({
       clients: this.#clients,
       getCurrentShardName: () => this.#currentShardName(),
@@ -518,7 +511,11 @@ export class ConnectionShardDO {
         elapsedMs,
       });
     } catch (error) {
-      const traceContext = this.#resolveErrorTraceContext("internal");
+      const traceContext = resolveCursorErrorTraceContext({
+        code: "internal",
+        activeTrace: this.#cursorTraceState.activeTraceContext(),
+        traceOrigin: this.#currentShardName(),
+      });
       this.#logEvent("internal_error", {
         uid,
         ...this.#cursorTraceState.traceFields(traceContext),
@@ -740,7 +737,12 @@ export class ConnectionShardDO {
     msg: string,
     fields: Record<string, unknown> = {}
   ): void {
-    const activeTrace = this.#resolveErrorTraceContext(code, fields);
+    const activeTrace = resolveCursorErrorTraceContext({
+      code,
+      fields,
+      activeTrace: this.#cursorTraceState.activeTraceContext(),
+      traceOrigin: this.#currentShardName(),
+    });
     this.#logEvent("server_error_sent", {
       uid: client.uid,
       code,
@@ -754,40 +756,6 @@ export class ConnectionShardDO {
       msg,
       ...(activeTrace ? { trace: activeTrace.traceId } : {}),
     });
-  }
-
-  #resolveErrorTraceContext(
-    code: string,
-    fields: Record<string, unknown> = {}
-  ): CursorTraceContext | null {
-    const activeTrace = this.#traceContextFromFields(fields) ?? this.#cursorTraceState.activeTraceContext();
-    if (activeTrace) {
-      return activeTrace;
-    }
-
-    if (code !== "internal") {
-      return null;
-    }
-
-    return {
-      traceId: createCursorTraceId(),
-      traceHop: 0,
-      traceOrigin: this.#currentShardName(),
-    };
-  }
-
-  #traceContextFromFields(fields: Record<string, unknown>): CursorTraceContext | null {
-    const traceId = typeof fields.trace_id === "string" ? fields.trace_id : null;
-    const traceHop = typeof fields.trace_hop === "number" ? fields.trace_hop : null;
-    const traceOrigin = typeof fields.trace_origin === "string" ? fields.trace_origin : null;
-    if (!traceId || traceHop === null || !traceOrigin) {
-      return null;
-    }
-    return {
-      traceId,
-      traceHop,
-      traceOrigin,
-    };
   }
 
   #currentShardName(): string {
@@ -1000,7 +968,7 @@ export class ConnectionShardDO {
 
   #refreshCursorPullSchedule(): void {
     if (this.#clients.size === 0) {
-      this.#clearCursorPullTimer();
+      this.#cursorPullScheduler.reset();
       this.#cursorPullInFlight = false;
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
@@ -1009,7 +977,7 @@ export class ConnectionShardDO {
     }
 
     if (this.#peerShardNames(this.#currentShardName()).length === 0) {
-      this.#clearCursorPullTimer();
+      this.#cursorPullScheduler.reset();
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
@@ -1045,39 +1013,7 @@ export class ConnectionShardDO {
     if (this.#clients.size === 0) {
       return;
     }
-
-    const nowMs = this.#nowMs();
-    const floorDelayMs = Math.max(0, this.#cursorPullEarliestRunAtMs(delayMs, wakeReason) - nowMs);
-    const effectiveDelayMs = wakeReason === "timer"
-      ? this.#cursorPullDelayMs(floorDelayMs)
-      : floorDelayMs;
-    const scheduledAtMs = nowMs + effectiveDelayMs;
-
-    if (this.#cursorPullTimer) {
-      const existingScheduledAtMs = this.#cursorPullScheduledAtMs ?? Number.POSITIVE_INFINITY;
-      const existingWakeReason = this.#cursorPullWakeReason ?? "timer";
-      if (scheduledAtMs >= existingScheduledAtMs) {
-        if (this.#cursorPullWakePriority(wakeReason) > this.#cursorPullWakePriority(existingWakeReason)) {
-          this.#cursorPullWakeReason = wakeReason;
-        }
-        return;
-      }
-
-      clearTimeout(this.#cursorPullTimer);
-      this.#cursorPullTimer = null;
-      this.#cursorPullScheduledAtMs = null;
-    }
-
-    this.#cursorPullWakeReason = wakeReason;
-    this.#cursorPullScheduledAtMs = scheduledAtMs;
-    this.#cursorPullTimer = setTimeout(() => {
-      this.#cursorPullTimer = null;
-      this.#cursorPullScheduledAtMs = null;
-      const scheduledWakeReason = this.#cursorPullWakeReason ?? "timer";
-      this.#cursorPullWakeReason = null;
-      void this.#runCursorPullTick(scheduledWakeReason);
-    }, effectiveDelayMs);
-    this.#maybeUnrefTimer(this.#cursorPullTimer);
+    this.#cursorPullScheduler.schedule(delayMs, wakeReason);
   }
 
   #clearTilePullTimer(): void {
@@ -1090,14 +1026,7 @@ export class ConnectionShardDO {
   }
 
   #clearCursorPullTimer(): void {
-    if (!this.#cursorPullTimer) {
-      return;
-    }
-
-    clearTimeout(this.#cursorPullTimer);
-    this.#cursorPullTimer = null;
-    this.#cursorPullScheduledAtMs = null;
-    this.#cursorPullWakeReason = null;
+    this.#cursorPullScheduler.clear();
   }
 
   async #runTilePullTick(): Promise<void> {
@@ -1141,48 +1070,6 @@ export class ConnectionShardDO {
     );
   }
 
-  #cursorPullDelayMs(delayMs: number): number {
-    const baseDelayMs = Math.max(0, delayMs);
-    if (baseDelayMs === 0) {
-      return 0;
-    }
-    return baseDelayMs + Math.floor(Math.random() * (CURSOR_PULL_JITTER_MS + 1));
-  }
-
-  #cursorPullEarliestRunAtMs(
-    delayMs: number,
-    wakeReason: CursorPullWakeReason
-  ): number {
-    const nowMs = this.#nowMs();
-    const requestedAtMs = nowMs + Math.max(0, delayMs);
-    if (wakeReason === "timer") {
-      return requestedAtMs;
-    }
-
-    const lastRunAtMs = Math.max(this.#cursorPullLastStartedAtMs, this.#cursorPullLastCompletedAtMs);
-    if (lastRunAtMs <= 0) {
-      return requestedAtMs;
-    }
-
-    return Math.max(requestedAtMs, lastRunAtMs + CURSOR_PULL_INTERVAL_MIN_MS);
-  }
-
-  #cursorPullWakePriority(
-    wakeReason: CursorPullWakeReason
-  ): number {
-    switch (wakeReason) {
-      case "local_activity":
-        return 3;
-      case "watch_scope_change":
-        return 2;
-      case "schedule_refresh":
-        return 1;
-      case "timer":
-      default:
-        return 0;
-    }
-  }
-
   async #runCursorPullTick(wakeReason: CursorPullWakeReason): Promise<void> {
     if (this.#clients.size === 0) {
       return;
@@ -1194,13 +1081,13 @@ export class ConnectionShardDO {
     }
 
     this.#cursorPullInFlight = true;
-    this.#cursorPullLastStartedAtMs = this.#nowMs();
+    this.#cursorPullScheduler.markRunStarted();
     try {
       const deltaObserved = await this.#pollPeerCursorStates(wakeReason);
       this.#updateCursorPullInterval(deltaObserved);
     } finally {
       this.#cursorPullInFlight = false;
-      this.#cursorPullLastCompletedAtMs = this.#nowMs();
+      this.#cursorPullScheduler.markRunCompleted();
       this.#scheduleCursorPullTick(this.#cursorPullIntervalMs, "timer");
     }
   }
