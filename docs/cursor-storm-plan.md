@@ -140,6 +140,12 @@ Repo status after the current implementation batch:
   - live Cloudflare logs then showed that ingress deferral alone was not enough: request `6T6C1TH6HFXZSAXO` on `shard-7` still emitted nested `cursor_pull_cycle` (`timer`, then `local_activity`) and `cursor_pull_peer` back to `shard-4` under the same inbound `GET /cursor-state` chain
   - repo now adds a short post-ingress pull suppression window so reverse-direction peer pull cannot immediately restart off the tail of an inbound pulled `/cursor-state`
   - worker regressions now cover local reheat coalescing, fallback internal-error trace correlation, and the post-ingress suppression of timer and local-activity reverse pull
+  - the latest `2026-03-08T07:41Z` paired run was more stable client-side:
+    - no client-visible `internal` or `server_error_sent`
+    - but first remote cursor visibility was still slow (`~59.9s` on one client, `~71.7s` on the other)
+    - repeated `subAck` churn remained (`11` and `10` `subAck` respectively)
+    - one side only received a short sparse visibility window (`12` remote cursor updates over `~31.2s`)
+    - raw worker logs still showed late hidden recursion: `shard-4 -> shard-2` `cursor_pull_peer` hit `Subrequest depth limit exceeded` at `07:43:43.368Z` and `07:43:44.292Z` without surfacing websocket errors
 
 ## Goal
 
@@ -454,15 +460,19 @@ Based on the latest `2026-03-07` captures:
   - `shard-4 -> shard-1` can succeed repeatedly while `shard-1 -> shard-4` recurses in one run, and `shard-4 -> shard-7` can succeed repeatedly while `shard-7 -> shard-4` recurses in another
   - ingress deferral alone was insufficient: inbound `/cursor-state` on `shard-7` still started nested reverse-direction `timer` and `local_activity` pull work inside request `6T6C1TH6HFXZSAXO`
   - no-op `subAck` can still be emitted during `GET /cursor-state`
+  - the latest `2026-03-08T07:41Z` paired run improves one thing but confirms two others:
+    - client-visible websocket errors can now stay suppressed even when backend pull recursion still happens
+    - delayed first remote visibility remains unacceptable (`~60s` / `~72s`)
+    - a client can still receive only a short-lived sparse remote cursor stream before visibility drops again
 
 The practical ordering is now:
 
 1. redeploy the stronger Phase 3b ingress-suppression changes now in repo
 2. validate whether the post-ingress suppression window removes same-request nested reverse-direction peer pull for `timer` and `local_activity` wakes
-3. move pull execution fully off live request ancestry if current deployment still shows `GET /ws` / `GET /cursor-state`-bound pull chains after that suppression
+3. if raw worker logs still show hidden pull recursion, move pull execution fully off live request ancestry even if client-visible websocket errors are gone
 4. validate scoped polling in raw server logs
 5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
-6. confirm rebuild / resubscribe churn and bidirectional first-visibility latency improved
+6. confirm rebuild / resubscribe churn, first-visibility latency, and remote cursor persistence improved in both directions
 7. only then consider deleting more compatibility code
 
 Phase 3 code landed in repo, but the latest Cloudflare logs show that validation is not yet complete. Phase 3b is now the gate before deleting more compatibility code.
@@ -502,5 +512,5 @@ Implement next:
 3. validate whether same-request nested reverse-direction peer pulls disappear in the paired-client case
 4. if nested pull is still visible, inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
 5. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
-6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved in both directions
+6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` / short-lived remote visibility are improved in both directions
 7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
