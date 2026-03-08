@@ -204,6 +204,35 @@ Repo status after the current implementation batch:
       - main-window client logged `15` `subAck`
       - private-window client logged `23` `subAck`
     - so the remaining paired-client cursor problem in this run is delayed reverse watch-scope activation or refresh, not recursive pull failure
+  - the latest `2026-03-08T19:23Z` paired run reproduces that same directional problem more sharply:
+    - this was a real cross-shard run with `shard-4` and `shard-1`
+    - the private-window client on `shard-1` saw the normal-window cursor on `shard-4` quickly:
+      - `hello` at `2026-03-08T19:23:31.602Z`
+      - first remote tag `105` for `u_193c7c1f` at `2026-03-08T19:23:33.434Z`
+      - about `1.8s` first-visibility latency
+    - the normal-window client on `shard-4` barely saw the private-window cursor at all:
+      - `hello` at `2026-03-08T19:23:25.700Z`
+      - only one remote tag `105` for `u_57ac3737`, at `2026-03-08T19:25:14.214Z`
+      - about `108.5s` after `hello`
+    - there were no client-visible `internal` or `server_error` packets in that run
+    - repo server tail plus historical worker queries show the directional split clearly:
+      - `cursor_hub_do.watch_sub` for `shard-4` happened at `2026-03-08T19:23:25.528Z`
+      - `cursor_hub_do.watch_sub` for `shard-1` happened at `2026-03-08T19:23:31.418Z`
+      - `shard-1` fired `cursor_pull_alarm_fired` with `wake_reason: "watch_scope_change"` at `2026-03-08T19:23:31.449Z`
+      - `shard-1 -> shard-4` `cursor_pull_peer` then started immediately at `2026-03-08T19:23:31.499Z`
+      - the reverse direction does not appear until much later:
+        - first observed `shard-4 -> shard-1` `cursor_pull_peer` at `2026-03-08T19:25:14.033Z` with `wake_reason: "local_activity"`
+        - then timer-driven reverse pulls follow at `2026-03-08T19:25:14.254Z` and `2026-03-08T19:25:14.507Z`
+    - this makes the stale-side question more specific:
+      - either `shard-4` did not get a prompt `cursor_pull_scope` / `watch_scope_change` wake for `shard-1`
+      - or that wake was coalesced behind older work and only became effective once later local activity reheated the shard
+    - so the next cursor investigation should trace, on the stale shard specifically:
+      - `cursor_pull_scope`
+      - `cursor_pull_watch_scope_wake`
+      - `cursor_pull_alarm_armed`
+      - `cursor_pull_alarm_fired`
+      - first reverse-direction `cursor_pull_peer`
+      - first remote tag `105` on the stale client
   - extracted worker errors from `2026-03-08T14:18:20.704Z` show one more observability gap:
     - two `ConnectionShardDO` `alarm` events on the same durable object reported `outcome: "exception"`
     - Cloudflare only preserved the scheduled timestamp as the error message, with no stack, trace id, wake reason, or pull-state context
@@ -547,6 +576,10 @@ Based on the latest `2026-03-07` captures:
     - `shard-4 -> shard-3` does not start until roughly `39s` later, when a delayed `watch_scope_change` finally appears
     - once that delayed reverse pull starts, remote cursor visibility begins almost immediately on the previously stale side
     - so the next cursor reliability target is prompt bidirectional watch-scope activation, not just recursion suppression
+  - the latest `2026-03-08T19:23Z` paired run sharpens that target further:
+    - the stale-side shard can still spend more than `100s` without starting meaningful reverse pull
+    - once reverse pull finally starts, remote cursor visibility begins almost immediately
+    - so the immediate debugging target is no longer generic bidirectionality, but the stale-side `scope -> wake -> alarm -> first reverse pull` pipeline
   - confidence boundary:
     - this is encouraging evidence for the paired-client case
     - it is not yet proof that the same fix is stable for `5`, `10`, or `100` concurrent users
@@ -587,6 +620,8 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 - check whether first remote cursor visibility is still delayed after initial subscribe or rebuild
 - check whether cursor visibility is asymmetric across the two clients, even if only one side reports errors
 - check whether reverse-direction `watch_scope_change` lands promptly on both shards after the second client joins, rather than tens of seconds later
+- check whether the stale shard actually emits `cursor_pull_scope`, `cursor_pull_watch_scope_wake`, `cursor_pull_alarm_armed`, and `cursor_pull_alarm_fired` promptly after the second client joins
+- check whether the first reverse-direction `cursor_pull_peer` on the stale shard is missing, late, or simply returning `update_count: 0`
 - check whether any detached `alarm` exception now includes enough application-level context to identify the failing wake
 - check whether `cursor_pull_peer` is still running under websocket `GET /ws` or nested `GET /cursor-state` request ids
 - capture client logs for every `waiting for sync` episode:
@@ -620,11 +655,19 @@ Implement next:
    - paired normal/private client logs
    - then historical Cloudflare worker queries using the `.env.local`-backed script after the settle delay
 2. inspect why the receiving shard can delay reverse `watch_scope_change` for tens of seconds after the second client is active:
+   - treat the stale shard as the unit of analysis
    - correlate hub `watch_sub` / `watch_unsub`
    - cursor-hub `activity`
    - `cursor_pull_scope`
+   - `cursor_pull_watch_scope_wake`
+   - `cursor_pull_alarm_armed`
+   - `cursor_pull_alarm_fired`
    - first reverse-direction `cursor_pull_peer`
    - first remote tag `105` on the stale client
+   - distinguish between:
+     - late scope delivery
+     - prompt scope but lost/coalesced wake
+     - prompt alarm with empty early peer pulls
 3. validate that detached alarm failures now emit useful app-level logs in Cloudflare:
    - error name
    - error message
