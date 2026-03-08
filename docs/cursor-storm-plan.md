@@ -147,6 +147,15 @@ Repo status after the current implementation batch:
     - repeated `subAck` churn remained (`11` and `10` `subAck` respectively)
     - one side only received a short sparse visibility window (`12` remote cursor updates over `~31.2s`)
     - raw worker logs still showed late hidden recursion: `shard-4 -> shard-2` `cursor_pull_peer` hit `Subrequest depth limit exceeded` at `07:43:43.368Z` and `07:43:44.292Z` without surfacing websocket errors
+  - the latest `2026-03-08T10:16Z` paired run improved again:
+    - both clients saw each other's cursors
+    - no client-visible errors
+    - historical worker logs showed `0` `cursor_pull_peer`, `0` `internal_error`, and `0` `server_error_sent` in the observed window
+    - repeated `subAck` churn still remained (`11` and `10` `subAck`)
+    - the later user-visible `waiting for sync` symptom around `10:23Z` now looks more like tile sync latency than cursor storm:
+      - affected `setCell` operations still succeeded
+      - but a few writes took `~0.6s` to `~1.1s`
+      - tile batch duplicate/replay anomalies were logged on the same window
 
 ## Goal
 
@@ -410,6 +419,11 @@ Tests:
 - remote cursor TTL expiry removes stale peers when polling stops
 - peer pull failures stay best-effort and do not surface client errors
 - representative watched topologies up to near-full shard count stay single-flight and non-recursive
+- multi-client validation scales beyond the paired-browser case:
+  - around `5` concurrent users
+  - around `10` concurrent users
+  - a higher-stress case approaching `100` concurrent users or the highest practical local test load
+- client emits explicit sync-wait diagnostics when the UI enters or leaves `waiting for sync`, including enough context to correlate with backend writes
 - later hardening: stale remote cursor versions are ignored without reheating pull or replaying older state over newer state
 
 ### Tests to update
@@ -466,16 +480,27 @@ Based on the latest `2026-03-07` captures:
     - client-visible websocket errors can now stay suppressed even when backend pull recursion still happens
     - delayed first remote visibility remains unacceptable (`~60s` / `~72s`)
     - a client can still receive only a short-lived sparse remote cursor stream before visibility drops again
+  - the latest `2026-03-08T10:16Z` paired run changes the emphasis:
+    - no hidden cursor-pull failures were found in the observed worker-log window
+    - both clients saw remote cursors, with first shared visibility beginning once the second window was active
+    - the remaining visible problem in that run was slow tile sync/write completion rather than pull recursion
+  - confidence boundary:
+    - this is encouraging evidence for the paired-client case
+    - it is not yet proof that the same fix is stable for `5`, `10`, or `100` concurrent users
+    - that still needs explicit multi-client load validation because request volume, shard fanout, and watch-graph shape can change materially with higher concurrency
 
 The practical ordering is now:
 
 1. redeploy the stronger Phase 3b ingress-suppression and alarm-backed detached pull changes now in repo
 2. validate whether same-request nested reverse-direction peer pull disappears in raw worker logs for both `timer` and `local_activity` wakes
 3. if raw worker logs still show hidden pull recursion, detach even more aggressively or remove remaining request-ancestry wake paths even if client-visible websocket errors are gone
-4. validate scoped polling in raw server logs
-5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
-6. confirm rebuild / resubscribe churn, first-visibility latency, and remote cursor persistence improved in both directions
-7. only then consider deleting more compatibility code
+4. if raw worker logs stay clean across another paired run, treat cursor-storm mitigation as provisionally stable and shift the next investigation to tile sync latency / duplicate-replay behavior
+5. add explicit client sync-wait logging so `waiting for sync` can be correlated with concrete client action ids and backend write events
+6. validate scoped polling in raw server logs
+7. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
+8. run explicit multi-client validation beyond the paired-browser case before treating the storm fix as generally proven
+9. confirm rebuild / resubscribe churn, first-visibility latency, and remote cursor persistence improved in both directions
+10. only then consider deleting more compatibility code
 
 Phase 3 code landed in repo, but the latest Cloudflare logs show that validation is not yet complete. Phase 3b is now the gate before deleting more compatibility code.
 
@@ -492,6 +517,12 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 - check whether first remote cursor visibility is still delayed after initial subscribe or rebuild
 - check whether cursor visibility is asymmetric across the two clients, even if only one side reports errors
 - check whether `cursor_pull_peer` is still running under websocket `GET /ws` or nested `GET /cursor-state` request ids
+- capture client logs for every `waiting for sync` episode:
+  - sync-wait start timestamp
+  - sync-wait end timestamp
+  - tile
+  - op / cid if available
+  - whether the local write eventually succeeded, retried, or was superseded
 - verify client CPU drops during idle periods
 - verify remote cursors still appear and expire correctly
 
@@ -501,6 +532,7 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 - Do we want a temporary feature flag for hub publish removal, or is direct cutover acceptable in this environment?
 - Is recent-edit activity still worth keeping in `CursorHubDO`, or should that also move out of the hub later?
 - Should pull-cycle logging live in `ConnectionShardDO` directly, or in a dedicated cursor pull controller extracted from it?
+- Has the storm fix only been validated for paired-browser runs so far, or do we have a practical way to run `5`-, `10`-, and higher-concurrency client simulations against the same logging flow?
 
 ## Next Execution Batch
 
@@ -513,6 +545,8 @@ Implement next:
 2. redeploy or validate the stronger post-ingress suppression plus alarm-backed detached pull change in the multi-client case
 3. validate whether same-request nested reverse-direction peer pulls disappear in the paired-client case
 4. if nested pull is still visible, inspect whether any pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
-5. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
-6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` / short-lived remote visibility are improved in both directions
-7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
+5. if nested pull is no longer visible across another paired run, add client-side `waiting for sync` diagnostics and start a separate tile sync latency check using the same capture flow
+6. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
+7. run at least one higher-concurrency validation beyond the paired-browser case before declaring the storm fix broadly stable
+8. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` / short-lived remote visibility are improved in both directions
+9. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
