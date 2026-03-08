@@ -26,11 +26,28 @@ export interface ConnectionShardClientMessageHandlerOptions {
   elapsedMs: (startMs: number) => number;
 }
 
+type SetCellClientMessage = Extract<ClientMessage, { t: "setCell" }>;
+
 function messageCidFields(message: ClientMessage): Record<string, unknown> {
   if (!("cid" in message) || typeof message.cid !== "string" || message.cid.length === 0) {
     return {};
   }
   return { cid: message.cid };
+}
+
+function setCellLogFields(
+  uid: string,
+  message: SetCellClientMessage,
+  cidFields: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    uid,
+    ...cidFields,
+    tile: message.tile,
+    i: message.i,
+    v: message.v,
+    op: message.op,
+  };
 }
 
 export async function handleConnectionShardClientMessage(
@@ -119,23 +136,12 @@ export async function handleConnectionShardClientMessage(
     }
     case "setCell": {
       const startMs = Date.now();
-      logEvent("setCell_received", {
-        uid,
-        ...cidFields,
-        tile: message.tile,
-        i: message.i,
-        v: message.v,
-        op: message.op,
-      });
+      const baseFields = setCellLogFields(uid, message, cidFields);
+      logEvent("setCell_received", baseFields);
       const setCellResult = await handleSetCellMessage(scopedContext, client, message);
       if (setCellResult.reason === "not_subscribed" && setCellResult.notSubscribed) {
         logEvent("setcell_not_subscribed", {
-          uid,
-          ...cidFields,
-          tile: message.tile,
-          i: message.i,
-          v: message.v,
-          op: message.op,
+          ...baseFields,
           subscribed_count: setCellResult.notSubscribed.subscribedCount,
           subscribed_tiles_sample: setCellResult.notSubscribed.subscribedTilesSample,
           clients_connected: setCellResult.notSubscribed.clientsConnected,
@@ -145,12 +151,7 @@ export async function handleConnectionShardClientMessage(
         });
       }
       logEvent("setCell", {
-        uid,
-        ...cidFields,
-        tile: message.tile,
-        i: message.i,
-        v: message.v,
-        op: message.op,
+        ...baseFields,
         accepted: setCellResult.accepted,
         changed: setCellResult.changed,
         ...(setCellResult.reason ? { reason: setCellResult.reason } : {}),

@@ -33,6 +33,11 @@ export function createSetCellOutboxSync({
   const refreshOfflineBannerText = () => {
     offlineBannerEl.textContent = offlineBannerMessage(setCellOutbox.size);
   };
+  const refreshOfflineBannerIfVisible = () => {
+    if (!offlineBannerEl.hidden) {
+      refreshOfflineBannerText();
+    }
+  };
 
   const clearOutboxReplayTimer = () => {
     if (outboxReplayTimerId === null) {
@@ -55,13 +60,13 @@ export function createSetCellOutboxSync({
     offlineBannerEl.hidden = true;
   };
 
-  const emitSyncWaitEvent = (event, entry, fields = {}) => {
+  const buildSyncWaitFields = (entry, fields = {}) => {
     if (!entry || !entry.message) {
-      return;
+      return null;
     }
 
     const elapsedMs = Math.max(0, nowMs() - entry.firstTrackedAtMs);
-    onSyncWaitEvent(event, {
+    return {
       tile: entry.message.tile,
       i: entry.message.i,
       v: entry.message.v,
@@ -71,7 +76,25 @@ export function createSetCellOutboxSync({
       pendingForMs: elapsedMs,
       replayAttempts: entry.replayAttempts,
       ...fields,
-    });
+    };
+  };
+
+  const emitSyncWaitEvent = (event, entry, fields = {}) => {
+    const payload = buildSyncWaitFields(entry, fields);
+    if (!payload) {
+      return;
+    }
+    onSyncWaitEvent(event, payload);
+  };
+
+  const deleteOutboxEntry = (key, event, fields = {}) => {
+    const entry = setCellOutbox.get(key);
+    if (!entry) {
+      return false;
+    }
+    setCellOutbox.delete(key);
+    emitSyncWaitEvent(event, entry, fields);
+    return true;
   };
 
   const pruneSetCellOutbox = (currentMs) => {
@@ -80,15 +103,13 @@ export function createSetCellOutboxSync({
       const staleByAge = currentMs - entry.updatedAtMs > SETCELL_OUTBOX_TTL_MS;
       const staleByAttempts = entry.replayAttempts >= SETCELL_MAX_REPLAY_ATTEMPTS;
       if (staleByAge || staleByAttempts) {
-        setCellOutbox.delete(key);
-        emitSyncWaitEvent("setcell_sync_wait_dropped", entry, {
+        changed = deleteOutboxEntry(key, "setcell_sync_wait_dropped", {
           reason: staleByAge ? "ttl_expired" : "replay_attempts_exhausted",
-        });
-        changed = true;
+        }) || changed;
       }
     }
-    if (changed && !offlineBannerEl.hidden) {
-      refreshOfflineBannerText();
+    if (changed) {
+      refreshOfflineBannerIfVisible();
     }
   };
 
@@ -120,31 +141,21 @@ export function createSetCellOutboxSync({
         }
       }
       if (oldestKey !== null) {
-        const oldestEntry = setCellOutbox.get(oldestKey);
-        setCellOutbox.delete(oldestKey);
-        emitSyncWaitEvent("setcell_sync_wait_dropped", oldestEntry, {
+        deleteOutboxEntry(oldestKey, "setcell_sync_wait_dropped", {
           reason: "outbox_capacity",
         });
       }
     }
 
-    if (!offlineBannerEl.hidden) {
-      refreshOfflineBannerText();
-    }
+    refreshOfflineBannerIfVisible();
   };
 
   const clearSetCellOutboxEntryForServerUpdate = (tile, index, fields = {}) => {
     const key = outboxKeyForSetCell(tile, index);
-    const entry = setCellOutbox.get(key);
-    if (!entry) {
+    if (!deleteOutboxEntry(key, "setcell_sync_wait_cleared", fields)) {
       return;
     }
-
-    setCellOutbox.delete(key);
-    emitSyncWaitEvent("setcell_sync_wait_cleared", entry, fields);
-    if (!offlineBannerEl.hidden) {
-      refreshOfflineBannerText();
-    }
+    refreshOfflineBannerIfVisible();
   };
 
   const replaySetCellOutbox = () => {
@@ -165,8 +176,7 @@ export function createSetCellOutboxSync({
 
     for (const [key, entry] of pending) {
       if (entry.replayAttempts >= SETCELL_MAX_REPLAY_ATTEMPTS) {
-        setCellOutbox.delete(key);
-        emitSyncWaitEvent("setcell_sync_wait_dropped", entry, {
+        deleteOutboxEntry(key, "setcell_sync_wait_dropped", {
           reason: "replay_attempts_exhausted",
         });
         continue;
@@ -237,14 +247,15 @@ export function createSetCellOutboxSync({
         if (entry.message.tile !== tileKey) {
           continue;
         }
-        setCellOutbox.delete(key);
-        emitSyncWaitEvent("setcell_sync_wait_dropped", entry, {
+        if (!deleteOutboxEntry(key, "setcell_sync_wait_dropped", {
           reason: "tile_snapshot_authority",
-        });
+        })) {
+          continue;
+        }
         dropped += 1;
       }
-      if (dropped > 0 && !offlineBannerEl.hidden) {
-        refreshOfflineBannerText();
+      if (dropped > 0) {
+        refreshOfflineBannerIfVisible();
       }
       return dropped;
     },
