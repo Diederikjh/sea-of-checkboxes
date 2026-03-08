@@ -4,6 +4,24 @@ export type CursorPullWakeReason =
   | "timer"
   | "watch_scope_change";
 
+export interface CursorPullSchedulerStateSnapshot {
+  scheduledAtMs: number | null;
+  wakeReason: CursorPullWakeReason | null;
+  lastStartedAtMs: number;
+  lastCompletedAtMs: number;
+}
+
+export interface CursorPullScheduleDecision {
+  action: "scheduled_new" | "rescheduled_earlier" | "upgraded_existing" | "kept_existing";
+  wakeReason: CursorPullWakeReason;
+  requestedDelayMs: number;
+  floorDelayMs: number;
+  effectiveDelayMs: number;
+  scheduledAtMs: number;
+  existingScheduledAtMs: number | null;
+  existingWakeReason: CursorPullWakeReason | null;
+}
+
 interface ConnectionShardCursorPullSchedulerOptions {
   nowMs: () => number;
   maybeUnrefTimer: (timer: ReturnType<typeof setTimeout>) => void;
@@ -37,22 +55,43 @@ export class ConnectionShardCursorPullScheduler {
     this.#lastCompletedAtMs = 0;
   }
 
-  schedule(delayMs: number, wakeReason: CursorPullWakeReason): void {
+  schedule(delayMs: number, wakeReason: CursorPullWakeReason): CursorPullScheduleDecision {
     const nowMs = this.#nowMs();
     const floorDelayMs = Math.max(0, this.#earliestRunAtMs(delayMs, wakeReason) - nowMs);
     const effectiveDelayMs = wakeReason === "timer"
       ? this.#delayMsWithJitter(floorDelayMs)
       : floorDelayMs;
     const scheduledAtMs = nowMs + effectiveDelayMs;
+    const existingScheduledAtMs = this.#scheduledAtMs;
+    const existingWakeReason = this.#wakeReason;
 
     if (this.#timer) {
-      const existingScheduledAtMs = this.#scheduledAtMs ?? Number.POSITIVE_INFINITY;
-      const existingWakeReason = this.#wakeReason ?? "timer";
-      if (scheduledAtMs >= existingScheduledAtMs) {
-        if (this.#wakePriority(wakeReason) > this.#wakePriority(existingWakeReason)) {
+      const existingScheduledAtMsOrInfinity = existingScheduledAtMs ?? Number.POSITIVE_INFINITY;
+      const existingWakeReasonOrTimer = existingWakeReason ?? "timer";
+      if (scheduledAtMs >= existingScheduledAtMsOrInfinity) {
+        if (this.#wakePriority(wakeReason) > this.#wakePriority(existingWakeReasonOrTimer)) {
           this.#wakeReason = wakeReason;
+          return {
+            action: "upgraded_existing",
+            wakeReason,
+            requestedDelayMs: delayMs,
+            floorDelayMs,
+            effectiveDelayMs,
+            scheduledAtMs: existingScheduledAtMsOrInfinity,
+            existingScheduledAtMs,
+            existingWakeReason,
+          };
         }
-        return;
+        return {
+          action: "kept_existing",
+          wakeReason,
+          requestedDelayMs: delayMs,
+          floorDelayMs,
+          effectiveDelayMs,
+          scheduledAtMs: existingScheduledAtMsOrInfinity,
+          existingScheduledAtMs,
+          existingWakeReason,
+        };
       }
 
       clearTimeout(this.#timer);
@@ -70,6 +109,16 @@ export class ConnectionShardCursorPullScheduler {
       this.#onTick(scheduledWakeReason);
     }, effectiveDelayMs);
     this.#maybeUnrefTimer(this.#timer);
+    return {
+      action: existingScheduledAtMs === null ? "scheduled_new" : "rescheduled_earlier",
+      wakeReason,
+      requestedDelayMs: delayMs,
+      floorDelayMs,
+      effectiveDelayMs,
+      scheduledAtMs,
+      existingScheduledAtMs,
+      existingWakeReason,
+    };
   }
 
   clear(): void {
@@ -94,6 +143,15 @@ export class ConnectionShardCursorPullScheduler {
 
   markRunCompleted(): void {
     this.#lastCompletedAtMs = this.#nowMs();
+  }
+
+  inspectState(): CursorPullSchedulerStateSnapshot {
+    return {
+      scheduledAtMs: this.#scheduledAtMs,
+      wakeReason: this.#wakeReason,
+      lastStartedAtMs: this.#lastStartedAtMs,
+      lastCompletedAtMs: this.#lastCompletedAtMs,
+    };
   }
 
   #delayMsWithJitter(delayMs: number): number {

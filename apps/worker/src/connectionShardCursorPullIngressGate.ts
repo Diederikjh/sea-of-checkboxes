@@ -5,6 +5,11 @@ interface ConnectionShardCursorPullIngressGateOptions {
   onFlush: (wakeReason: CursorPullWakeReason) => void;
 }
 
+export interface CursorPullIngressGateStateSnapshot {
+  pendingWakeReason: CursorPullWakeReason | null;
+  flushQueued: boolean;
+}
+
 export class ConnectionShardCursorPullIngressGate {
   #deferDetachedTask: (task: () => Promise<void>) => void;
   #onFlush: (wakeReason: CursorPullWakeReason) => void;
@@ -50,6 +55,13 @@ export class ConnectionShardCursorPullIngressGate {
   reset(): void {
     this.#pendingWakeReason = null;
     this.#flushQueued = false;
+  }
+
+  inspectState(): CursorPullIngressGateStateSnapshot {
+    return {
+      pendingWakeReason: this.#pendingWakeReason,
+      flushQueued: this.#flushQueued,
+    };
   }
 
   #wakePriority(wakeReason: CursorPullWakeReason): number {

@@ -49,6 +49,7 @@ import {
 } from "./connectionShardCursorTrace";
 import {
   ConnectionShardCursorPullScheduler,
+  type CursorPullScheduleDecision,
   type CursorPullWakeReason,
 } from "./connectionShardCursorPullScheduler";
 import { ConnectionShardCursorPullIngressGate } from "./connectionShardCursorPullIngressGate";
@@ -370,6 +371,14 @@ export class ConnectionShardDO {
         ...this.#cursorPullAlarmStateFields(),
       });
       return;
+    }
+    if (wake.wakeReason === "watch_scope_change") {
+      this.#logEvent("cursor_pull_alarm_fired", {
+        ...this.#cursorPullAlarmStateFields({
+          wake_reason: wake.wakeReason,
+          scheduled_at_ms: wake.scheduledAtMs ?? undefined,
+        }),
+      });
     }
     try {
       await this.#runCursorPullTick(wake.wakeReason);
@@ -1082,10 +1091,36 @@ export class ConnectionShardDO {
       return;
     }
     if (this.#cursorStateIngressDepth > 0) {
+      const beforeState = this.#cursorPullIngressGate.inspectState();
       this.#cursorPullIngressGate.defer(wakeReason);
+      if (wakeReason === "watch_scope_change") {
+        const afterState = this.#cursorPullIngressGate.inspectState();
+        this.#logEvent("cursor_pull_watch_scope_wake", {
+          action: "deferred_for_ingress",
+          wake_reason: wakeReason,
+          requested_delay_ms: delayMs,
+          adjusted_delay_ms: delayMs,
+          ingress_depth: this.#cursorStateIngressDepth,
+          gate_pending_wake_reason_before: beforeState.pendingWakeReason ?? undefined,
+          gate_pending_wake_reason_after: afterState.pendingWakeReason ?? undefined,
+          gate_flush_queued: afterState.flushQueued,
+        });
+      }
       return;
     }
-    this.#cursorPullScheduler.schedule(this.#applyCursorPullSuppressionDelay(delayMs), wakeReason);
+    const suppressionRemainingMs = this.#cursorPullSuppressionRemainingMs();
+    const adjustedDelayMs = this.#applyCursorPullSuppressionDelay(delayMs);
+    const schedulerBeforeState = this.#cursorPullScheduler.inspectState();
+    const decision = this.#cursorPullScheduler.schedule(adjustedDelayMs, wakeReason);
+    if (wakeReason === "watch_scope_change") {
+      this.#logCursorPullWatchScopeWakeDecision({
+        decision,
+        requestedDelayMs: delayMs,
+        adjustedDelayMs,
+        suppressionRemainingMs,
+        schedulerBeforeState,
+      });
+    }
   }
 
   #clearTilePullTimer(): void {
@@ -1116,11 +1151,27 @@ export class ConnectionShardDO {
     }
 
     if (this.#cursorPullAlarmArmed) {
+      if (wakeReason === "watch_scope_change" || this.#cursorPullPendingWakeReason === "watch_scope_change") {
+        this.#logEvent("cursor_pull_alarm_armed", {
+          ...this.#cursorPullAlarmStateFields({
+            action: "kept_existing",
+            wake_reason: wakeReason,
+          }),
+        });
+      }
       return;
     }
 
     this.#cursorPullAlarmArmed = true;
     this.#cursorPullAlarmScheduledAtMs = this.#nowMs();
+    if (wakeReason === "watch_scope_change" || this.#cursorPullPendingWakeReason === "watch_scope_change") {
+      this.#logEvent("cursor_pull_alarm_armed", {
+        ...this.#cursorPullAlarmStateFields({
+          action: "armed",
+          wake_reason: wakeReason,
+        }),
+      });
+    }
     const setAlarm = this.#state.storage.setAlarm?.bind(this.#state.storage);
     if (setAlarm) {
       void setAlarm(this.#nowMs()).catch(() => {
@@ -1292,6 +1343,7 @@ export class ConnectionShardDO {
   }
 
   #updateCursorPullPeerShards(peerShards: string[]): void {
+    const previousPeerShards = this.#cursorPullPeerShards;
     const nextPeerShards = this.#sanitizeCursorPullPeerShards(peerShards);
     if (
       nextPeerShards.length === this.#cursorPullPeerShards.length
@@ -1302,6 +1354,8 @@ export class ConnectionShardDO {
 
     this.#cursorPullPeerShards = nextPeerShards;
     this.#logEvent("cursor_pull_scope", {
+      previous_peer_count: previousPeerShards.length,
+      previous_peers: previousPeerShards,
       peer_count: nextPeerShards.length,
       peers: nextPeerShards,
     });
@@ -1360,6 +1414,38 @@ export class ConnectionShardDO {
       scheduled_at_ms: this.#cursorPullAlarmScheduledAtMs ?? undefined,
       ...overrides,
     };
+  }
+
+  #logCursorPullWatchScopeWakeDecision({
+    decision,
+    requestedDelayMs,
+    adjustedDelayMs,
+    suppressionRemainingMs,
+    schedulerBeforeState,
+  }: {
+    decision: CursorPullScheduleDecision;
+    requestedDelayMs: number;
+    adjustedDelayMs: number;
+    suppressionRemainingMs: number;
+    schedulerBeforeState: ReturnType<ConnectionShardCursorPullScheduler["inspectState"]>;
+  }): void {
+    const schedulerAfterState = this.#cursorPullScheduler.inspectState();
+    this.#logEvent("cursor_pull_watch_scope_wake", {
+      action: decision.action,
+      wake_reason: decision.wakeReason,
+      requested_delay_ms: requestedDelayMs,
+      adjusted_delay_ms: adjustedDelayMs,
+      floor_delay_ms: decision.floorDelayMs,
+      effective_delay_ms: decision.effectiveDelayMs,
+      suppression_remaining_ms: suppressionRemainingMs,
+      ingress_depth: this.#cursorStateIngressDepth,
+      previous_wake_reason: schedulerBeforeState.wakeReason ?? undefined,
+      previous_scheduled_at_ms: schedulerBeforeState.scheduledAtMs ?? undefined,
+      scheduled_at_ms: schedulerAfterState.scheduledAtMs ?? undefined,
+      armed_wake_reason: schedulerAfterState.wakeReason ?? undefined,
+      last_started_at_ms: schedulerAfterState.lastStartedAtMs || undefined,
+      last_completed_at_ms: schedulerAfterState.lastCompletedAtMs || undefined,
+    });
   }
 
   #pruneStaleTilePullState(): void {

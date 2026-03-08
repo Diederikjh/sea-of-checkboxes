@@ -1451,8 +1451,65 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
+  it("logs watch-scope wake scheduling and alarm execution decisions", async () => {
+    vi.useFakeTimers();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createRelayHarness({ alarmMode: "manual" });
+      setCursorHubWatchResponse(harness, {
+        peerShards: ["shard-1"],
+      });
+      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
+
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+
+      for (let index = 0; index < 5 && !harness.hasPendingAlarm(); index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      const eventsBeforeAlarm = parseStructuredLogs(logSpy);
+      expect(
+        eventsBeforeAlarm.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_scope"
+            && entry.shard === "shard-0"
+            && entry.previous_peer_count === 0
+            && entry.peer_count === 1
+        )
+      ).toBe(true);
+      expect(
+        eventsBeforeAlarm.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_watch_scope_wake"
+            && entry.shard === "shard-0"
+            && entry.action === "scheduled_new"
+            && entry.wake_reason === "watch_scope_change"
+        )
+      ).toBe(true);
+      expect(harness.hasPendingAlarm()).toBe(true);
+
+      await harness.fireAlarm();
+    } finally {
+      logSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("suppresses immediate local-activity pull re-entry after inbound cursor-state pull ingress", async () => {
     vi.useFakeTimers();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
       const harness = createRelayHarness();
@@ -1486,12 +1543,27 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(countCursorStatePullRequests(harness)).toBe(baseline);
 
       await vi.advanceTimersByTimeAsync(299);
-      expect(countCursorStatePullRequests(harness)).toBe(baseline);
+      expect(
+        parseStructuredLogs(logSpy).some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_peer"
+            && entry.wake_reason === "local_activity"
+        )
+      ).toBe(false);
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(countCursorStatePullRequests(harness)).toBeGreaterThan(baseline);
+      expect(
+        parseStructuredLogs(logSpy).some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_peer"
+            && entry.wake_reason === "local_activity"
+        )
+      ).toBe(true);
       randomSpy.mockRestore();
     } finally {
+      logSpy.mockRestore();
       vi.useRealTimers();
     }
   });

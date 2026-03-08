@@ -22,8 +22,11 @@ describe("ConnectionShardCursorPullScheduler", () => {
         jitterMs: 0,
       });
 
-      scheduler.schedule(100, "timer");
-      scheduler.schedule(100, "local_activity");
+      const firstDecision = scheduler.schedule(100, "timer");
+      const secondDecision = scheduler.schedule(100, "local_activity");
+
+      expect(firstDecision.action).toBe("scheduled_new");
+      expect(secondDecision.action).toBe("upgraded_existing");
 
       await vi.advanceTimersByTimeAsync(99);
       expect(wakes).toEqual([]);
@@ -51,8 +54,11 @@ describe("ConnectionShardCursorPullScheduler", () => {
         jitterMs: 0,
       });
 
-      scheduler.schedule(100, "timer");
-      scheduler.schedule(25, "watch_scope_change");
+      const firstDecision = scheduler.schedule(100, "timer");
+      const secondDecision = scheduler.schedule(25, "watch_scope_change");
+
+      expect(firstDecision.action).toBe("scheduled_new");
+      expect(secondDecision.action).toBe("rescheduled_earlier");
 
       await vi.advanceTimersByTimeAsync(24);
       expect(wakes).toEqual([]);
@@ -126,6 +132,31 @@ describe("ConnectionShardCursorPullScheduler", () => {
       expect(wakes).toEqual(["timer", "watch_scope_change"]);
     } finally {
       randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the earlier schedule when a later watch_scope_change arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const scheduler = new ConnectionShardCursorPullScheduler({
+        nowMs: () => Date.now(),
+        maybeUnrefTimer: () => {},
+        onTick: () => {},
+        minIntervalMs: 75,
+        jitterMs: 0,
+      });
+
+      const firstDecision = scheduler.schedule(25, "timer");
+      const secondDecision = scheduler.schedule(100, "watch_scope_change");
+
+      expect(firstDecision.action).toBe("scheduled_new");
+      expect(secondDecision.action).toBe("upgraded_existing");
+      expect(secondDecision.existingWakeReason).toBe("timer");
+      expect(scheduler.inspectState()).toMatchObject({
+        wakeReason: "watch_scope_change",
+      });
+    } finally {
       vi.useRealTimers();
     }
   });
