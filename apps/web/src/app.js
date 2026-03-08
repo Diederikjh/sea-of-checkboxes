@@ -38,6 +38,7 @@ import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
 import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
 import { createServerMessageHandler } from "./serverMessages";
 import { createSetCellOutboxSync } from "./setCellOutboxSync";
+import { createSubscriptionRebuildTracker } from "./subscriptionRebuildTracker";
 import { createRenderLoop } from "./renderLoop";
 import {
   createShareLink,
@@ -213,91 +214,6 @@ export async function startApp() {
     logOther(event, fields);
   };
   const nextClientMessageId = createClientMessageIdFactory();
-  let subscriptionRebuildState = null;
-  let replayPendingAfterSubscriptionRebuild = false;
-  const beginSubscriptionRebuild = (trigger) => {
-    subscriptionRebuildState = {
-      trigger,
-      startedAtMs: Date.now(),
-      pendingCid: null,
-      pendingTiles: null,
-    };
-  };
-  const maybeScheduleReplayAfterRebuild = () => {
-    if (!replayPendingAfterSubscriptionRebuild) {
-      return;
-    }
-    replayPendingAfterSubscriptionRebuild = false;
-    setCellOutboxSync.scheduleReplay(0);
-  };
-  const completeSubscriptionRebuild = (source, fields = {}) => {
-    if (!subscriptionRebuildState) {
-      return;
-    }
-    const state = subscriptionRebuildState;
-    subscriptionRebuildState = null;
-    logOther("ws subscription_rebuild_complete", {
-      reason: state.trigger,
-      source,
-      durationMs: Math.max(0, Date.now() - state.startedAtMs),
-      ...(state.pendingCid ? { cid: state.pendingCid } : {}),
-      ...(typeof state.pendingTiles === "number" ? { tileCount: state.pendingTiles } : {}),
-      ...fields,
-    });
-    maybeScheduleReplayAfterRebuild();
-  };
-  const trackSubscriptionRebuildDispatch = (message, reason) => {
-    if (!subscriptionRebuildState || subscriptionRebuildState.trigger !== reason) {
-      subscriptionRebuildState = {
-        trigger: reason,
-        startedAtMs: Date.now(),
-        pendingCid: null,
-        pendingTiles: null,
-      };
-    }
-    subscriptionRebuildState.pendingCid = message.cid ?? null;
-    subscriptionRebuildState.pendingTiles = message.tiles.length;
-    logOther("ws subscription_rebuild_dispatched", {
-      reason,
-      cid: message.cid ?? null,
-      tileCount: message.tiles.length,
-    });
-  };
-  const handleSubscriptionRebuildSkipped = (reason, fields = {}) => {
-    if (!subscriptionRebuildState || subscriptionRebuildState.trigger !== reason) {
-      return;
-    }
-    completeSubscriptionRebuild("noop", fields);
-  };
-  const handleSubscriptionAck = (message) => {
-    if (!subscriptionRebuildState?.pendingCid) {
-      return;
-    }
-    if (message.cid !== subscriptionRebuildState.pendingCid) {
-      logOther("ws subscription_rebuild_ack_ignored", {
-        reason: subscriptionRebuildState.trigger,
-        expectedCid: subscriptionRebuildState.pendingCid,
-        cid: message.cid,
-      });
-      return;
-    }
-    completeSubscriptionRebuild("sub_ack", {
-      ackRequestedCount: message.requestedCount,
-      ackChangedCount: message.changedCount,
-      ackSubscribedCount: message.subscribedCount,
-    });
-  };
-  const getSetCellGuard = () => {
-    if (!subscriptionRebuildState) {
-      return null;
-    }
-    return {
-      reason: "subscription_rebuild",
-      message: "Waiting for tile subscriptions to resync...",
-      trigger: subscriptionRebuildState.trigger,
-      ...(subscriptionRebuildState.pendingCid ? { cid: subscriptionRebuildState.pendingCid } : {}),
-    };
-  };
 
   const app = new Application({
     view: canvas,
@@ -490,6 +406,12 @@ export async function startApp() {
     clearTimeoutFn: window.clearTimeout.bind(window),
     onSyncWaitEvent: logSetCellSyncWait,
   });
+  const subscriptionRebuildTracker = createSubscriptionRebuildTracker({
+    logEvent: logOther,
+    scheduleReplay: (delayMs) => {
+      setCellOutboxSync.scheduleReplay(delayMs);
+    },
+  });
 
   const sendMessage = (message, options = {}) => {
     const trackSetCell = options.trackSetCell ?? true;
@@ -620,8 +542,8 @@ export async function startApp() {
     transport,
     setStatus,
     perfProbe,
-    onSubscriptionRebuildSubSent: trackSubscriptionRebuildDispatch,
-    onSubscriptionRebuildSkipped: handleSubscriptionRebuildSkipped,
+    onSubscriptionRebuildSubSent: subscriptionRebuildTracker.onDispatch,
+    onSubscriptionRebuildSkipped: subscriptionRebuildTracker.onSkipped,
   });
   let hasAppliedServerSpawn = sharedCamera !== null;
 
@@ -652,7 +574,7 @@ export async function startApp() {
       onIdentityReceived: ({ uid, name, token }) => {
         writeStoredIdentity({ uid, name, token });
       },
-      onSubscriptionAck: handleSubscriptionAck,
+      onSubscriptionAck: subscriptionRebuildTracker.onAck,
       getPendingSetCellOpsForTile: setCellOutboxSync.getPendingSetCellOpsForTile,
       dropPendingSetCellOpsForTile: setCellOutboxSync.dropPendingSetCellOpsForTile,
     }),
@@ -661,10 +583,10 @@ export async function startApp() {
         if (!reconnected) {
           return;
         }
-        beginSubscriptionRebuild("transport_reconnect");
+        subscriptionRebuildTracker.begin("transport_reconnect");
+        subscriptionRebuildTracker.markReplayPending();
         renderLoop.markTransportReconnected("transport_reconnect");
         setStatus("Connection restored; resyncing visible tiles...");
-        replayPendingAfterSubscriptionRebuild = true;
       },
       onClose: ({ disposed }) => {
         if (disposed) {
@@ -694,7 +616,7 @@ export async function startApp() {
     onViewportChanged: renderLoop.markViewportDirty,
     onTileCellsChanged: renderLoop.markTileCellsDirty,
     getActiveVisibleRemoteCursorCount,
-    getSetCellGuard,
+    getSetCellGuard: subscriptionRebuildTracker.getSetCellGuard,
   });
 
   const onResize = () => {
@@ -703,7 +625,7 @@ export async function startApp() {
   const isDocumentVisible = () =>
     typeof document === "undefined" || document.visibilityState === "visible";
   const forceSubscriptionRebuild = (reason) => {
-    beginSubscriptionRebuild(reason);
+    subscriptionRebuildTracker.begin(reason);
     renderLoop.forceSubscriptionRebuild(reason);
     logOther("ws subscription_rebuild", {
       reason,
