@@ -151,6 +151,11 @@ vi.mock("../src/transportConfig", () => ({
   resolveApiBaseUrl: () => "http://worker.local",
 }));
 
+vi.mock("../src/auth/firebaseAuthProvider", () => ({
+  resolveFirebaseConfigFromEnv: () => null,
+  createFirebaseAuthIdentityProvider: vi.fn(),
+}));
+
 vi.mock("../src/wireTransport", () => ({
   createWireTransport: () => ({
     connect(handler, lifecycleHandlers) {
