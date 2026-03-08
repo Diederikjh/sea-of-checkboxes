@@ -137,6 +137,7 @@ Recommended query order during an incident:
    - compare normal vs private behavior
    - extract client-visible `trace` ids
    - note whether first remote visibility is delayed or asymmetric
+   - for slow checkbox writes, note any client `setcell_sync_wait_*` or sync-guard `click_blocked` entries
 4. Group recursion errors by `requestId`.
 5. Group relevant logs by `trace_id`.
 6. Check whether the same `trace_id` appears with increasing `trace_hop`.
@@ -144,6 +145,7 @@ Recommended query order during an incident:
    - the trace-specific rows
    - the full request chain by `requestId`
    - the surrounding failure window by path and event
+   - for tile-sync issues, the `setCell_received` / `setCell` chain for the same `cid` / `op`
 8. Check for guard events:
    - `cursor_batch_loop_guard_drop`
    - `cursor_batch_duplicate_trace_drop`

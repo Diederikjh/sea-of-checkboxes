@@ -132,11 +132,18 @@ pnpm logs:client:capture --private --output logs/client-private.log
 5. Stop the server capture with `Ctrl+C` once, then let it settle. Use a second `Ctrl+C` only if you need to force-stop it.
 6. Stop both client captures.
 7. Wait about `2 minutes` for Cloudflare stored worker logs to settle before querying historical data.
-8. Read the normal and private client logs first for `trace` ids, timestamps, and visible asymmetry.
+8. Read the normal and private client logs first for `trace` ids, timestamps, visible asymmetry, and any `setcell_sync_wait_*` or `click_blocked` sync-guard events.
 9. Use the limited server tail as the first coarse server view.
 10. Use `pnpm logs:server:query` to fetch the missing backend details by time window, trace id, or request id.
+11. For slow or stuck checkbox writes, correlate:
+   - client `setcell_sync_wait_*`
+   - client `click_blocked` with sync guard `cid`
+   - worker `setCell_received`
+   - worker / tile-owner `setCell`
+   - any `tile_batch_order_anomaly`
 
 ## Why this order
 - the normal and private client logs tell us whether the failure is symmetric, whether one side never receives remote cursors, and which client-visible traces to pivot on
+- the new client sync-wait events let us tell whether the UI blocked the edit, the outbox kept waiting for authority, or the backend accepted the write but completion was slow
 - the limited server tail gives a quick first read without waiting for historical indexing
 - the historical query script fills in the missing worker-side request chain once Cloudflare has caught up

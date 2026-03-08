@@ -157,6 +157,8 @@ export function setupInputHandlers({
       ...buildWorldPointerContext(event, world),
       ...(typeof guard.remainingMs === "number" ? { remainingMs: guard.remainingMs } : {}),
       ...(typeof guard.trigger === "string" ? { trigger: guard.trigger } : {}),
+      ...(typeof guard.cid === "string" ? { cid: guard.cid } : {}),
+      ...(typeof guard.message === "string" ? { message: guard.message } : {}),
     });
     setStatus(guard.message);
   };

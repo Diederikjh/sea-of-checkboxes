@@ -170,6 +170,25 @@ describe("handleConnectionShardClientMessage", () => {
     expectScopedContext(contextArg, options.context);
     expect(clientArg).toBe(options.client);
     expect(messageArg).toBe(options.message);
+    expect(options.logEvent).toHaveBeenCalledWith("setCell_received", {
+      uid: "u_a",
+      tile: "0:0",
+      i: 5,
+      v: 1,
+      op: "op_1",
+    });
+    expect(options.logEvent).toHaveBeenCalledWith("setCell", expect.objectContaining({
+      uid: "u_a",
+      tile: "0:0",
+      i: 5,
+      v: 1,
+      op: "op_1",
+      accepted: true,
+      changed: true,
+      ver: 42,
+      watcher_count: 1,
+      duration_ms: 5,
+    }));
     expect(options.recordTileVersion).toHaveBeenCalledWith("0:0", 42);
     expect(options.receiveTileBatch).toHaveBeenCalledWith({
       t: "cellUpBatch",
@@ -205,6 +224,13 @@ describe("handleConnectionShardClientMessage", () => {
 
     await handleConnectionShardClientMessage(options);
 
+    expect(options.logEvent).toHaveBeenCalledWith("setCell_received", {
+      uid: "u_a",
+      tile: "0:0",
+      i: 5,
+      v: 1,
+      op: "op_1",
+    });
     expect(options.logEvent).toHaveBeenCalledWith(
       "setcell_not_subscribed",
       expect.objectContaining({

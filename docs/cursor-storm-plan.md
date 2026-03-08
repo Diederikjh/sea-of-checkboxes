@@ -127,6 +127,10 @@ Repo status after the current implementation batch:
 - cursor pull now uses jittered timer scheduling and capped peer concurrency
 - structured `cursor_pull_scope`, `cursor_pull_peer`, and `cursor_pull_cycle` logs now exist for pull-path observability
 - worker regressions now cover watched-peer scoping, concurrency caps, jittered polling, and non-fatal pull failures
+- repo now adds tile-sync observability for the next reliability pass:
+  - client `setCell` outbox logs explicit `setcell_sync_wait_started`, `setcell_sync_wait_replayed`, `setcell_sync_wait_cleared`, and `setcell_sync_wait_dropped` events with `tile`, `i`, `op`, `cid`, elapsed wait time, and outcome reason
+  - client `click_blocked` logs now retain the sync guard `cid` and UI message when the app tells the user it is `waiting for sync`
+  - `ConnectionShardDO` now logs `setCell_received` before the existing `setCell` result log so client wait state can be correlated with shard ingress and tile-owner commit
 - live validation still shows one unresolved production-side pattern:
   - scoped recursive pull meshes (`shard-3 <-> shard-4` in one run, `shard-4/shard-5/shard-6` in another)
   - repeated `subAck` churn with no actual subscription change
@@ -423,7 +427,10 @@ Tests:
   - around `5` concurrent users
   - around `10` concurrent users
   - a higher-stress case approaching `100` concurrent users or the highest practical local test load
-- client emits explicit sync-wait diagnostics when the UI enters or leaves `waiting for sync`, including enough context to correlate with backend writes
+- client sync-wait diagnostics stay correlated across:
+  - `click_blocked` / UI guard logs
+  - client outbox `setcell_sync_wait_*` lifecycle logs
+  - worker `setCell_received` and `setCell` result logs
 - later hardening: stale remote cursor versions are ignored without reheating pull or replaying older state over newer state
 
 ### Tests to update
@@ -495,7 +502,7 @@ The practical ordering is now:
 2. validate whether same-request nested reverse-direction peer pull disappears in raw worker logs for both `timer` and `local_activity` wakes
 3. if raw worker logs still show hidden pull recursion, detach even more aggressively or remove remaining request-ancestry wake paths even if client-visible websocket errors are gone
 4. if raw worker logs stay clean across another paired run, treat cursor-storm mitigation as provisionally stable and shift the next investigation to tile sync latency / duplicate-replay behavior
-5. add explicit client sync-wait logging so `waiting for sync` can be correlated with concrete client action ids and backend write events
+5. use the new client sync-wait and worker `setCell_received` logs to capture at least one slow-checkbox / `waiting for sync` episode end-to-end
 6. validate scoped polling in raw server logs
 7. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
 8. run explicit multi-client validation beyond the paired-browser case before treating the storm fix as generally proven
@@ -523,6 +530,11 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
   - tile
   - op / cid if available
   - whether the local write eventually succeeded, retried, or was superseded
+- correlate each slow or stuck write across:
+  - client `click_blocked` guard log if the UI refused the action
+  - client `setcell_sync_wait_*` lifecycle logs if the action entered the outbox
+  - worker `setCell_received` and `setCell` logs
+  - tile-owner `setCell` duration and any `tile_batch_order_anomaly`
 - verify client CPU drops during idle periods
 - verify remote cursors still appear and expire correctly
 
@@ -545,7 +557,7 @@ Implement next:
 2. redeploy or validate the stronger post-ingress suppression plus alarm-backed detached pull change in the multi-client case
 3. validate whether same-request nested reverse-direction peer pulls disappear in the paired-client case
 4. if nested pull is still visible, inspect whether any pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
-5. if nested pull is no longer visible across another paired run, add client-side `waiting for sync` diagnostics and start a separate tile sync latency check using the same capture flow
+5. if nested pull is no longer visible across another paired run, use the new sync-wait / `setCell_received` diagnostics to run a separate tile sync latency check using the same capture flow
 6. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
 7. run at least one higher-concurrency validation beyond the paired-browser case before declaring the storm fix broadly stable
 8. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` / short-lived remote visibility are improved in both directions

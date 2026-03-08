@@ -209,6 +209,9 @@ export async function startApp() {
       logger.other(...args);
     }
   };
+  const logSetCellSyncWait = (event, fields) => {
+    logOther(event, fields);
+  };
   const nextClientMessageId = createClientMessageIdFactory();
   let subscriptionRebuildState = null;
   let replayPendingAfterSubscriptionRebuild = false;
@@ -485,6 +488,7 @@ export async function startApp() {
     isTransportOnline,
     setTimeoutFn: window.setTimeout.bind(window),
     clearTimeoutFn: window.clearTimeout.bind(window),
+    onSyncWaitEvent: logSetCellSyncWait,
   });
 
   const sendMessage = (message, options = {}) => {

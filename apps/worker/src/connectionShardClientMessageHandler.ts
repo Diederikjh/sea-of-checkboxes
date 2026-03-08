@@ -119,6 +119,14 @@ export async function handleConnectionShardClientMessage(
     }
     case "setCell": {
       const startMs = Date.now();
+      logEvent("setCell_received", {
+        uid,
+        ...cidFields,
+        tile: message.tile,
+        i: message.i,
+        v: message.v,
+        op: message.op,
+      });
       const setCellResult = await handleSetCellMessage(scopedContext, client, message);
       if (setCellResult.reason === "not_subscribed" && setCellResult.notSubscribed) {
         logEvent("setcell_not_subscribed", {

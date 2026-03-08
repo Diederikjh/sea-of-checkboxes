@@ -22,7 +22,9 @@ export function createSetCellOutboxSync({
   isTransportOnline,
   setTimeoutFn = globalThis.setTimeout.bind(globalThis),
   clearTimeoutFn = globalThis.clearTimeout.bind(globalThis),
+  nowMs = () => Date.now(),
   offlineBannerMessage = defaultOfflineBannerMessage,
+  onSyncWaitEvent = () => {},
 }) {
   let offlineBannerTimerId = null;
   let outboxReplayTimerId = null;
@@ -53,13 +55,35 @@ export function createSetCellOutboxSync({
     offlineBannerEl.hidden = true;
   };
 
-  const pruneSetCellOutbox = (nowMs) => {
+  const emitSyncWaitEvent = (event, entry, fields = {}) => {
+    if (!entry || !entry.message) {
+      return;
+    }
+
+    const elapsedMs = Math.max(0, nowMs() - entry.firstTrackedAtMs);
+    onSyncWaitEvent(event, {
+      tile: entry.message.tile,
+      i: entry.message.i,
+      v: entry.message.v,
+      op: entry.message.op,
+      ...(typeof entry.message.cid === "string" ? { cid: entry.message.cid } : {}),
+      pendingCount: setCellOutbox.size,
+      pendingForMs: elapsedMs,
+      replayAttempts: entry.replayAttempts,
+      ...fields,
+    });
+  };
+
+  const pruneSetCellOutbox = (currentMs) => {
     let changed = false;
     for (const [key, entry] of setCellOutbox.entries()) {
-      const staleByAge = nowMs - entry.updatedAtMs > SETCELL_OUTBOX_TTL_MS;
+      const staleByAge = currentMs - entry.updatedAtMs > SETCELL_OUTBOX_TTL_MS;
       const staleByAttempts = entry.replayAttempts >= SETCELL_MAX_REPLAY_ATTEMPTS;
       if (staleByAge || staleByAttempts) {
         setCellOutbox.delete(key);
+        emitSyncWaitEvent("setcell_sync_wait_dropped", entry, {
+          reason: staleByAge ? "ttl_expired" : "replay_attempts_exhausted",
+        });
         changed = true;
       }
     }
@@ -69,15 +93,22 @@ export function createSetCellOutboxSync({
   };
 
   const recordSetCellOutboxEntry = (message) => {
-    const nowMs = Date.now();
-    pruneSetCellOutbox(nowMs);
+    const currentMs = nowMs();
+    pruneSetCellOutbox(currentMs);
     const key = outboxKeyForSetCell(message.tile, message.i);
     const existing = setCellOutbox.get(key);
-    setCellOutbox.set(key, {
+    const nextEntry = {
       message: { ...message },
-      updatedAtMs: nowMs,
+      firstTrackedAtMs: existing?.firstTrackedAtMs ?? currentMs,
+      updatedAtMs: currentMs,
       replayAttempts: existing?.replayAttempts ?? 0,
-    });
+    };
+    setCellOutbox.set(key, nextEntry);
+    if (!existing) {
+      emitSyncWaitEvent("setcell_sync_wait_started", nextEntry, {
+        reason: "outgoing_setcell",
+      });
+    }
 
     if (setCellOutbox.size > SETCELL_OUTBOX_MAX_ENTRIES) {
       let oldestKey = null;
@@ -89,7 +120,11 @@ export function createSetCellOutboxSync({
         }
       }
       if (oldestKey !== null) {
+        const oldestEntry = setCellOutbox.get(oldestKey);
         setCellOutbox.delete(oldestKey);
+        emitSyncWaitEvent("setcell_sync_wait_dropped", oldestEntry, {
+          reason: "outbox_capacity",
+        });
       }
     }
 
@@ -98,13 +133,15 @@ export function createSetCellOutboxSync({
     }
   };
 
-  const clearSetCellOutboxEntryForServerUpdate = (tile, index) => {
+  const clearSetCellOutboxEntryForServerUpdate = (tile, index, fields = {}) => {
     const key = outboxKeyForSetCell(tile, index);
-    if (!setCellOutbox.has(key)) {
+    const entry = setCellOutbox.get(key);
+    if (!entry) {
       return;
     }
 
     setCellOutbox.delete(key);
+    emitSyncWaitEvent("setcell_sync_wait_cleared", entry, fields);
     if (!offlineBannerEl.hidden) {
       refreshOfflineBannerText();
     }
@@ -116,8 +153,8 @@ export function createSetCellOutboxSync({
       return;
     }
 
-    const nowMs = Date.now();
-    pruneSetCellOutbox(nowMs);
+    const currentMs = nowMs();
+    pruneSetCellOutbox(currentMs);
     if (setCellOutbox.size === 0) {
       return;
     }
@@ -129,9 +166,15 @@ export function createSetCellOutboxSync({
     for (const [key, entry] of pending) {
       if (entry.replayAttempts >= SETCELL_MAX_REPLAY_ATTEMPTS) {
         setCellOutbox.delete(key);
+        emitSyncWaitEvent("setcell_sync_wait_dropped", entry, {
+          reason: "replay_attempts_exhausted",
+        });
         continue;
       }
       entry.replayAttempts += 1;
+      emitSyncWaitEvent("setcell_sync_wait_replayed", entry, {
+        reason: "scheduled_replay",
+      });
       sendToWireTransport(entry.message);
     }
 
@@ -152,7 +195,11 @@ export function createSetCellOutboxSync({
       if (message.t === "cellUp") {
         // Server updates are authoritative; clear local pending intent for that cell
         // even when value diverges, so stale outbox entries cannot override fresh state.
-        clearSetCellOutboxEntryForServerUpdate(message.tile, message.i);
+        clearSetCellOutboxEntryForServerUpdate(message.tile, message.i, {
+          reason: "cellUp",
+          serverValue: message.v,
+          serverVer: message.ver,
+        });
         return;
       }
 
@@ -161,12 +208,16 @@ export function createSetCellOutboxSync({
       }
 
       for (const [index] of message.ops) {
-        clearSetCellOutboxEntryForServerUpdate(message.tile, index);
+        clearSetCellOutboxEntryForServerUpdate(message.tile, index, {
+          reason: "cellUpBatch",
+          serverFromVer: message.fromVer,
+          serverToVer: message.toVer,
+        });
       }
     },
 
     getPendingSetCellOpsForTile(tileKey) {
-      pruneSetCellOutbox(Date.now());
+      pruneSetCellOutbox(nowMs());
       const pending = [];
       for (const entry of setCellOutbox.values()) {
         if (entry.message.tile !== tileKey) {
@@ -187,6 +238,9 @@ export function createSetCellOutboxSync({
           continue;
         }
         setCellOutbox.delete(key);
+        emitSyncWaitEvent("setcell_sync_wait_dropped", entry, {
+          reason: "tile_snapshot_authority",
+        });
         dropped += 1;
       }
       if (dropped > 0 && !offlineBannerEl.hidden) {
