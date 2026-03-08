@@ -4,6 +4,14 @@ export class NullStorage {
   }
 
   async put<T>(_key: string, _value: T): Promise<void> {}
+
+  async setAlarm(_scheduledTime: number | Date): Promise<void> {}
+
+  async getAlarm(): Promise<number | null> {
+    return null;
+  }
+
+  async deleteAlarm(): Promise<void> {}
 }
 
 export class MemoryStorage {
@@ -20,4 +28,12 @@ export class MemoryStorage {
   async put<T>(key: string, value: T): Promise<void> {
     this.#data.set(key, value);
   }
+
+  async setAlarm(_scheduledTime: number | Date): Promise<void> {}
+
+  async getAlarm(): Promise<number | null> {
+    return null;
+  }
+
+  async deleteAlarm(): Promise<void> {}
 }

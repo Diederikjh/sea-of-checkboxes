@@ -129,6 +129,8 @@ export class ConnectionShardDO {
   #cursorPullPeerShards: string[];
   #cursorStateIngressDepth: number;
   #cursorPullSuppressedUntilMs: number;
+  #cursorPullPendingWakeReason: CursorPullWakeReason | null;
+  #cursorPullAlarmArmed: boolean;
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
   #cursorHubController: ConnectionShardCursorHubController;
@@ -162,6 +164,8 @@ export class ConnectionShardDO {
     this.#cursorPullPeerShards = [];
     this.#cursorStateIngressDepth = 0;
     this.#cursorPullSuppressedUntilMs = 0;
+    this.#cursorPullPendingWakeReason = null;
+    this.#cursorPullAlarmArmed = false;
     this.#cursorHubPublishSuppressedUntilMs = 0;
     this.#cursorTraceState = new ConnectionShardCursorTraceState({
       nowMs: () => this.#nowMs(),
@@ -180,7 +184,7 @@ export class ConnectionShardDO {
       nowMs: () => this.#nowMs(),
       maybeUnrefTimer: (timer) => this.#maybeUnrefTimer(timer),
       onTick: (wakeReason) => {
-        void this.#runCursorPullTick(wakeReason);
+        this.#queueDetachedCursorPullTick(wakeReason);
       },
       minIntervalMs: CURSOR_PULL_INTERVAL_MIN_MS,
       jitterMs: CURSOR_PULL_JITTER_MS,
@@ -355,6 +359,14 @@ export class ConnectionShardDO {
     }
 
     return new Response("Not found", { status: 404 });
+  }
+
+  async alarm(): Promise<void> {
+    const wakeReason = this.#consumeDetachedCursorPullWakeReason();
+    if (!wakeReason) {
+      return;
+    }
+    await this.#runCursorPullTick(wakeReason);
   }
 
   #parseConnectParams(url: URL): { identity: ConnectionIdentity; shardName: string } | null {
@@ -994,6 +1006,7 @@ export class ConnectionShardDO {
     if (this.#clients.size === 0) {
       this.#cursorPullScheduler.reset();
       this.#cursorPullIngressGate.reset();
+      this.#clearDetachedCursorPullAlarm();
       this.#cursorPullInFlight = false;
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
@@ -1005,6 +1018,7 @@ export class ConnectionShardDO {
     if (this.#peerShardNames(this.#currentShardName()).length === 0) {
       this.#cursorPullScheduler.reset();
       this.#cursorPullIngressGate.reset();
+      this.#clearDetachedCursorPullAlarm();
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
@@ -1059,6 +1073,43 @@ export class ConnectionShardDO {
 
   #clearCursorPullTimer(): void {
     this.#cursorPullScheduler.clear();
+  }
+
+  #queueDetachedCursorPullTick(wakeReason: CursorPullWakeReason): void {
+    if (this.#clients.size === 0) {
+      return;
+    }
+    if (this.#peerShardNames(this.#currentShardName()).length === 0) {
+      return;
+    }
+    if (
+      !this.#cursorPullPendingWakeReason
+      || this.#cursorPullWakePriority(wakeReason) > this.#cursorPullWakePriority(this.#cursorPullPendingWakeReason)
+    ) {
+      this.#cursorPullPendingWakeReason = wakeReason;
+    }
+
+    if (this.#cursorPullAlarmArmed) {
+      return;
+    }
+
+    this.#cursorPullAlarmArmed = true;
+    const setAlarm = this.#state.storage.setAlarm?.bind(this.#state.storage);
+    if (setAlarm) {
+      void setAlarm(this.#nowMs()).catch(() => {
+        if (!this.#cursorPullAlarmArmed) {
+          return;
+        }
+        this.#deferDetachedTask(async () => {
+          await this.alarm();
+        });
+      });
+      return;
+    }
+
+    this.#deferDetachedTask(async () => {
+      await this.alarm();
+    });
   }
 
   async #runTilePullTick(): Promise<void> {
@@ -1135,6 +1186,13 @@ export class ConnectionShardDO {
     }
   }
 
+  #consumeDetachedCursorPullWakeReason(): CursorPullWakeReason | null {
+    this.#cursorPullAlarmArmed = false;
+    const wakeReason = this.#cursorPullPendingWakeReason;
+    this.#cursorPullPendingWakeReason = null;
+    return wakeReason;
+  }
+
   #updateCursorPullInterval(deltaObserved: boolean): void {
     if (deltaObserved || this.#nowMs() < this.#cursorPullActiveUntilMs) {
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
@@ -1183,6 +1241,20 @@ export class ConnectionShardDO {
     return Math.max(0, this.#cursorPullSuppressedUntilMs - this.#nowMs());
   }
 
+  #cursorPullWakePriority(wakeReason: CursorPullWakeReason): number {
+    switch (wakeReason) {
+      case "local_activity":
+        return 3;
+      case "watch_scope_change":
+        return 2;
+      case "schedule_refresh":
+        return 1;
+      case "timer":
+      default:
+        return 0;
+    }
+  }
+
   #applyCursorPullSuppressionDelay(delayMs: number): number {
     return Math.max(delayMs, this.#cursorPullSuppressionRemainingMs());
   }
@@ -1208,6 +1280,7 @@ export class ConnectionShardDO {
 
     if (nextPeerShards.length === 0) {
       this.#clearCursorPullTimer();
+      this.#clearDetachedCursorPullAlarm();
       this.#cursorPullActiveUntilMs = 0;
       return;
     }
@@ -1225,6 +1298,15 @@ export class ConnectionShardDO {
     return Array.from(new Set(peerShards))
       .filter((peerShard) => allowedPeerShards.has(peerShard))
       .sort();
+  }
+
+  #clearDetachedCursorPullAlarm(): void {
+    this.#cursorPullPendingWakeReason = null;
+    this.#cursorPullAlarmArmed = false;
+    const deleteAlarm = this.#state.storage.deleteAlarm?.bind(this.#state.storage);
+    if (deleteAlarm) {
+      void deleteAlarm().catch(() => {});
+    }
   }
 
   #pruneStaleTilePullState(): void {

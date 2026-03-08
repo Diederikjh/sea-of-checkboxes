@@ -139,7 +139,8 @@ Repo status after the current implementation batch:
   - inbound `GET /cursor-state` now defers queued pull wakes until after the request unwinds instead of re-arming timer or local-activity pull work inside the live ingress chain
   - live Cloudflare logs then showed that ingress deferral alone was not enough: request `6T6C1TH6HFXZSAXO` on `shard-7` still emitted nested `cursor_pull_cycle` (`timer`, then `local_activity`) and `cursor_pull_peer` back to `shard-4` under the same inbound `GET /cursor-state` chain
   - repo now adds a short post-ingress pull suppression window so reverse-direction peer pull cannot immediately restart off the tail of an inbound pulled `/cursor-state`
-  - worker regressions now cover local reheat coalescing, fallback internal-error trace correlation, and the post-ingress suppression of timer and local-activity reverse pull
+  - repo now routes scheduled cursor pull through a Durable Object alarm so peer polling runs from a detached DO event instead of directly from the in-memory wake callback/request invocation
+  - worker regressions now cover local reheat coalescing, fallback internal-error trace correlation, the post-ingress suppression of timer and local-activity reverse pull, and detached alarm-backed pull dispatch
   - the latest `2026-03-08T07:41Z` paired run was more stable client-side:
     - no client-visible `internal` or `server_error_sent`
     - but first remote cursor visibility was still slow (`~59.9s` on one client, `~71.7s` on the other)
@@ -350,7 +351,7 @@ Tests:
 - add regression coverage that inbound `/cursor-state` on one side of a watched pair cannot start a reverse-direction pull cycle from timer or local-activity wake in the same request chain
 - add coverage that remote cursor ingestion does not count as local activity for pull wake purposes
 - add coverage for stricter timer floor / single-flight pull scheduling
-- add coverage for detached pull execution if we move pull ticks off request ancestry explicitly
+- add coverage for detached pull execution so scheduler wake callbacks do not issue peer fetches directly
 - add rebuild coverage for suppressing redundant steady-state `subAck`
 - add coverage that client-visible internal errors carry usable request or trace correlation
 
@@ -363,9 +364,10 @@ Status:
   - deferred cursor-pull wake flushing after `/cursor-state` ingress exits
   - short post-ingress suppression of timer-driven reverse pull after inbound pulled `/cursor-state`
   - short post-ingress suppression of local-activity reverse pull after inbound pulled `/cursor-state`
+  - detached alarm-backed dispatch before issuing cursor-state peer pulls
   - fallback trace propagation on internal websocket errors without an active cursor trace
 - still pending live validation:
-  - confirm the new post-ingress suppression window actually removes same-request nested reverse pull in raw Cloudflare logs
+  - confirm the new alarm-backed detached dispatch plus post-ingress suppression removes same-request nested reverse pull in raw Cloudflare logs
   - confirm representative watched topologies no longer recurse in raw Cloudflare logs
   - confirm first remote `curUp` latency drops in paired client logs in both directions
   - confirm repeated steady-state `subAck` churn is reduced or at least better explained by the new logs
@@ -467,9 +469,9 @@ Based on the latest `2026-03-07` captures:
 
 The practical ordering is now:
 
-1. redeploy the stronger Phase 3b ingress-suppression changes now in repo
-2. validate whether the post-ingress suppression window removes same-request nested reverse-direction peer pull for `timer` and `local_activity` wakes
-3. if raw worker logs still show hidden pull recursion, move pull execution fully off live request ancestry even if client-visible websocket errors are gone
+1. redeploy the stronger Phase 3b ingress-suppression and alarm-backed detached pull changes now in repo
+2. validate whether same-request nested reverse-direction peer pull disappears in raw worker logs for both `timer` and `local_activity` wakes
+3. if raw worker logs still show hidden pull recursion, detach even more aggressively or remove remaining request-ancestry wake paths even if client-visible websocket errors are gone
 4. validate scoped polling in raw server logs
 5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
 6. confirm rebuild / resubscribe churn, first-visibility latency, and remote cursor persistence improved in both directions
@@ -508,9 +510,9 @@ Implement next:
    - no unexpected pull churn
    - no client-visible internal errors
    - sane limited tail plus sane historical worker query results
-2. redeploy or validate the stronger post-ingress suppression change in the multi-client case
+2. redeploy or validate the stronger post-ingress suppression plus alarm-backed detached pull change in the multi-client case
 3. validate whether same-request nested reverse-direction peer pulls disappear in the paired-client case
-4. if nested pull is still visible, inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
+4. if nested pull is still visible, inspect whether any pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
 5. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
 6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` / short-lived remote visibility are improved in both directions
 7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests

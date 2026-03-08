@@ -18,6 +18,82 @@ import {
 } from "./doStubs";
 import { NullStorage } from "./storageMocks";
 
+type AlarmMode = "auto" | "manual";
+
+class AlarmEnabledNullStorage extends NullStorage {
+  #alarmAtMs: number | null;
+  #alarmTimer: ReturnType<typeof setTimeout> | null;
+  #onAlarm: (() => Promise<void>) | null;
+  #mode: AlarmMode;
+
+  constructor(mode: AlarmMode) {
+    super();
+    this.#alarmAtMs = null;
+    this.#alarmTimer = null;
+    this.#onAlarm = null;
+    this.#mode = mode;
+  }
+
+  bind(onAlarm: () => Promise<void>): void {
+    this.#onAlarm = onAlarm;
+  }
+
+  hasPendingAlarm(): boolean {
+    return this.#alarmAtMs !== null;
+  }
+
+  async fireAlarm(): Promise<void> {
+    const onAlarm = this.#onAlarm;
+    this.#clearAlarmTimer();
+    this.#alarmAtMs = null;
+    if (!onAlarm) {
+      return;
+    }
+    await onAlarm();
+  }
+
+  async setAlarm(scheduledTime: number | Date): Promise<void> {
+    const nextAlarmAtMs =
+      scheduledTime instanceof Date ? scheduledTime.getTime() : Number(scheduledTime);
+    this.#alarmAtMs = nextAlarmAtMs;
+    this.#clearAlarmTimer();
+    if (this.#mode !== "auto") {
+      return;
+    }
+
+    const delayMs = Math.max(0, nextAlarmAtMs - Date.now());
+    if (delayMs === 0) {
+      queueMicrotask(() => {
+        if (this.#alarmAtMs === nextAlarmAtMs) {
+          void this.fireAlarm();
+        }
+      });
+      return;
+    }
+
+    this.#alarmTimer = setTimeout(() => {
+      void this.fireAlarm();
+    }, delayMs);
+  }
+
+  async getAlarm(): Promise<number | null> {
+    return this.#alarmAtMs;
+  }
+
+  async deleteAlarm(): Promise<void> {
+    this.#alarmAtMs = null;
+    this.#clearAlarmTimer();
+  }
+
+  #clearAlarmTimer(): void {
+    if (!this.#alarmTimer) {
+      return;
+    }
+    clearTimeout(this.#alarmTimer);
+    this.#alarmTimer = null;
+  }
+}
+
 export type StructuredLogSpy = {
   mock: {
     calls: unknown[][];
@@ -60,11 +136,12 @@ export function parseStructuredLogs(logSpy: StructuredLogSpy) {
     });
 }
 
-export function createHarness() {
+export function createHarness(options: { alarmMode?: AlarmMode } = {}) {
   const socketPairFactory = new MockSocketPairFactory();
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
   const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
   const cursorHub = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+  const storage = new AlarmEnabledNullStorage(options.alarmMode ?? "auto");
 
   const env = {
     CONNECTION_SHARD: tileOwners,
@@ -74,29 +151,38 @@ export function createHarness() {
 
   const state = {
     id: { toString: () => "shard:test" },
-    storage: new NullStorage(),
+    storage,
   };
 
   const shard = new ConnectionShardDO(state, env, {
     socketPairFactory,
     upgradeResponseFactory,
   });
+  storage.bind(async () => {
+    await shard.alarm();
+  });
 
   return {
     shard,
+    state,
     socketPairFactory,
     upgradeResponseFactory,
     tileOwners,
     cursorHub,
+    fireAlarm: async () => {
+      await storage.fireAlarm();
+    },
+    hasPendingAlarm: () => storage.hasPendingAlarm(),
   };
 }
 
-export function createRelayHarness() {
+export function createRelayHarness(options: { alarmMode?: AlarmMode } = {}) {
   const socketPairFactory = new MockSocketPairFactory();
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
   const connectionShards = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
   const cursorHub = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+  const storage = new AlarmEnabledNullStorage(options.alarmMode ?? "auto");
 
   const env = {
     CONNECTION_SHARD: connectionShards,
@@ -106,19 +192,27 @@ export function createRelayHarness() {
 
   const state = {
     id: { toString: () => "shard:test" },
-    storage: new NullStorage(),
+    storage,
   };
 
   const shard = new ConnectionShardDO(state, env, {
     socketPairFactory,
     upgradeResponseFactory,
   });
+  storage.bind(async () => {
+    await shard.alarm();
+  });
 
   return {
     shard,
+    state,
     socketPairFactory,
     connectionShards,
     cursorHub,
+    fireAlarm: async () => {
+      await storage.fireAlarm();
+    },
+    hasPendingAlarm: () => storage.hasPendingAlarm(),
   };
 }
 

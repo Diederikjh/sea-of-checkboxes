@@ -18,6 +18,9 @@ export interface DurableObjectStateLike {
   storage: {
     get<T>(key: string): Promise<T | undefined>;
     put<T>(key: string, value: T): Promise<void>;
+    setAlarm?(scheduledTime: number | Date): Promise<void>;
+    getAlarm?(): Promise<number | null>;
+    deleteAlarm?(): Promise<void>;
   };
   waitUntil?(promise: Promise<unknown>): void;
 }

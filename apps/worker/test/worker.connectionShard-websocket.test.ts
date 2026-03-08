@@ -1299,6 +1299,87 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
+  it("arms a detached alarm before issuing the initial cursor-state pull", async () => {
+    vi.useFakeTimers();
+    try {
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+      const harness = createRelayHarness({ alarmMode: "manual" });
+      setCursorHubWatchResponse(harness, {
+        peerShards: ["shard-1"],
+      });
+      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
+
+      await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.hasPendingAlarm()).toBe(true);
+      expect(countCursorStatePullRequests(harness)).toBe(0);
+
+      await harness.fireAlarm();
+      expect(countCursorStatePullRequests(harness)).toBe(1);
+      randomSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs post-ingress reverse pull from a detached alarm instead of directly from the wake callback", async () => {
+    vi.useFakeTimers();
+    try {
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+      const harness = createRelayHarness({ alarmMode: "manual" });
+      setCursorHubWatchResponse(harness, {
+        peerShards: ["shard-1"],
+      });
+      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
+
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(countCursorStatePullRequests(harness)).toBe(0);
+      expect(harness.hasPendingAlarm()).toBe(true);
+
+      await harness.fireAlarm();
+      const baseline = countCursorStatePullRequests(harness);
+      expect(baseline).toBe(1);
+
+      await getCursorStateWithHeaders(harness.shard, {
+        "x-sea-cursor-pull": "1",
+        "x-sea-cursor-trace-id": "trace-inbound",
+        "x-sea-cursor-trace-hop": "0",
+        "x-sea-cursor-trace-origin": "shard-1",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 1.5 }));
+      await vi.advanceTimersByTimeAsync(299);
+      expect(countCursorStatePullRequests(harness)).toBe(baseline);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(countCursorStatePullRequests(harness)).toBe(baseline);
+      expect(harness.hasPendingAlarm()).toBe(true);
+
+      await harness.fireAlarm();
+      expect(countCursorStatePullRequests(harness)).toBeGreaterThan(baseline);
+      randomSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("suppresses immediate local-activity pull re-entry after inbound cursor-state pull ingress", async () => {
     vi.useFakeTimers();
     try {
