@@ -116,6 +116,10 @@ Interpretation:
 - the latest paired run adds a directional symptom:
   - one watched direction can still look healthy while the reverse direction is delayed by about `60s` and then fails
   - we need to treat one-way visibility plus reverse-direction recursion as an explicit validation failure, not as partial success
+- the latest `2026-03-08T13:54Z` run narrows that further for the paired-client case:
+  - one-way visibility can now happen without any visible pull-path errors
+  - the concrete lag is that reverse-direction `watch_scope_change` and first peer pull can start tens of seconds after the second client is already active
+  - we now need to treat delayed bidirectional scope activation as its own correctness issue, separate from recursion
 - peer pull failures still need to stay best-effort and must not surface websocket `internal` errors during normal cursor sync
 - Phase 3 is implemented in repo, but its live exit criteria are not yet met in Cloudflare logs
 
@@ -180,6 +184,30 @@ Repo status after the current implementation batch:
     - the visible `waiting for sync` moments in that run mostly matched short `click_blocked` subscription-rebuild guards rather than stuck writes
     - the only backend anomaly found in the same window was a single `tile_batch_order_anomaly` with `kind: "duplicate_or_replay"` for the same version/op payload
     - the limited tail still showed a few slower `TileOwnerDO setCell` commits (`~556ms`, `~572ms`, `~1010ms`), which now looks like the more likely source of the remaining user-visible sync waits
+  - the latest `2026-03-08T13:54Z` paired run isolates a different remaining cursor issue:
+    - no client-visible `internal` or `server_error` packets were captured
+    - Cloudflare historical worker queries for `13:54:20Z` to `13:55:40Z` showed `0` `internal_error` and `0` `server_error_sent`
+    - the private window saw the main-window cursor quickly:
+      - `hello` at `2026-03-08T13:54:23.213Z`
+      - first remote tag `105` for `u_193c7c1f` at `2026-03-08T13:54:25.404Z`
+      - about `2.2s` first-visibility latency
+    - the main window still saw the private-window cursor much too late:
+      - `hello` at `2026-03-08T13:54:00.705Z`
+      - first remote tag `105` for `u_ff8f0435` at `2026-03-08T13:55:02.628Z`
+      - about `61.9s` first-visibility latency
+    - repo server tail shows the asymmetry directly:
+      - `shard-3 -> shard-4` `cursor_pull_peer` started immediately at `2026-03-08T13:54:23.207Z`
+      - `shard-4 -> shard-3` did not begin until `2026-03-08T13:55:02.438Z` with `wake_reason: "watch_scope_change"`
+      - once that reverse pull started, the main-window client began receiving the private-window cursor almost immediately
+    - this run still had rebuild churn:
+      - main-window client logged `15` `subAck`
+      - private-window client logged `23` `subAck`
+    - so the remaining paired-client cursor problem in this run is delayed reverse watch-scope activation or refresh, not recursive pull failure
+  - extracted worker errors from `2026-03-08T14:18:20.704Z` show one more observability gap:
+    - two `ConnectionShardDO` `alarm` events on the same durable object reported `outcome: "exception"`
+    - Cloudflare only preserved the scheduled timestamp as the error message, with no stack, trace id, wake reason, or pull-state context
+    - surrounding repo logs still showed successful `cursor_pull_peer` activity before and after those timestamps
+    - so these alarm exceptions do not currently overturn the main diagnosis, but they do show that the detached alarm path needs explicit application-level exception logging
 
 ## Goal
 
@@ -343,7 +371,7 @@ Status:
 
 Purpose:
 - eliminate recursive pull failure modes across any watched shard topology, from small pairs up to the full shard set
-- reduce first-visibility latency after subscribe or rebuild
+- reduce first-visibility latency after subscribe or rebuild to a bounded acceptable range without adding topology-specific complexity
 - stop redundant steady-state resubscribe / `subAck` churn
 
 Code changes:
@@ -361,16 +389,17 @@ Behavior changes:
 - pull ticks must not inherit websocket or cursor-state request ancestry deeply enough to hit the subrequest limit
 - handling an inbound `GET /cursor-state` must not immediately trigger another outbound peer poll burst inside that same request chain
 - handling an inbound `GET /cursor-state` must not start timer- or local-activity-driven peer pull work before that request unwinds
-- first remote cursor visibility should happen promptly after watch scope and subscription are established
-- remote cursor visibility must be prompt in both directions across a watched pair, not only on one side
+- first remote cursor visibility should happen within an acceptable bounded interval after watch scope and subscription are established
+- the target is about `20s` or better for initial remote cursor visibility in normal runs, across representative watched topologies
+- this target should be met without adding pair-specific or topology-specific control flow that compromises the design
 - stable subscriptions should not emit repeated `subAck` responses with no effective change
 - pull-path failures must remain diagnosable server-side without degrading one client's cursor stream
 
 Exit criteria:
 - no `Subrequest depth limit exceeded` in scoped pull captures across representative watched topologies, up to the full shard set used in production
 - no client-visible `server_error_sent` / `internal` websocket errors caused by `GET /cursor-state`
-- first remote `curUp` arrives within a short bounded interval after initial subscribe / rebuild, not about `60s` later
-- watched peers do not show one-way success where `A -> B` visibility is prompt but `B -> A` visibility is delayed or fails
+- first remote `curUp` arrives within an acceptable bounded interval after initial subscribe / rebuild, targeting about `20s` rather than about `60s`
+- this bound should hold across representative watched topologies and not only in one favored direction of a watched pair
 - steady-state logs do not show repeated `subAck` churn with `changed_count: 0`
 - scoped peer polling remains narrow after reconnect / unsubscribe transitions
 - adding more watched peers does not turn narrow pull into synchronized or recursive graph-wide traffic
@@ -511,6 +540,12 @@ Based on the latest `2026-03-07` captures:
     - no hidden cursor-pull failures were found in the observed worker-log window
     - both clients saw remote cursors, with first shared visibility beginning once the second window was active
     - the remaining visible problem in that run was slow tile sync/write completion rather than pull recursion
+  - the latest `2026-03-08T13:54Z` paired run changes the cursor emphasis again:
+    - stored worker logs are still clean of `internal_error` and `server_error_sent`
+    - `shard-3 -> shard-4` peer pull starts immediately after the second client connects
+    - `shard-4 -> shard-3` does not start until roughly `39s` later, when a delayed `watch_scope_change` finally appears
+    - once that delayed reverse pull starts, remote cursor visibility begins almost immediately on the previously stale side
+    - so the next cursor reliability target is prompt bidirectional watch-scope activation, not just recursion suppression
   - confidence boundary:
     - this is encouraging evidence for the paired-client case
     - it is not yet proof that the same fix is stable for `5`, `10`, or `100` concurrent users
@@ -520,15 +555,21 @@ The practical ordering is now:
 
 1. treat the cursor-storm mitigation as provisionally stable for the paired-client case:
    - same-request nested reverse-direction pull is no longer visible in the recent inspected windows
-   - raw worker logs are staying clean of `cursor_pull_peer`, `internal_error`, and `server_error_sent`
-2. use the new client sync-wait and worker `setCell_received` logs to capture slow-checkbox / `waiting for sync` episodes end-to-end
-3. continue reducing rebuild / resubscribe churn, since repeated `subAck` and short `click_blocked` rebuild guards are now the main visible annoyance
+   - raw worker logs are staying clean of `internal_error` and `server_error_sent`
+2. make bidirectional watch-scope activation prompt:
+   - the remaining paired-client cursor bug is now delayed reverse `watch_scope_change`, not visible recursion
+   - first remote cursor visibility should not wait tens of seconds for the receiving shard to notice the new watched peer
+3. add detached alarm-path observability so alarm failures are diagnosable:
+   - log error name, message, stack, shard, scheduled time, wake reason, trace id if any, and current pull-scheduler state
+   - make stale or overlapping alarm wakes distinguishable from real pull execution failures
+4. continue reducing rebuild / resubscribe churn, since repeated `subAck` and short `click_blocked` rebuild guards are still visible and may be related to late scope refresh
    - one source is already addressed in repo: overlapping lifecycle events no longer stack rebuilds while a rebuild is active
    - the next question is whether the remaining churn is coming from legitimate window switches, reconnects, or another repeated trigger
-4. inspect why a small number of `TileOwnerDO setCell` commits still spike into the `~0.5s` to `~1.0s` range even when most writes complete immediately
-5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
-6. run explicit multi-client validation beyond the paired-browser case before treating the storm fix as generally proven
-7. only then consider deleting more compatibility code
+5. use the new client sync-wait and worker `setCell_received` logs to capture slow-checkbox / `waiting for sync` episodes end-to-end
+6. inspect why a small number of `TileOwnerDO setCell` commits still spike into the `~0.5s` to `~1.0s` range even when most writes complete immediately
+7. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
+8. run explicit multi-client validation beyond the paired-browser case before treating the storm fix as generally proven
+9. only then consider deleting more compatibility code
 
 Phase 3 code landed in repo, but the latest Cloudflare logs show that validation is not yet complete. Phase 3b is now the gate before deleting more compatibility code.
 
@@ -544,6 +585,8 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 - check whether repeated `subAck` with `changed_count: 0` is still happening during steady state
 - check whether first remote cursor visibility is still delayed after initial subscribe or rebuild
 - check whether cursor visibility is asymmetric across the two clients, even if only one side reports errors
+- check whether reverse-direction `watch_scope_change` lands promptly on both shards after the second client joins, rather than tens of seconds later
+- check whether any detached `alarm` exception now includes enough application-level context to identify the failing wake
 - check whether `cursor_pull_peer` is still running under websocket `GET /ws` or nested `GET /cursor-state` request ids
 - capture client logs for every `waiting for sync` episode:
   - sync-wait start timestamp
@@ -575,14 +618,29 @@ Implement next:
    - limited server tail
    - paired normal/private client logs
    - then historical Cloudflare worker queries using the `.env.local`-backed script after the settle delay
-2. capture at least one run where `waiting for sync` is clearly noticeable and correlate:
+2. inspect why the receiving shard can delay reverse `watch_scope_change` for tens of seconds after the second client is active:
+   - correlate hub `watch_sub` / `watch_unsub`
+   - cursor-hub `activity`
+   - `cursor_pull_scope`
+   - first reverse-direction `cursor_pull_peer`
+   - first remote tag `105` on the stale client
+3. add detached alarm-path error logging around the cursor-pull alarm runner:
+   - error name
+   - error message
+   - stack if available
+   - shard
+   - scheduled time
+   - wake reason
+   - trace id if available
+   - relevant pull scheduler state
+4. capture at least one run where `waiting for sync` is clearly noticeable and correlate:
    - client `click_blocked`
    - client `setcell_sync_wait_*`
    - worker `setCell_received`
    - worker / tile-owner `setCell`
    - any `tile_batch_order_anomaly`
-3. inspect the remaining rebuild churn after lifecycle coalescing, since repeated `subAck` and rebuild guards are still showing up in otherwise healthy runs
-4. inspect the occasional slower `TileOwnerDO setCell` commits and determine whether they are cold-start, contention, or duplicate/replay side effects
-5. run at least one higher-concurrency validation beyond the paired-browser case before declaring the storm fix broadly stable
-6. confirm that scoped peer pulls stay non-recursive across representative watched topologies and that cursor-path worker logs remain clean in those wider runs
-7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
+5. inspect the remaining rebuild churn after lifecycle coalescing, since repeated `subAck` and rebuild guards are still showing up in otherwise healthy runs
+6. inspect the occasional slower `TileOwnerDO setCell` commits and determine whether they are cold-start, contention, or duplicate/replay side effects
+7. run at least one higher-concurrency validation beyond the paired-browser case before declaring the storm fix broadly stable
+8. confirm that scoped peer pulls stay non-recursive across representative watched topologies and that cursor-path worker logs remain clean in those wider runs
+9. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
