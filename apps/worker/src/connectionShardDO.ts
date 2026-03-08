@@ -89,6 +89,7 @@ const CURSOR_PULL_INTERVAL_IDLE_MAX_MS = 1_500;
 const CURSOR_PULL_INTERVAL_IDLE_BACKOFF_STEP_MS = 300;
 const CURSOR_PULL_IDLE_STREAK_BEFORE_LONG_BACKOFF = 4;
 const CURSOR_PULL_ACTIVITY_WINDOW_MS = 500;
+const CURSOR_PULL_INGRESS_SUPPRESSION_MS = 300;
 const CURSOR_PULL_JITTER_MS = 25;
 const CURSOR_PULL_CONCURRENCY = 2;
 const CURSOR_HUB_NAME = "global";
@@ -127,6 +128,7 @@ export class ConnectionShardDO {
   #cursorPullActiveUntilMs: number;
   #cursorPullPeerShards: string[];
   #cursorStateIngressDepth: number;
+  #cursorPullSuppressedUntilMs: number;
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
   #cursorHubController: ConnectionShardCursorHubController;
@@ -159,6 +161,7 @@ export class ConnectionShardDO {
     this.#cursorPullActiveUntilMs = 0;
     this.#cursorPullPeerShards = [];
     this.#cursorStateIngressDepth = 0;
+    this.#cursorPullSuppressedUntilMs = 0;
     this.#cursorHubPublishSuppressedUntilMs = 0;
     this.#cursorTraceState = new ConnectionShardCursorTraceState({
       nowMs: () => this.#nowMs(),
@@ -327,6 +330,7 @@ export class ConnectionShardDO {
     }
 
     if (url.pathname === "/cursor-state" && request.method === "GET") {
+      const isInboundCursorPull = request.headers.get("x-sea-cursor-pull") === "1";
       const pullTrace = this.#cursorTraceState.readFromRequest(request);
       const previousTrace = this.#cursorTraceState.pushActiveTrace(pullTrace);
       this.#cursorStateIngressDepth += 1;
@@ -338,6 +342,12 @@ export class ConnectionShardDO {
       } finally {
         this.#cursorStateIngressDepth = Math.max(0, this.#cursorStateIngressDepth - 1);
         this.#cursorTraceState.restoreActiveTrace(previousTrace);
+        if (isInboundCursorPull) {
+          this.#cursorPullSuppressedUntilMs = Math.max(
+            this.#cursorPullSuppressedUntilMs,
+            this.#nowMs() + CURSOR_PULL_INGRESS_SUPPRESSION_MS
+          );
+        }
         if (this.#cursorStateIngressDepth === 0) {
           this.#cursorPullIngressGate.flushAfterIngressExited();
         }
@@ -988,6 +998,7 @@ export class ConnectionShardDO {
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
+      this.#cursorPullSuppressedUntilMs = 0;
       return;
     }
 
@@ -997,6 +1008,7 @@ export class ConnectionShardDO {
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
+      this.#cursorPullSuppressedUntilMs = 0;
       return;
     }
 
@@ -1033,7 +1045,7 @@ export class ConnectionShardDO {
       this.#cursorPullIngressGate.defer(wakeReason);
       return;
     }
-    this.#cursorPullScheduler.schedule(delayMs, wakeReason);
+    this.#cursorPullScheduler.schedule(this.#applyCursorPullSuppressionDelay(delayMs), wakeReason);
   }
 
   #clearTilePullTimer(): void {
@@ -1100,6 +1112,12 @@ export class ConnectionShardDO {
       return;
     }
 
+    const suppressedDelayMs = this.#cursorPullSuppressionRemainingMs();
+    if (suppressedDelayMs > 0) {
+      this.#scheduleCursorPullTick(suppressedDelayMs, wakeReason);
+      return;
+    }
+
     if (this.#cursorPullInFlight) {
       this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MIN_MS, "timer");
       return;
@@ -1159,6 +1177,14 @@ export class ConnectionShardDO {
     if (!this.#cursorPullInFlight) {
       this.#scheduleCursorPullTick(0, "local_activity");
     }
+  }
+
+  #cursorPullSuppressionRemainingMs(): number {
+    return Math.max(0, this.#cursorPullSuppressedUntilMs - this.#nowMs());
+  }
+
+  #applyCursorPullSuppressionDelay(delayMs: number): number {
+    return Math.max(delayMs, this.#cursorPullSuppressionRemainingMs());
   }
 
   #updateCursorPullPeerShards(peerShards: string[]): void {

@@ -338,3 +338,17 @@ export async function getCursorState(shard: ConnectionShardDO): Promise<CursorRe
   expect(response.status).toBe(200);
   return (await response.json()) as CursorRelayBatch;
 }
+
+export async function getCursorStateWithHeaders(
+  shard: ConnectionShardDO,
+  headers: Record<string, string>
+): Promise<CursorRelayBatch> {
+  const response = await shard.fetch(
+    new Request("https://connection-shard.internal/cursor-state", {
+      method: "GET",
+      headers,
+    })
+  );
+  expect(response.status).toBe(200);
+  return (await response.json()) as CursorRelayBatch;
+}

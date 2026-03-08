@@ -137,7 +137,9 @@ Repo status after the current implementation batch:
   - local cursor activity now reheats pull promptly without opening a sustained hot window on every heartbeat
   - pull requests now carry trace headers, and fallback trace IDs are attached to client-visible internal errors even when no active cursor trace exists
   - inbound `GET /cursor-state` now defers queued pull wakes until after the request unwinds instead of re-arming timer or local-activity pull work inside the live ingress chain
-  - worker regressions now cover local reheat coalescing and fallback internal-error trace correlation
+  - live Cloudflare logs then showed that ingress deferral alone was not enough: request `6T6C1TH6HFXZSAXO` on `shard-7` still emitted nested `cursor_pull_cycle` (`timer`, then `local_activity`) and `cursor_pull_peer` back to `shard-4` under the same inbound `GET /cursor-state` chain
+  - repo now adds a short post-ingress pull suppression window so reverse-direction peer pull cannot immediately restart off the tail of an inbound pulled `/cursor-state`
+  - worker regressions now cover local reheat coalescing, fallback internal-error trace correlation, and the post-ingress suppression of timer and local-activity reverse pull
 
 ## Goal
 
@@ -353,8 +355,11 @@ Status:
   - local cursor reheats coalescing behind the stricter timer floor
   - repeated local cursor activity not stacking immediate pull bursts
   - deferred cursor-pull wake flushing after `/cursor-state` ingress exits
+  - short post-ingress suppression of timer-driven reverse pull after inbound pulled `/cursor-state`
+  - short post-ingress suppression of local-activity reverse pull after inbound pulled `/cursor-state`
   - fallback trace propagation on internal websocket errors without an active cursor trace
 - still pending live validation:
+  - confirm the new post-ingress suppression window actually removes same-request nested reverse pull in raw Cloudflare logs
   - confirm representative watched topologies no longer recurse in raw Cloudflare logs
   - confirm first remote `curUp` latency drops in paired client logs in both directions
   - confirm repeated steady-state `subAck` churn is reduced or at least better explained by the new logs
@@ -373,6 +378,8 @@ Code changes:
 Behavior changes:
 - `/cursor-batch` is no longer part of the normal cursor architecture
 - loop-trace headers become unnecessary for normal cursor replication
+- later hardening may add per-source cursor version watermarks or short-lived per-peer send caches so stale out-of-order remote cursor payloads can be ignored cheaply
+- any such cache must remain best-effort only and must not become the primary protection against pull recursion or request-ancestry storms
 
 Exit criteria:
 - no deployed path can generate cursor fanout recursion
@@ -395,6 +402,7 @@ Tests:
 - remote cursor TTL expiry removes stale peers when polling stops
 - peer pull failures stay best-effort and do not surface client errors
 - representative watched topologies up to near-full shard count stay single-flight and non-recursive
+- later hardening: stale remote cursor versions are ignored without reheating pull or replaying older state over newer state
 
 ### Tests to update
 
@@ -443,15 +451,15 @@ Based on the latest `2026-03-07` captures:
 - rebuild / resubscribe churn now needs the same priority as pull dampening
 - client-visible pull-path errors are still a correctness issue, not just an observability gap
 - the latest paired run narrows the immediate bug further:
-  - `shard-4 -> shard-1` can succeed repeatedly while `shard-1 -> shard-4` recurses
-  - inbound `/cursor-state` on `shard-1` is still allowed to start nested reverse-direction peer pulls
+  - `shard-4 -> shard-1` can succeed repeatedly while `shard-1 -> shard-4` recurses in one run, and `shard-4 -> shard-7` can succeed repeatedly while `shard-7 -> shard-4` recurses in another
+  - ingress deferral alone was insufficient: inbound `/cursor-state` on `shard-7` still started nested reverse-direction `timer` and `local_activity` pull work inside request `6T6C1TH6HFXZSAXO`
   - no-op `subAck` can still be emitted during `GET /cursor-state`
 
 The practical ordering is now:
 
-1. redeploy the Phase 3b scheduler / trace changes
-2. stop inbound `GET /cursor-state` handling from starting nested peer pull work in the same request chain, including timer and local-activity wakes
-3. move pull execution fully off live request ancestry if current deployment still shows `GET /ws` / `GET /cursor-state`-bound pull chains
+1. redeploy the stronger Phase 3b ingress-suppression changes now in repo
+2. validate whether the post-ingress suppression window removes same-request nested reverse-direction peer pull for `timer` and `local_activity` wakes
+3. move pull execution fully off live request ancestry if current deployment still shows `GET /ws` / `GET /cursor-state`-bound pull chains after that suppression
 4. validate scoped polling in raw server logs
 5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
 6. confirm rebuild / resubscribe churn and bidirectional first-visibility latency improved
@@ -490,8 +498,8 @@ Implement next:
    - no unexpected pull churn
    - no client-visible internal errors
    - sane limited tail plus sane historical worker query results
-2. redeploy or validate the current Phase 3b repo changes in the multi-client case
-3. validate whether the new `/cursor-state` ingress deferral removes nested reverse-direction peer pulls in the paired-client case
+2. redeploy or validate the stronger post-ingress suppression change in the multi-client case
+3. validate whether same-request nested reverse-direction peer pulls disappear in the paired-client case
 4. if nested pull is still visible, inspect whether pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
 5. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
 6. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` are improved in both directions
