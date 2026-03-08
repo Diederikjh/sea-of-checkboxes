@@ -131,6 +131,14 @@ Repo status after the current implementation batch:
   - client `setCell` outbox logs explicit `setcell_sync_wait_started`, `setcell_sync_wait_replayed`, `setcell_sync_wait_cleared`, and `setcell_sync_wait_dropped` events with `tile`, `i`, `op`, `cid`, elapsed wait time, and outcome reason
   - client `click_blocked` logs now retain the sync guard `cid` and UI message when the app tells the user it is `waiting for sync`
   - `ConnectionShardDO` now logs `setCell_received` before the existing `setCell` result log so client wait state can be correlated with shard ingress and tile-owner commit
+- repo now adds maintenance cleanups that are already landed and covered:
+  - `ConnectionShardDO` scheduled pull is detached through DO alarms
+  - `setCell` client outbox sync-wait logging is factored into smaller helpers
+  - worker `setCell` ingress/result logging shares one base field builder
+  - `app.js` subscription rebuild tracking now lives in a dedicated helper
+- the worker historical log query script is now operational for this workflow:
+  - it reads `CLOUDFLARE_LOG_QUERY_*` directly from `.env.local`
+  - it can be used after the usual `~2 minute` settle delay without manually exporting env vars in the shell
 - live validation still shows one unresolved production-side pattern:
   - scoped recursive pull meshes (`shard-3 <-> shard-4` in one run, `shard-4/shard-5/shard-6` in another)
   - repeated `subAck` churn with no actual subscription change
@@ -160,6 +168,16 @@ Repo status after the current implementation batch:
       - affected `setCell` operations still succeeded
       - but a few writes took `~0.6s` to `~1.1s`
       - tile batch duplicate/replay anomalies were logged on the same window
+  - the latest `2026-03-08T13:26Z` paired run strengthens that conclusion:
+    - no visible cursor delay was reported during the run
+    - client logs showed no `internal` or `server_error`
+    - Cloudflare historical worker logs showed `0` `internal_error`, `0` `server_error_sent`, `0` `cursor_pull_peer`, and `0` `cursor_pull_cycle` in the inspected window
+    - client `setcell_sync_wait_*` instrumentation showed all observed write waits clearing successfully:
+      - one client had `44` starts and `44` clears with `~358ms` median wait and `1299ms` max
+      - the other had `64` starts and `64` clears with `~331ms` median wait and `958ms` max
+    - the visible `waiting for sync` moments in that run mostly matched short `click_blocked` subscription-rebuild guards rather than stuck writes
+    - the only backend anomaly found in the same window was a single `tile_batch_order_anomaly` with `kind: "duplicate_or_replay"` for the same version/op payload
+    - the limited tail still showed a few slower `TileOwnerDO setCell` commits (`~556ms`, `~572ms`, `~1010ms`), which now looks like the more likely source of the remaining user-visible sync waits
 
 ## Goal
 
@@ -498,16 +516,15 @@ Based on the latest `2026-03-07` captures:
 
 The practical ordering is now:
 
-1. redeploy the stronger Phase 3b ingress-suppression and alarm-backed detached pull changes now in repo
-2. validate whether same-request nested reverse-direction peer pull disappears in raw worker logs for both `timer` and `local_activity` wakes
-3. if raw worker logs still show hidden pull recursion, detach even more aggressively or remove remaining request-ancestry wake paths even if client-visible websocket errors are gone
-4. if raw worker logs stay clean across another paired run, treat cursor-storm mitigation as provisionally stable and shift the next investigation to tile sync latency / duplicate-replay behavior
-5. use the new client sync-wait and worker `setCell_received` logs to capture at least one slow-checkbox / `waiting for sync` episode end-to-end
-6. validate scoped polling in raw server logs
-7. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
-8. run explicit multi-client validation beyond the paired-browser case before treating the storm fix as generally proven
-9. confirm rebuild / resubscribe churn, first-visibility latency, and remote cursor persistence improved in both directions
-10. only then consider deleting more compatibility code
+1. treat the cursor-storm mitigation as provisionally stable for the paired-client case:
+   - same-request nested reverse-direction pull is no longer visible in the recent inspected windows
+   - raw worker logs are staying clean of `cursor_pull_peer`, `internal_error`, and `server_error_sent`
+2. use the new client sync-wait and worker `setCell_received` logs to capture slow-checkbox / `waiting for sync` episodes end-to-end
+3. reduce rebuild / resubscribe churn, since repeated `subAck` and short `click_blocked` rebuild guards are now the main visible annoyance
+4. inspect why a small number of `TileOwnerDO setCell` commits still spike into the `~0.5s` to `~1.0s` range even when most writes complete immediately
+5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
+6. run explicit multi-client validation beyond the paired-browser case before treating the storm fix as generally proven
+7. only then consider deleting more compatibility code
 
 Phase 3 code landed in repo, but the latest Cloudflare logs show that validation is not yet complete. Phase 3b is now the gate before deleting more compatibility code.
 
@@ -550,15 +567,18 @@ Phase 3 code landed in repo, but the latest Cloudflare logs show that validation
 
 Implement next:
 
-1. run a single-client sanity capture first and confirm that one-client behavior is quiet:
-   - no unexpected pull churn
-   - no client-visible internal errors
-   - sane limited tail plus sane historical worker query results
-2. redeploy or validate the stronger post-ingress suppression plus alarm-backed detached pull change in the multi-client case
-3. validate whether same-request nested reverse-direction peer pulls disappear in the paired-client case
-4. if nested pull is still visible, inspect whether any pull work is still executing on live `GET /ws` or `GET /cursor-state` request ancestry and detach more aggressively
-5. if nested pull is no longer visible across another paired run, use the new sync-wait / `setCell_received` diagnostics to run a separate tile sync latency check using the same capture flow
-6. validate against limited server tail, paired normal/private client logs, and then historical Cloudflare worker queries after the logs settle
-7. run at least one higher-concurrency validation beyond the paired-browser case before declaring the storm fix broadly stable
-8. confirm that scoped peer pulls stay non-recursive across representative watched topologies, that client-visible internal errors still carry usable trace IDs, and that repeated `subAck` churn / delayed first `curUp` / short-lived remote visibility are improved in both directions
-9. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
+1. keep using the current capture flow now that it is working end-to-end:
+   - limited server tail
+   - paired normal/private client logs
+   - then historical Cloudflare worker queries using the `.env.local`-backed script after the settle delay
+2. capture at least one run where `waiting for sync` is clearly noticeable and correlate:
+   - client `click_blocked`
+   - client `setcell_sync_wait_*`
+   - worker `setCell_received`
+   - worker / tile-owner `setCell`
+   - any `tile_batch_order_anomaly`
+3. inspect and reduce rebuild churn, since repeated `subAck` and rebuild guards are still showing up in otherwise healthy runs
+4. inspect the occasional slower `TileOwnerDO setCell` commits and determine whether they are cold-start, contention, or duplicate/replay side effects
+5. run at least one higher-concurrency validation beyond the paired-browser case before declaring the storm fix broadly stable
+6. confirm that scoped peer pulls stay non-recursive across representative watched topologies and that cursor-path worker logs remain clean in those wider runs
+7. only if that validation is clean, start Phase 4 and trim the now-redundant push-path tests
