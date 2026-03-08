@@ -456,7 +456,7 @@ describe("app interaction overlays", () => {
     teardown();
   });
 
-  it("forces a subscription rebuild on focus/pageshow and visible lifecycle transitions", async () => {
+  it("coalesces focus/pageshow/visibility rebuild triggers while a rebuild is already active", async () => {
     const teardown = await startApp();
 
     const focusHandler = mocks.windowAddEventListener.mock.calls.find(
@@ -490,7 +490,8 @@ describe("app interaction overlays", () => {
     globalThis.document.visibilityState = "visible";
     visibilityHandler();
 
-    expect(mocks.forceSubscriptionRebuild).toHaveBeenCalledTimes(3);
+    expect(mocks.forceSubscriptionRebuild).toHaveBeenCalledTimes(1);
+    expect(mocks.forceSubscriptionRebuild).toHaveBeenCalledWith("focus");
 
     teardown();
     expect(mocks.documentRemoveEventListener).toHaveBeenCalledWith(

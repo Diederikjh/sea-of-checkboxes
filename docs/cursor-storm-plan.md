@@ -136,6 +136,8 @@ Repo status after the current implementation batch:
   - `setCell` client outbox sync-wait logging is factored into smaller helpers
   - worker `setCell` ingress/result logging shares one base field builder
   - `app.js` subscription rebuild tracking now lives in a dedicated helper
+- repo now reduces one source of rebuild churn:
+  - overlapping lifecycle-triggered rebuilds (`focus`, `pageshow`, `visibilitychange`) are coalesced while a rebuild is already active instead of stacking multiple overlapping `subAck` waves
 - the worker historical log query script is now operational for this workflow:
   - it reads `CLOUDFLARE_LOG_QUERY_*` directly from `.env.local`
   - it can be used after the usual `~2 minute` settle delay without manually exporting env vars in the shell
@@ -520,7 +522,9 @@ The practical ordering is now:
    - same-request nested reverse-direction pull is no longer visible in the recent inspected windows
    - raw worker logs are staying clean of `cursor_pull_peer`, `internal_error`, and `server_error_sent`
 2. use the new client sync-wait and worker `setCell_received` logs to capture slow-checkbox / `waiting for sync` episodes end-to-end
-3. reduce rebuild / resubscribe churn, since repeated `subAck` and short `click_blocked` rebuild guards are now the main visible annoyance
+3. continue reducing rebuild / resubscribe churn, since repeated `subAck` and short `click_blocked` rebuild guards are now the main visible annoyance
+   - one source is already addressed in repo: overlapping lifecycle events no longer stack rebuilds while a rebuild is active
+   - the next question is whether the remaining churn is coming from legitimate window switches, reconnects, or another repeated trigger
 4. inspect why a small number of `TileOwnerDO setCell` commits still spike into the `~0.5s` to `~1.0s` range even when most writes complete immediately
 5. confirm representative watched topologies, including near-full-shard cases, do not recurse or synchronize into storm traffic
 6. run explicit multi-client validation beyond the paired-browser case before treating the storm fix as generally proven
@@ -577,7 +581,7 @@ Implement next:
    - worker `setCell_received`
    - worker / tile-owner `setCell`
    - any `tile_batch_order_anomaly`
-3. inspect and reduce rebuild churn, since repeated `subAck` and rebuild guards are still showing up in otherwise healthy runs
+3. inspect the remaining rebuild churn after lifecycle coalescing, since repeated `subAck` and rebuild guards are still showing up in otherwise healthy runs
 4. inspect the occasional slower `TileOwnerDO setCell` commits and determine whether they are cold-start, contention, or duplicate/replay side effects
 5. run at least one higher-concurrency validation beyond the paired-browser case before declaring the storm fix broadly stable
 6. confirm that scoped peer pulls stay non-recursive across representative watched topologies and that cursor-path worker logs remain clean in those wider runs

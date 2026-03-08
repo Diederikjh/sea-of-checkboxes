@@ -49,6 +49,10 @@ export function createSubscriptionRebuildTracker({
       replayPendingAfterRebuild = true;
     },
 
+    isActive() {
+      return rebuildState !== null;
+    },
+
     onDispatch(message, reason) {
       if (!rebuildState || rebuildState.trigger !== reason) {
         rebuildState = {

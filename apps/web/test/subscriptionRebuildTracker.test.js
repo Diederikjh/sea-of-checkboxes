@@ -100,4 +100,14 @@ describe("subscription rebuild tracker", () => {
     });
     expect(tracker.getSetCellGuard()).toBeNull();
   });
+
+  it("reports whether a rebuild is currently active", () => {
+    const { tracker } = createHarness();
+
+    expect(tracker.isActive()).toBe(false);
+    tracker.begin("focus");
+    expect(tracker.isActive()).toBe(true);
+    tracker.onSkipped("focus");
+    expect(tracker.isActive()).toBe(false);
+  });
 });

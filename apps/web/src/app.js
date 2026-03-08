@@ -625,6 +625,18 @@ export async function startApp() {
   const isDocumentVisible = () =>
     typeof document === "undefined" || document.visibilityState === "visible";
   const forceSubscriptionRebuild = (reason) => {
+    if (subscriptionRebuildTracker.isActive()) {
+      logOther("ws subscription_rebuild_suppressed", {
+        reason,
+        suppressReason: "already_active",
+        transportOnline,
+        visibilityState:
+          typeof document !== "undefined" && typeof document.visibilityState === "string"
+            ? document.visibilityState
+            : undefined,
+      });
+      return;
+    }
     subscriptionRebuildTracker.begin(reason);
     renderLoop.forceSubscriptionRebuild(reason);
     logOther("ws subscription_rebuild", {
