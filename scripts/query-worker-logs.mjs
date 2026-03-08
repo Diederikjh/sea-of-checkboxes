@@ -7,14 +7,33 @@ import {
   applyWorkerLogPostFilters,
   buildWorkerLogQueryRequest,
   formatWorkerLogQueryResult,
+  parseDotenvText,
   parseWorkerLogQueryArgs,
   printWorkerLogQueryHelp,
   replaceWorkerLogEvents,
   resolveCloudflareAuth,
 } from "./query-worker-logs.lib.mjs";
 
+function loadLogQueryEnvFromDotenv({
+  cwd = process.cwd(),
+  readFileSync = fs.readFileSync,
+  existsSync = fs.existsSync,
+} = {}) {
+  const envPath = path.join(cwd, ".env.local");
+  if (!existsSync(envPath)) {
+    return {};
+  }
+  return parseDotenvText(readFileSync(envPath, "utf8"));
+}
+
 async function main() {
-  const options = parseWorkerLogQueryArgs(process.argv.slice(2));
+  const dotenvEnv = loadLogQueryEnvFromDotenv();
+  const options = parseWorkerLogQueryArgs(process.argv.slice(2), {
+    env: {
+      ...dotenvEnv,
+      ...process.env,
+    },
+  });
 
   if (options.help) {
     process.stdout.write(printWorkerLogQueryHelp());

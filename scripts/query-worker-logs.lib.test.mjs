@@ -5,6 +5,7 @@ import {
   buildWorkerLogQueryRequest,
   extractWorkerLogEvents,
   formatWorkerLogQueryResult,
+  parseDotenvText,
   parseWorkerLogQueryArgs,
   resolveCloudflareAuth,
 } from "./query-worker-logs.lib.mjs";
@@ -147,6 +148,20 @@ describe("query-worker-logs lib", () => {
         token: "tok_log_123",
       },
       source: "env",
+    });
+  });
+
+  it("parses dedicated log-query env vars from dotenv text", () => {
+    const parsed = parseDotenvText(`
+# comment
+CLOUDFLARE_LOG_QUERY_API_TOKEN="tok_from_file"
+CLOUDFLARE_LOG_QUERY_ACCOUNT_ID=acc_from_file
+IGNORED_KEY=ignored
+`);
+
+    expect(parsed).toEqual({
+      CLOUDFLARE_LOG_QUERY_API_TOKEN: "tok_from_file",
+      CLOUDFLARE_LOG_QUERY_ACCOUNT_ID: "acc_from_file",
     });
   });
 

@@ -8,6 +8,10 @@ const DEFAULT_FORMAT = "summary";
 const DEFAULT_LIMIT = 100;
 const DEFAULT_LAST_MINUTES = 15;
 const DEFAULT_WRANGLER_COMMAND = ["pnpm", "dlx", "wrangler"];
+const LOG_QUERY_ENV_KEYS = new Set([
+  "CLOUDFLARE_LOG_QUERY_API_TOKEN",
+  "CLOUDFLARE_LOG_QUERY_ACCOUNT_ID",
+]);
 
 function buildTimestamp() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
@@ -106,6 +110,39 @@ function addStringFilter(filters, key, value, operation = "eq") {
     type: "string",
     value: value.trim(),
   });
+}
+
+function stripWrappingQuotes(value) {
+  if (value.length < 2) {
+    return value;
+  }
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === "\"" && last === "\"") || (first === "'" && last === "'")) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+export function parseDotenvText(text, { allowedKeys = LOG_QUERY_ENV_KEYS } = {}) {
+  const parsed = {};
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex <= 0) {
+      continue;
+    }
+    const key = line.slice(0, equalsIndex).trim();
+    if (!allowedKeys.has(key)) {
+      continue;
+    }
+    const value = stripWrappingQuotes(line.slice(equalsIndex + 1).trim());
+    parsed[key] = value;
+  }
+  return parsed;
 }
 
 export function parseWorkerLogQueryArgs(
