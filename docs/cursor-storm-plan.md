@@ -137,6 +137,7 @@ Repo status after the current implementation batch:
   - `ConnectionShardDO` now logs `setCell_received` before the existing `setCell` result log so client wait state can be correlated with shard ingress and tile-owner commit
 - repo now adds maintenance cleanups that are already landed and covered:
   - `ConnectionShardDO` scheduled pull is detached through DO alarms
+  - detached cursor-pull alarms now log `cursor_pull_alarm_stale` for no-op wakes and `cursor_pull_alarm_failed` with scheduler state plus error stack when alarm execution throws
   - `setCell` client outbox sync-wait logging is factored into smaller helpers
   - worker `setCell` ingress/result logging shares one base field builder
   - `app.js` subscription rebuild tracking now lives in a dedicated helper
@@ -559,9 +560,9 @@ The practical ordering is now:
 2. make bidirectional watch-scope activation prompt:
    - the remaining paired-client cursor bug is now delayed reverse `watch_scope_change`, not visible recursion
    - first remote cursor visibility should not wait tens of seconds for the receiving shard to notice the new watched peer
-3. add detached alarm-path observability so alarm failures are diagnosable:
-   - log error name, message, stack, shard, scheduled time, wake reason, trace id if any, and current pull-scheduler state
-   - make stale or overlapping alarm wakes distinguishable from real pull execution failures
+3. validate the new detached alarm-path observability in live captures:
+   - confirm any future alarm exception now includes wake reason, scheduler state, and stack context in app-level logs
+   - confirm stale or overlapping alarm wakes are distinguishable from real pull execution failures
 4. continue reducing rebuild / resubscribe churn, since repeated `subAck` and short `click_blocked` rebuild guards are still visible and may be related to late scope refresh
    - one source is already addressed in repo: overlapping lifecycle events no longer stack rebuilds while a rebuild is active
    - the next question is whether the remaining churn is coming from legitimate window switches, reconnects, or another repeated trigger
@@ -624,7 +625,7 @@ Implement next:
    - `cursor_pull_scope`
    - first reverse-direction `cursor_pull_peer`
    - first remote tag `105` on the stale client
-3. add detached alarm-path error logging around the cursor-pull alarm runner:
+3. validate that detached alarm failures now emit useful app-level logs in Cloudflare:
    - error name
    - error message
    - stack if available

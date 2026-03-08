@@ -131,6 +131,7 @@ export class ConnectionShardDO {
   #cursorPullSuppressedUntilMs: number;
   #cursorPullPendingWakeReason: CursorPullWakeReason | null;
   #cursorPullAlarmArmed: boolean;
+  #cursorPullAlarmScheduledAtMs: number | null;
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
   #cursorHubController: ConnectionShardCursorHubController;
@@ -166,6 +167,7 @@ export class ConnectionShardDO {
     this.#cursorPullSuppressedUntilMs = 0;
     this.#cursorPullPendingWakeReason = null;
     this.#cursorPullAlarmArmed = false;
+    this.#cursorPullAlarmScheduledAtMs = null;
     this.#cursorHubPublishSuppressedUntilMs = 0;
     this.#cursorTraceState = new ConnectionShardCursorTraceState({
       nowMs: () => this.#nowMs(),
@@ -362,11 +364,25 @@ export class ConnectionShardDO {
   }
 
   async alarm(): Promise<void> {
-    const wakeReason = this.#consumeDetachedCursorPullWakeReason();
-    if (!wakeReason) {
+    const wake = this.#consumeDetachedCursorPullWake();
+    if (!wake) {
+      this.#logEvent("cursor_pull_alarm_stale", {
+        ...this.#cursorPullAlarmStateFields(),
+      });
       return;
     }
-    await this.#runCursorPullTick(wakeReason);
+    try {
+      await this.#runCursorPullTick(wake.wakeReason);
+    } catch (error) {
+      this.#logEvent("cursor_pull_alarm_failed", {
+        ...this.#cursorPullAlarmStateFields({
+          wake_reason: wake.wakeReason,
+          scheduled_at_ms: wake.scheduledAtMs ?? undefined,
+        }),
+        ...this.#errorFields(error, { includeStack: true }),
+      });
+      throw error;
+    }
   }
 
   #parseConnectParams(url: URL): { identity: ConnectionIdentity; shardName: string } | null {
@@ -885,7 +901,10 @@ export class ConnectionShardDO {
     return this.#tileToClients.get(tileKey)?.size ?? 0;
   }
 
-  #errorFields(error: unknown): { error_name?: string; error_message?: string } {
+  #errorFields(
+    error: unknown,
+    options: { includeStack?: boolean } = {}
+  ): { error_name?: string; error_message?: string; error_stack?: string } {
     if (typeof error !== "object" || error === null) {
       return {};
     }
@@ -895,10 +914,17 @@ export class ConnectionShardDO {
       "message" in error && typeof error.message === "string"
         ? error.message.slice(0, 240)
         : undefined;
+    const stack = options.includeStack
+      && "stack" in error
+      && typeof error.stack === "string"
+      && error.stack.length > 0
+      ? error.stack.slice(0, 4000)
+      : undefined;
 
     return {
       ...(name ? { error_name: name } : {}),
       ...(message ? { error_message: message } : {}),
+      ...(stack ? { error_stack: stack } : {}),
     };
   }
 
@@ -1094,6 +1120,7 @@ export class ConnectionShardDO {
     }
 
     this.#cursorPullAlarmArmed = true;
+    this.#cursorPullAlarmScheduledAtMs = this.#nowMs();
     const setAlarm = this.#state.storage.setAlarm?.bind(this.#state.storage);
     if (setAlarm) {
       void setAlarm(this.#nowMs()).catch(() => {
@@ -1186,11 +1213,16 @@ export class ConnectionShardDO {
     }
   }
 
-  #consumeDetachedCursorPullWakeReason(): CursorPullWakeReason | null {
+  #consumeDetachedCursorPullWake(): { wakeReason: CursorPullWakeReason; scheduledAtMs: number | null } | null {
     this.#cursorPullAlarmArmed = false;
+    const scheduledAtMs = this.#cursorPullAlarmScheduledAtMs;
+    this.#cursorPullAlarmScheduledAtMs = null;
     const wakeReason = this.#cursorPullPendingWakeReason;
     this.#cursorPullPendingWakeReason = null;
-    return wakeReason;
+    if (!wakeReason) {
+      return null;
+    }
+    return { wakeReason, scheduledAtMs };
   }
 
   #updateCursorPullInterval(deltaObserved: boolean): void {
@@ -1303,10 +1335,31 @@ export class ConnectionShardDO {
   #clearDetachedCursorPullAlarm(): void {
     this.#cursorPullPendingWakeReason = null;
     this.#cursorPullAlarmArmed = false;
+    this.#cursorPullAlarmScheduledAtMs = null;
     const deleteAlarm = this.#state.storage.deleteAlarm?.bind(this.#state.storage);
     if (deleteAlarm) {
       void deleteAlarm().catch(() => {});
     }
+  }
+
+  #cursorPullAlarmStateFields(
+    overrides: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    const nowMs = this.#nowMs();
+    const currentShard = this.#currentShardName();
+    return {
+      peer_count: this.#peerShardNames(currentShard).length,
+      in_flight: this.#cursorPullInFlight,
+      interval_ms: this.#cursorPullIntervalMs,
+      quiet_streak: this.#cursorPullQuietStreak,
+      active_remaining_ms: Math.max(0, this.#cursorPullActiveUntilMs - nowMs),
+      suppression_remaining_ms: this.#cursorPullSuppressionRemainingMs(),
+      ingress_depth: this.#cursorStateIngressDepth,
+      alarm_armed: this.#cursorPullAlarmArmed,
+      pending_wake_reason: this.#cursorPullPendingWakeReason ?? undefined,
+      scheduled_at_ms: this.#cursorPullAlarmScheduledAtMs ?? undefined,
+      ...overrides,
+    };
   }
 
   #pruneStaleTilePullState(): void {

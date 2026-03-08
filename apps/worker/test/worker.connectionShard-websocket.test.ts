@@ -8,6 +8,7 @@ import {
 } from "@sea/protocol";
 import { describe, expect, it, vi } from "vitest";
 
+import { ConnectionShardCursorPullScheduler } from "../src/connectionShardCursorPullScheduler";
 import { waitFor } from "./helpers/waitFor";
 import {
   connectClient,
@@ -1376,6 +1377,76 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(countCursorStatePullRequests(harness)).toBeGreaterThan(baseline);
       randomSpy.mockRestore();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs stale detached cursor-pull alarms without throwing", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createRelayHarness({ alarmMode: "manual" });
+
+      await expect(harness.shard.alarm()).resolves.toBeUndefined();
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_alarm_stale"
+            && entry.alarm_armed === false
+            && entry.in_flight === false
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("logs structured context when a detached cursor-pull alarm run throws", async () => {
+    vi.useFakeTimers();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const markRunStartedSpy = vi
+      .spyOn(ConnectionShardCursorPullScheduler.prototype, "markRunStarted")
+      .mockImplementation(() => {
+        throw new Error("alarm exploded");
+      });
+    try {
+      const harness = createRelayHarness({ alarmMode: "manual" });
+      setCursorHubWatchResponse(harness, {
+        peerShards: ["shard-1"],
+      });
+      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
+
+      await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.hasPendingAlarm()).toBe(true);
+      await expect(harness.fireAlarm()).rejects.toThrow("alarm exploded");
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_alarm_failed"
+            && entry.error_name === "Error"
+            && entry.error_message === "alarm exploded"
+            && typeof entry.error_stack === "string"
+            && typeof entry.scheduled_at_ms === "number"
+            && entry.in_flight === true
+        )
+      ).toBe(true);
+    } finally {
+      markRunStartedSpy.mockRestore();
+      logSpy.mockRestore();
       vi.useRealTimers();
     }
   });
