@@ -85,12 +85,23 @@ Recent concrete evidence:
     - `cursor_pull_first_peer_visibility` at `2026-03-09T18:29:53.632Z`
     - about `6.9s` after scope arrival
   - this strongly suggests the main delay was late peer-scope delivery, not failure to pull promptly after scope was known
+- `2026-03-09T19:16Z`:
+  - this was a real cross-shard run on `shard-3 <-> shard-4`
+  - initial visibility happened in both directions, but subsequent updates were much more reliable in one direction than the other
+  - worker logs showed successful `cursor_pull_peer` requests in both directions, with no `internal_error`, `server_error_sent`, or recursion failures
+  - the slower side (`shard-4`) did eventually get prompt scope:
+    - `cursor_pull_scope` at `2026-03-09T19:16:47.857Z`
+    - first `cursor_pull_first_peer_visibility` at `2026-03-09T19:16:50.379Z`
+    - about `2.35s` scope-to-first-visibility
+  - many later peer pulls on the weaker direction still returned `update_count: 1` but `delta_observed: false`
+  - that points away from transport loss and toward snapshot coalescing or stale/unchanged cursor-state snapshots on pull
 
 Interpretation:
 
 - the stale shard can still be slow, but the newest run shows the larger delay is upstream of pull scheduling
 - in at least one representative bad run, the stale shard simply did not learn about the new peer until about the watch-renew timescale
 - this is now primarily a hub watch-scope propagation problem, with scheduler behavior as a secondary concern once scope actually arrives
+- in newer runs where scope arrives and pull succeeds, the remaining issue looks more like coarse snapshot semantics than dropped cursor messages
 
 ## Working Hypotheses
 
@@ -100,8 +111,9 @@ For the stale shard in an asymmetric run, one of these is likely true:
 2. `watch_scope_change` wake is requested, but coalesced behind older pending work after scope is finally known.
 3. the alarm is armed later than intended, or fired later than intended after scope is finally known.
 4. early reverse pulls are happening but returning no updates until later.
+5. repeated peer pulls are succeeding, but the destination often sees no effective delta because cursor-state is a latest-snapshot pull and intermediate moves are being coalesced away.
 
-The newest evidence makes `1` the leading hypothesis.
+The newest evidence makes `1` the leading hypothesis for late first visibility, with `5` now the leading hypothesis for sparse follow-up visibility after the first cursor appears.
 
 ## Investigation Flow
 
@@ -128,14 +140,20 @@ For each asymmetric run:
    - late scope delivery from the hub
    - delayed wake/alarm after scope delivery
    - delayed first non-empty peer snapshot after scope delivery
+   - repeated unchanged snapshots after pull succeeds
 
 ## Immediate Next Steps
 
 1. Validate the new empty-scope watch probe behavior in a real cross-shard run.
 2. Confirm that a shard which starts with no peers now learns about a newly active peer well before the old `~60s` renew cadence.
-3. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
-4. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
-5. Keep validating that any latency fix preserves:
+3. Add cursor version tracing so we can distinguish:
+   - source cursor movement happened
+   - `/cursor-state` returned a newer version
+   - destination ingested that newer version
+   - destination fanned it out to clients
+4. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
+5. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
+6. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
    - no hidden recursive `/cursor-state` storm
 
@@ -162,5 +180,6 @@ These are not part of the immediate latency fix, but may help later hardening:
   - then relax back toward a slower cadence such as `30s` if no peers ever appear
   - this would preserve faster peer discovery without keeping quiet single-client shards on a permanent short renew loop
 - best-effort stale remote payload suppression via per-source version watermarks
+- if version tracing confirms snapshot coalescing is the main issue, revisit whether cursor-state should expose a slightly richer freshness signal than a bare latest snapshot
 - further reduction of steady-state `subAck` churn
 - broader higher-concurrency cursor validation after the latency issue is understood
