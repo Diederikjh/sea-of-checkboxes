@@ -53,6 +53,7 @@ import {
   type CursorPullWakeReason,
 } from "./connectionShardCursorPullScheduler";
 import { ConnectionShardCursorPullIngressGate } from "./connectionShardCursorPullIngressGate";
+import { ConnectionShardCursorPullPeerScopeTracker } from "./connectionShardCursorPullPeerScopeTracker";
 import { ConnectionShardCursorHubGateway } from "./cursorHubGateway";
 import { ConnectionShardCursorHubController } from "./connectionShardCursorHubController";
 import { peerShardNames } from "./sharding";
@@ -127,9 +128,7 @@ export class ConnectionShardDO {
   #cursorPullIntervalMs: number;
   #cursorPullQuietStreak: number;
   #cursorPullActiveUntilMs: number;
-  #cursorPullPeerShards: string[];
-  #cursorPullPeerScopeObservedAtMs: Map<string, number>;
-  #cursorPullPeerFirstVisibilityScopeObservedAtMs: Map<string, number>;
+  #cursorPullPeerScopeTracker: ConnectionShardCursorPullPeerScopeTracker;
   #cursorStateIngressDepth: number;
   #cursorPullSuppressedUntilMs: number;
   #cursorPullPendingWakeReason: CursorPullWakeReason | null;
@@ -165,9 +164,7 @@ export class ConnectionShardDO {
     this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
     this.#cursorPullQuietStreak = 0;
     this.#cursorPullActiveUntilMs = 0;
-    this.#cursorPullPeerShards = [];
-    this.#cursorPullPeerScopeObservedAtMs = new Map();
-    this.#cursorPullPeerFirstVisibilityScopeObservedAtMs = new Map();
+    this.#cursorPullPeerScopeTracker = new ConnectionShardCursorPullPeerScopeTracker();
     this.#cursorStateIngressDepth = 0;
     this.#cursorPullSuppressedUntilMs = 0;
     this.#cursorPullPendingWakeReason = null;
@@ -833,7 +830,7 @@ export class ConnectionShardDO {
 
   #peerShardNames(currentShard: string): string[] {
     if (this.#cursorHubController.isEnabled()) {
-      return this.#cursorPullPeerShards;
+      return this.#cursorPullPeerScopeTracker.peerShards;
     }
     return peerShardNames(currentShard);
   }
@@ -1050,8 +1047,7 @@ export class ConnectionShardDO {
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
-      this.#cursorPullPeerScopeObservedAtMs.clear();
-      this.#cursorPullPeerFirstVisibilityScopeObservedAtMs.clear();
+      this.#cursorPullPeerScopeTracker.reset();
       this.#cursorPullSuppressedUntilMs = 0;
       return;
     }
@@ -1063,8 +1059,7 @@ export class ConnectionShardDO {
       this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
-      this.#cursorPullPeerScopeObservedAtMs.clear();
-      this.#cursorPullPeerFirstVisibilityScopeObservedAtMs.clear();
+      this.#cursorPullPeerScopeTracker.reset();
       this.#cursorPullSuppressedUntilMs = 0;
       return;
     }
@@ -1351,43 +1346,23 @@ export class ConnectionShardDO {
   }
 
   #updateCursorPullPeerShards(peerShards: string[]): void {
-    const previousPeerShards = this.#cursorPullPeerShards;
     const nextPeerShards = this.#sanitizeCursorPullPeerShards(peerShards);
     const nowMs = this.#nowMs();
-    if (
-      nextPeerShards.length === this.#cursorPullPeerShards.length
-      && nextPeerShards.every((peerShard, index) => peerShard === this.#cursorPullPeerShards[index])
-    ) {
+    const change = this.#cursorPullPeerScopeTracker.replacePeerShards(nextPeerShards, nowMs);
+    if (!change.changed) {
       if (this.#clients.size > 0 && nextPeerShards.length > 0) {
         this.#logEvent("cursor_pull_scope_unchanged", {
           peer_count: nextPeerShards.length,
           peers: nextPeerShards,
-          oldest_scope_age_ms: this.#oldestCursorPullScopeAgeMs(nextPeerShards, nowMs),
+          oldest_scope_age_ms: change.oldestScopeAgeMs,
         });
       }
       return;
     }
 
-    this.#cursorPullPeerShards = nextPeerShards;
-    const previousPeerShardSet = new Set(previousPeerShards);
-    const nextPeerShardSet = new Set(nextPeerShards);
-    for (const peerShard of Array.from(this.#cursorPullPeerScopeObservedAtMs.keys())) {
-      if (nextPeerShardSet.has(peerShard)) {
-        continue;
-      }
-      this.#cursorPullPeerScopeObservedAtMs.delete(peerShard);
-      this.#cursorPullPeerFirstVisibilityScopeObservedAtMs.delete(peerShard);
-    }
-    for (const peerShard of nextPeerShards) {
-      if (previousPeerShardSet.has(peerShard)) {
-        continue;
-      }
-      this.#cursorPullPeerScopeObservedAtMs.set(peerShard, nowMs);
-      this.#cursorPullPeerFirstVisibilityScopeObservedAtMs.delete(peerShard);
-    }
     this.#logEvent("cursor_pull_scope", {
-      previous_peer_count: previousPeerShards.length,
-      previous_peers: previousPeerShards,
+      previous_peer_count: change.previousPeerShards.length,
+      previous_peers: change.previousPeerShards,
       peer_count: nextPeerShards.length,
       peers: nextPeerShards,
     });
@@ -1400,8 +1375,6 @@ export class ConnectionShardDO {
       this.#clearCursorPullTimer();
       this.#clearDetachedCursorPullAlarm();
       this.#cursorPullActiveUntilMs = 0;
-      this.#cursorPullPeerScopeObservedAtMs.clear();
-      this.#cursorPullPeerFirstVisibilityScopeObservedAtMs.clear();
       return;
     }
 
@@ -1612,14 +1585,7 @@ export class ConnectionShardDO {
     peerShard: string,
     nowMs: number = this.#nowMs()
   ): Record<string, unknown> {
-    const scopeObservedAtMs = this.#cursorPullPeerScopeObservedAtMs.get(peerShard);
-    if (typeof scopeObservedAtMs !== "number") {
-      return {};
-    }
-    return {
-      scope_observed_at_ms: scopeObservedAtMs,
-      scope_age_ms: Math.max(0, nowMs - scopeObservedAtMs),
-    };
+    return this.#cursorPullPeerScopeTracker.scopeFields(peerShard, nowMs);
   }
 
   #maybeLogCursorPullFirstPeerVisibility({
@@ -1639,15 +1605,9 @@ export class ConnectionShardDO {
     startedAtMs: number;
     peerScopeFields: Record<string, unknown>;
   }): void {
-    const scopeObservedAtMs = this.#cursorPullPeerScopeObservedAtMs.get(peerShard);
-    if (typeof scopeObservedAtMs !== "number" || batchUpdateCount <= 0) {
+    if (!this.#cursorPullPeerScopeTracker.markFirstVisibility(peerShard, batchUpdateCount)) {
       return;
     }
-    const loggedScopeObservedAtMs = this.#cursorPullPeerFirstVisibilityScopeObservedAtMs.get(peerShard);
-    if (loggedScopeObservedAtMs === scopeObservedAtMs) {
-      return;
-    }
-    this.#cursorPullPeerFirstVisibilityScopeObservedAtMs.set(peerShard, scopeObservedAtMs);
     this.#logEvent("cursor_pull_first_peer_visibility", {
       target_shard: peerShard,
       wake_reason: wakeReason,
@@ -1657,21 +1617,6 @@ export class ConnectionShardDO {
       ...peerScopeFields,
       duration_ms: elapsedMs(startedAtMs),
     });
-  }
-
-  #oldestCursorPullScopeAgeMs(peerShards: string[], nowMs: number = this.#nowMs()): number | undefined {
-    let oldestObservedAtMs = Number.POSITIVE_INFINITY;
-    for (const peerShard of peerShards) {
-      const observedAtMs = this.#cursorPullPeerScopeObservedAtMs.get(peerShard);
-      if (typeof observedAtMs !== "number") {
-        continue;
-      }
-      oldestObservedAtMs = Math.min(oldestObservedAtMs, observedAtMs);
-    }
-    if (!Number.isFinite(oldestObservedAtMs)) {
-      return undefined;
-    }
-    return Math.max(0, nowMs - oldestObservedAtMs);
   }
 
   async #pollTileIfNeeded(tileKey: string): Promise<boolean> {
