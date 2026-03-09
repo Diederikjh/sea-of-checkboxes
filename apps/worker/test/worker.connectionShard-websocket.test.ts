@@ -1507,6 +1507,77 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
+  it("logs scope-unchanged refreshes and first peer visibility for the current scope epoch", async () => {
+    vi.useFakeTimers();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createRelayHarness({ alarmMode: "manual" });
+      setCursorHubWatchResponse(harness, {
+        peerShards: ["shard-1"],
+      });
+      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [
+          {
+            uid: "u_remote",
+            name: "Remote",
+            x: 1.5,
+            y: 2.5,
+            seenAt: 123,
+            seq: 1,
+            tileKey: "0:0",
+          },
+        ],
+      });
+
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+
+      for (let index = 0; index < 5 && !harness.hasPendingAlarm(); index += 1) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      await harness.fireAlarm();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_first_peer_visibility"
+            && entry.shard === "shard-0"
+            && entry.target_shard === "shard-1"
+            && entry.update_count === 1
+            && typeof entry.scope_observed_at_ms === "number"
+            && typeof entry.scope_age_ms === "number"
+        )
+      ).toBe(true);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_scope_unchanged"
+            && entry.shard === "shard-0"
+            && entry.peer_count === 1
+            && typeof entry.oldest_scope_age_ms === "number"
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("suppresses immediate local-activity pull re-entry after inbound cursor-state pull ingress", async () => {
     vi.useFakeTimers();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
