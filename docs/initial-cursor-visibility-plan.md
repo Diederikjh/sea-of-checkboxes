@@ -100,6 +100,25 @@ Recent concrete evidence:
     - about `2.35s` scope-to-first-visibility
   - many later peer pulls on the weaker direction still returned `update_count: 1` but `delta_observed: false`
   - that points away from transport loss and toward snapshot coalescing or stale/unchanged cursor-state snapshots on pull
+- `2026-03-09T19:44Z`:
+  - this was another real cross-shard run on `shard-4 <-> shard-7`
+  - `shard-7 -> shard-4` became visible quickly:
+    - `watch_sub` for `shard-7` at `2026-03-09T19:44:28.236Z`
+    - first non-empty `cursor_pull_peer` at `2026-03-09T19:44:30.167Z`
+    - first client-visible remote cursor on the receiving window at `2026-03-09T19:44:34.225Z`
+  - the reverse direction stayed stale much longer:
+    - `cursor_pull_scope` on `shard-4` already at `2026-03-09T19:44:32.039Z`
+    - first observed `shard-4 -> shard-7` pulls were still empty around `2026-03-09T19:45:01Z`
+    - first non-empty `shard-4 -> shard-7` pull only at `2026-03-09T19:45:33.010Z`
+    - first remote cursor on the stale client also at `2026-03-09T19:45:33.269Z`
+  - versioned pull logs now show:
+    - the fast direction reached `max_seq: 62` by about `2026-03-09T19:45:23Z`
+    - the slow direction still had long stretches of `update_count: 0`
+    - once the slow direction finally became non-empty, it immediately jumped to `max_seq: 121`
+  - this suggests the wire path is not simply dropping random frames; instead we still lack proof of where versions are disappearing:
+    - source local cursor publish
+    - source `/cursor-state` snapshot selection
+    - destination ingest/fanout
 
 Interpretation:
 
@@ -107,6 +126,10 @@ Interpretation:
 - in at least one representative bad run, the stale shard simply did not learn about the new peer until about the watch-renew timescale
 - this is now primarily a hub watch-scope propagation problem, with scheduler behavior as a secondary concern once scope actually arrives
 - in newer runs where scope arrives and pull succeeds, the remaining issue looks more like coarse snapshot semantics than dropped cursor messages
+- the newest versioned run strengthens that last point: the current version logs tell us the pulled snapshot sometimes jumps from empty to a much higher latest version, but they still do not tell us whether:
+  - the source was publishing those versions continuously
+  - `/cursor-state` was omitting them until later
+  - or the destination was ingesting only some of the newer versions
 
 ## Working Hypotheses
 
@@ -117,6 +140,7 @@ For the stale shard in an asymmetric run, one of these is likely true:
 3. the alarm is armed later than intended, or fired later than intended after scope is finally known.
 4. early reverse pulls are happening but returning no updates until later.
 5. repeated peer pulls are succeeding, but the destination often sees no effective delta because cursor-state is a latest-snapshot pull and intermediate moves are being coalesced away.
+6. the remaining observability gap is between source local publish, snapshot assembly, and destination ingest; we still cannot prove which of those stages is causing the long empty or sparse periods.
 
 The newest evidence makes `1` the leading hypothesis for late first visibility, with `5` now the leading hypothesis for sparse follow-up visibility after the first cursor appears.
 
@@ -146,19 +170,26 @@ For each asymmetric run:
    - delayed wake/alarm after scope delivery
    - delayed first non-empty peer snapshot after scope delivery
    - repeated unchanged snapshots after pull succeeds
+7. If versioned pull logs still show late empty-to-high-version jumps, inspect the missing internal stages:
+   - source local cursor publish sequence
+   - source `/cursor-state` snapshot contents
+   - destination ingest/fanout decision
 
 ## Immediate Next Steps
 
 1. Validate the new empty-scope watch probe behavior in a real cross-shard run.
 2. Confirm that a shard which starts with no peers now learns about a newly active peer well before the old `~60s` renew cadence.
-3. Use the new cursor version tracing to determine, on the weak direction, whether:
-   - source cursor movement happened
-   - `/cursor-state` returned a newer version
-   - destination ingested that newer version
-   - destination fanned it out to clients
-4. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
-5. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
-6. Keep validating that any latency fix preserves:
+3. Add the next layer of versioned cursor observability:
+   - source local cursor publish log with `uid`, `seq`, `tileKey`, and shard
+   - source `/cursor-state` snapshot log with included cursor `uid`s and max local seq
+   - destination remote ingest log with previous seq, new seq, and whether client fanout happened
+4. Use those logs on the weak direction to determine whether the problem is:
+   - source cursor movement not being published
+   - `/cursor-state` exposing stale or empty snapshots
+   - destination discarding or not fanning newer versions
+5. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
+6. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
+7. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
    - no hidden recursive `/cursor-state` storm
 
