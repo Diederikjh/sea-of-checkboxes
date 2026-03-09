@@ -62,9 +62,7 @@ export class ConnectionShardCursorHubController {
     }
 
     if (!this.#hasClients()) {
-      this.#clearWatchRenewTimer();
-      this.#watchedPeerCount = 0;
-      this.#updateWatchedPeerShards([]);
+      this.#resetPeerScopeState();
       if (this.#subscribed) {
         this.#queueWatch("unsub");
       } else {
@@ -100,20 +98,11 @@ export class ConnectionShardCursorHubController {
     try {
       const watchState = await this.#gateway.watchShard(this.#currentShardName(), action);
       if (action === "sub") {
-        const peerShards = watchState?.peerShards ?? [];
         this.#subscribed = true;
-        this.#watchedPeerCount = peerShards.length;
-        this.#clearWatchRenewTimer();
-        this.#scheduleWatchRenew(this.#currentWatchRenewMs());
-        this.#updateWatchedPeerShards(peerShards);
-        if (watchState?.snapshot && watchState.snapshot.updates.length > 0) {
-          this.#ingestBatch(watchState.snapshot);
-        }
+        this.#applyWatchState(watchState);
       } else {
         this.#subscribed = false;
-        this.#watchedPeerCount = 0;
-        this.#clearWatchRenewTimer();
-        this.#updateWatchedPeerShards([]);
+        this.#resetPeerScopeState();
       }
     } catch {
       // Hub watch registration is best-effort.
@@ -127,7 +116,24 @@ export class ConnectionShardCursorHubController {
     }
   }
 
-  #currentWatchRenewMs(): number {
+  #applyWatchState(watchState: CursorHubWatchResponse | null): void {
+    const peerShards = watchState?.peerShards ?? [];
+    this.#watchedPeerCount = peerShards.length;
+    this.#clearWatchRenewTimer();
+    this.#scheduleWatchRenew(this.#currentRenewDelayMs());
+    this.#updateWatchedPeerShards(peerShards);
+    if (watchState?.snapshot && watchState.snapshot.updates.length > 0) {
+      this.#ingestBatch(watchState.snapshot);
+    }
+  }
+
+  #resetPeerScopeState(): void {
+    this.#clearWatchRenewTimer();
+    this.#watchedPeerCount = 0;
+    this.#updateWatchedPeerShards([]);
+  }
+
+  #currentRenewDelayMs(): number {
     return this.#watchedPeerCount > 0 ? this.#watchRenewMs : this.#watchProbeRenewMs;
   }
 

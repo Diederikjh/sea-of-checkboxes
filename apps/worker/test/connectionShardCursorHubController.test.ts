@@ -3,8 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { CursorPresence, CursorRelayBatch } from "../src/cursorRelay";
 import { ConnectionShardCursorHubController } from "../src/connectionShardCursorHubController";
 import type { CursorHubWatchResponse } from "../src/cursorHubGateway";
-import { waitFor } from "./helpers/waitFor";
-
 class MockCursorHubGateway {
   watchCalls: Array<{ shard: string; action: "sub" | "unsub" }> = [];
   watchResponses: Array<CursorHubWatchResponse | null> = [];
@@ -56,6 +54,18 @@ function createControllerHarness(options: {
   };
 }
 
+async function flushControllerLoop(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function expectWatchCalls(
+  actual: Array<{ shard: string; action: "sub" | "unsub" }>,
+  expected: Array<{ shard: string; action: "sub" | "unsub" }>
+): void {
+  expect(actual).toEqual(expected);
+}
+
 function cursor(uid: string): CursorPresence {
   return {
     uid,
@@ -82,14 +92,13 @@ describe("ConnectionShardCursorHubController", () => {
     });
 
     harness.controller.refreshWatchState();
+    await flushControllerLoop();
 
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls).toEqual([
-        { shard: "shard-a", action: "sub" },
-      ]);
-      expect(harness.ingested).toEqual([watchState.snapshot]);
-      expect(harness.watchedPeerShards).toEqual([["shard-b", "shard-c"]]);
-    });
+    expectWatchCalls(harness.gateway.watchCalls, [
+      { shard: "shard-a", action: "sub" },
+    ]);
+    expect(harness.ingested).toEqual([watchState.snapshot]);
+    expect(harness.watchedPeerShards).toEqual([["shard-b", "shard-c"]]);
   });
 
   it("does not register a watch when there are no clients", async () => {
@@ -98,7 +107,7 @@ describe("ConnectionShardCursorHubController", () => {
     });
 
     harness.controller.refreshWatchState();
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await flushControllerLoop();
 
     expect(harness.gateway.watchCalls).toEqual([]);
     expect(harness.ingested).toEqual([]);
@@ -111,22 +120,20 @@ describe("ConnectionShardCursorHubController", () => {
     });
 
     harness.controller.refreshWatchState();
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls).toEqual([
-        { shard: "shard-a", action: "sub" },
-      ]);
-    });
+    await flushControllerLoop();
+    expectWatchCalls(harness.gateway.watchCalls, [
+      { shard: "shard-a", action: "sub" },
+    ]);
 
     harness.setHasClients(false);
     harness.controller.refreshWatchState();
+    await flushControllerLoop();
 
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls).toEqual([
-        { shard: "shard-a", action: "sub" },
-        { shard: "shard-a", action: "unsub" },
-      ]);
-      expect(harness.watchedPeerShards.at(-1)).toEqual([]);
-    });
+    expectWatchCalls(harness.gateway.watchCalls, [
+      { shard: "shard-a", action: "sub" },
+      { shard: "shard-a", action: "unsub" },
+    ]);
+    expect(harness.watchedPeerShards.at(-1)).toEqual([]);
   });
 
   it("repeated refreshes only issue watch actions for the current shard", async () => {
@@ -136,25 +143,23 @@ describe("ConnectionShardCursorHubController", () => {
 
     harness.controller.refreshWatchState();
     harness.controller.refreshWatchState();
+    await flushControllerLoop();
 
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls.length).toBeGreaterThanOrEqual(1);
-      expect(harness.gateway.watchCalls[0]).toEqual({
-        shard: "shard-a",
-        action: "sub",
-      });
+    expect(harness.gateway.watchCalls.length).toBeGreaterThanOrEqual(1);
+    expect(harness.gateway.watchCalls[0]).toEqual({
+      shard: "shard-a",
+      action: "sub",
     });
 
     harness.setHasClients(false);
     harness.controller.refreshWatchState();
     harness.controller.refreshWatchState();
+    await flushControllerLoop();
 
-    await waitFor(() => {
-      expect(harness.gateway.watchCalls.some((call) => call.action === "unsub")).toBe(true);
-      expect(harness.gateway.watchCalls[harness.gateway.watchCalls.length - 1]).toEqual({
-        shard: "shard-a",
-        action: "unsub",
-      });
+    expect(harness.gateway.watchCalls.some((call) => call.action === "unsub")).toBe(true);
+    expect(harness.gateway.watchCalls[harness.gateway.watchCalls.length - 1]).toEqual({
+      shard: "shard-a",
+      action: "unsub",
     });
 
     expect(harness.gateway.watchCalls.every((call) => call.shard === "shard-a")).toBe(true);
@@ -185,9 +190,9 @@ describe("ConnectionShardCursorHubController", () => {
       });
 
       harness.controller.refreshWatchState();
-      await Promise.resolve();
+      await flushControllerLoop();
 
-      expect(harness.gateway.watchCalls).toEqual([
+      expectWatchCalls(harness.gateway.watchCalls, [
         { shard: "shard-a", action: "sub" },
       ]);
       expect(harness.watchedPeerShards).toEqual([[]]);
@@ -198,9 +203,9 @@ describe("ConnectionShardCursorHubController", () => {
       ]);
 
       await vi.advanceTimersByTimeAsync(1);
-      await Promise.resolve();
+      await flushControllerLoop();
 
-      expect(harness.gateway.watchCalls).toEqual([
+      expectWatchCalls(harness.gateway.watchCalls, [
         { shard: "shard-a", action: "sub" },
         { shard: "shard-a", action: "sub" },
       ]);
@@ -229,9 +234,9 @@ describe("ConnectionShardCursorHubController", () => {
       });
 
       harness.controller.refreshWatchState();
-      await Promise.resolve();
+      await flushControllerLoop();
 
-      expect(harness.gateway.watchCalls).toEqual([
+      expectWatchCalls(harness.gateway.watchCalls, [
         { shard: "shard-a", action: "sub" },
       ]);
       expect(harness.watchedPeerShards).toEqual([["shard-b"]]);
@@ -242,9 +247,9 @@ describe("ConnectionShardCursorHubController", () => {
       ]);
 
       await vi.advanceTimersByTimeAsync(55_000);
-      await Promise.resolve();
+      await flushControllerLoop();
 
-      expect(harness.gateway.watchCalls).toEqual([
+      expectWatchCalls(harness.gateway.watchCalls, [
         { shard: "shard-a", action: "sub" },
         { shard: "shard-a", action: "sub" },
       ]);
