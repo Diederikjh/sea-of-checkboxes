@@ -14,6 +14,7 @@ interface ConnectionShardCursorHubControllerOptions {
   deferDetachedTask: (task: () => Promise<void>) => void;
   maybeUnrefTimer: (timer: ReturnType<typeof setTimeout>) => void;
   watchRenewMs?: number;
+  watchProbeRenewMs?: number;
 }
 
 export class ConnectionShardCursorHubController {
@@ -25,11 +26,13 @@ export class ConnectionShardCursorHubController {
   #deferDetachedTask: (task: () => Promise<void>) => void;
   #maybeUnrefTimer: (timer: ReturnType<typeof setTimeout>) => void;
   #watchRenewMs: number;
+  #watchProbeRenewMs: number;
 
   #subscribed: boolean;
   #watchInFlight: boolean;
   #desiredWatchAction: "sub" | "unsub" | null;
   #watchRenewTimer: ReturnType<typeof setTimeout> | null;
+  #watchedPeerCount: number;
 
   constructor(options: ConnectionShardCursorHubControllerOptions) {
     this.#gateway = options.gateway;
@@ -40,11 +43,13 @@ export class ConnectionShardCursorHubController {
     this.#deferDetachedTask = options.deferDetachedTask;
     this.#maybeUnrefTimer = options.maybeUnrefTimer;
     this.#watchRenewMs = options.watchRenewMs ?? 60_000;
+    this.#watchProbeRenewMs = options.watchProbeRenewMs ?? 5_000;
 
     this.#subscribed = false;
     this.#watchInFlight = false;
     this.#desiredWatchAction = null;
     this.#watchRenewTimer = null;
+    this.#watchedPeerCount = 0;
   }
 
   isEnabled(): boolean {
@@ -58,6 +63,7 @@ export class ConnectionShardCursorHubController {
 
     if (!this.#hasClients()) {
       this.#clearWatchRenewTimer();
+      this.#watchedPeerCount = 0;
       this.#updateWatchedPeerShards([]);
       if (this.#subscribed) {
         this.#queueWatch("unsub");
@@ -68,7 +74,6 @@ export class ConnectionShardCursorHubController {
     }
 
     this.#queueWatch("sub");
-    this.#scheduleWatchRenew(this.#watchRenewMs);
   }
 
   #queueWatch(action: "sub" | "unsub"): void {
@@ -95,14 +100,19 @@ export class ConnectionShardCursorHubController {
     try {
       const watchState = await this.#gateway.watchShard(this.#currentShardName(), action);
       if (action === "sub") {
+        const peerShards = watchState?.peerShards ?? [];
         this.#subscribed = true;
-        this.#scheduleWatchRenew(this.#watchRenewMs);
-        this.#updateWatchedPeerShards(watchState?.peerShards ?? []);
+        this.#watchedPeerCount = peerShards.length;
+        this.#clearWatchRenewTimer();
+        this.#scheduleWatchRenew(this.#currentWatchRenewMs());
+        this.#updateWatchedPeerShards(peerShards);
         if (watchState?.snapshot && watchState.snapshot.updates.length > 0) {
           this.#ingestBatch(watchState.snapshot);
         }
       } else {
         this.#subscribed = false;
+        this.#watchedPeerCount = 0;
+        this.#clearWatchRenewTimer();
         this.#updateWatchedPeerShards([]);
       }
     } catch {
@@ -115,6 +125,10 @@ export class ConnectionShardCursorHubController {
         });
       }
     }
+  }
+
+  #currentWatchRenewMs(): number {
+    return this.#watchedPeerCount > 0 ? this.#watchRenewMs : this.#watchProbeRenewMs;
   }
 
   #scheduleWatchRenew(delayMs: number): void {

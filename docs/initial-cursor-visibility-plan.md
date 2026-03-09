@@ -33,6 +33,7 @@ Keep the current pull-based design and get initial remote cursor visibility down
 What is already true in repo:
 
 - watched-peer scoping is implemented
+- shards now renew hub watch on a short probe interval while they have clients but no watched peers, then fall back to the normal renew interval once peer scope is non-empty
 - scheduled cursor pull is detached through DO alarms
 - ingress suppression and post-ingress suppression are implemented
 - client/server trace correlation exists
@@ -130,9 +131,9 @@ For each asymmetric run:
 
 ## Immediate Next Steps
 
-1. Focus the next investigation on hub watch-scope propagation, not just stale-shard pull scheduling.
-2. Confirm whether existing subscribed shards only learn about newly active peers on the watch-renew cadence.
-3. If so, change the watch-membership flow so stale shards learn about new peers sooner than the current renew interval, without reintroducing push fanout complexity.
+1. Validate the new empty-scope watch probe behavior in a real cross-shard run.
+2. Confirm that a shard which starts with no peers now learns about a newly active peer well before the old `~60s` renew cadence.
+3. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
 4. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
 5. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
@@ -156,6 +157,10 @@ For each asymmetric run:
 
 These are not part of the immediate latency fix, but may help later hardening:
 
+- bounded empty-scope hub probing, for example:
+  - probe quickly for a small number of empty renews after first client attach
+  - then relax back toward a slower cadence such as `30s` if no peers ever appear
+  - this would preserve faster peer discovery without keeping quiet single-client shards on a permanent short renew loop
 - best-effort stale remote payload suppression via per-source version watermarks
 - further reduction of steady-state `subAck` churn
 - broader higher-concurrency cursor validation after the latency issue is understood
