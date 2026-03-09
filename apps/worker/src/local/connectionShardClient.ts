@@ -10,6 +10,7 @@ export interface ClientRecord {
   name: string;
   sink: ClientSink;
   subscribed: Set<string>;
+  cursorSeq: number;
   churnTimestamps: number[];
   setCellBurstTimestamps: number[];
   setCellSustainedTimestamps: number[];
@@ -21,6 +22,7 @@ export function createClientRecord(uid: string, name: string, sink: ClientSink):
     name,
     sink,
     subscribed: new Set(),
+    cursorSeq: 0,
     churnTimestamps: [],
     setCellBurstTimestamps: [],
     setCellSustainedTimestamps: [],

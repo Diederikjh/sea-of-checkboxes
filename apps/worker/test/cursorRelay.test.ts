@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  cursorRelayBatchMaxSeq,
   isValidCursorPresence,
   isValidCursorRelayBatch,
 } from "../src/cursorRelay";
@@ -44,5 +45,18 @@ describe("cursor relay validation", () => {
       })
     ).toBe(false);
     expect(isValidCursorRelayBatch({ from: "shard-1", updates: {} })).toBe(false);
+  });
+
+  it("reports the max sequence in a relay batch", () => {
+    expect(
+      cursorRelayBatchMaxSeq({
+        from: "shard-1",
+        updates: [
+          { ...validPresence(), uid: "u_a", seq: 2 },
+          { ...validPresence(), uid: "u_b", seq: 7 },
+          { ...validPresence(), uid: "u_c", seq: 4 },
+        ],
+      })
+    ).toBe(7);
   });
 });

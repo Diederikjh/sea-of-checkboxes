@@ -33,6 +33,7 @@ export class MockTransport {
   #tileMap;
   #subscribedTiles;
   #botTimer;
+  #cursorVerByUid;
 
   constructor() {
     this.#clientId = generateId("u");
@@ -41,6 +42,7 @@ export class MockTransport {
     this.#tileMap = new Map();
     this.#subscribedTiles = new Set();
     this.#botTimer = null;
+    this.#cursorVerByUid = new Map();
   }
 
   connect(onServerPayload) {
@@ -120,6 +122,7 @@ export class MockTransport {
           name: this.#name,
           x: message.x,
           y: message.y,
+          ver: this.#nextCursorVer(this.#clientId),
         });
         return;
       }
@@ -151,6 +154,12 @@ export class MockTransport {
     this.#onServerPayload(encodeServerMessageBinary(message));
   }
 
+  #nextCursorVer(uid) {
+    const next = (this.#cursorVerByUid.get(uid) ?? 0) + 1;
+    this.#cursorVerByUid.set(uid, next);
+    return next;
+  }
+
   #startBotCursorFeed() {
     const bots = [
       { uid: "u_bot_a", name: "MintStoat111", phase: 0 },
@@ -168,6 +177,7 @@ export class MockTransport {
           name: bot.name,
           x: Math.cos(now * angularSpeed + bot.phase) * radius,
           y: Math.sin(now * angularSpeed + bot.phase) * radius,
+          ver: this.#nextCursorVer(bot.uid),
         });
       }
     }, 40);

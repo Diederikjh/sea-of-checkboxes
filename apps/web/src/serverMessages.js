@@ -49,10 +49,19 @@ function logCellRevert({
 function upsertRemoteCursor(cursors, message, seenAt) {
   const current = cursors.get(message.uid);
   if (current) {
+    if ((current.ver ?? 0) >= message.ver) {
+      logger.protocol("curUp_stale_ignored", {
+        uid: message.uid,
+        incomingVer: message.ver,
+        localVer: current.ver ?? 0,
+      });
+      return;
+    }
     current.name = message.name;
     current.x = message.x;
     current.y = message.y;
     current.seenAt = seenAt;
+    current.ver = message.ver;
     return;
   }
 
@@ -64,6 +73,7 @@ function upsertRemoteCursor(cursors, message, seenAt) {
     drawX: message.x,
     drawY: message.y,
     seenAt,
+    ver: message.ver,
   });
 }
 

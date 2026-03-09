@@ -467,6 +467,7 @@ export function encodeServerMessageBinary(message: ServerMessage): Uint8Array {
       writer.writeString(message.name);
       writer.writeF32(message.x);
       writer.writeF32(message.y);
+      writer.writeU32(message.ver);
       break;
     case "err":
       writer.writeU8(SERVER_TAG.err);
@@ -565,6 +566,7 @@ export function decodeServerMessageBinary(payload: Uint8Array): ServerMessage {
         name: reader.readString(),
         x: reader.readF32(),
         y: reader.readF32(),
+        ver: reader.readU32(),
       };
       break;
     case SERVER_TAG.err:

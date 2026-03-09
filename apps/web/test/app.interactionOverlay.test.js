@@ -302,6 +302,7 @@ describe("app interaction overlays", () => {
       name: "Self",
       x: 1.5,
       y: 1.5,
+      ver: 1,
     });
     receiveServerPayload({
       t: "curUp",
@@ -309,6 +310,7 @@ describe("app interaction overlays", () => {
       name: "Visible",
       x: 2.5,
       y: 2.5,
+      ver: 1,
     });
     receiveServerPayload({
       t: "curUp",
@@ -316,6 +318,7 @@ describe("app interaction overlays", () => {
       name: "Offscreen",
       x: 100.5,
       y: 2.5,
+      ver: 1,
     });
 
     expect(inputArgs.getActiveVisibleRemoteCursorCount()).toBe(1);

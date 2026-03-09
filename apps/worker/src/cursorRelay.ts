@@ -67,3 +67,11 @@ export function isValidCursorRelayBatch(value: unknown): value is CursorRelayBat
   }
   return batch.updates.every((update) => isValidCursorPresence(update));
 }
+
+export function cursorRelayBatchMaxSeq(batch: CursorRelayBatch): number {
+  let maxSeq = 0;
+  for (const update of batch.updates) {
+    maxSeq = Math.max(maxSeq, update.seq);
+  }
+  return maxSeq;
+}

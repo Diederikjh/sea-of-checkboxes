@@ -87,7 +87,7 @@ describe("binary protocol codec", () => {
         toVer: 81,
         ops: [[4, 1], [5, 0], [300, 1]],
       },
-      { t: "curUp", uid: "u_remote", name: "Bob", x: 1200.75, y: -33.125 },
+      { t: "curUp", uid: "u_remote", name: "Bob", x: 1200.75, y: -33.125, ver: 7 },
       { t: "err", code: "rate_limited", msg: "slow down" },
       { t: "err", code: "internal", msg: "Failed to process message", trace: "trace_1" },
       { t: "subAck", cid: "c_sub", requestedCount: 2, changedCount: 2, subscribedCount: 2 },
@@ -106,6 +106,7 @@ describe("binary protocol codec", () => {
         expect(decoded.name).toBe(message.name);
         expect(decoded.x).toBeCloseTo(message.x, 3);
         expect(decoded.y).toBeCloseTo(message.y, 3);
+        expect(decoded.ver).toBe(message.ver);
       } else {
         expect(decoded).toEqual(message);
       }

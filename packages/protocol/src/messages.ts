@@ -36,6 +36,7 @@ const boundedWorldNumberSchema = finiteNumberSchema.refine((value) => Math.abs(v
 });
 
 const nonNegativeIntSchema = z.number().int().min(0);
+const positiveIntSchema = z.number().int().min(1);
 
 const cellIndexSchema = nonNegativeIntSchema.refine((value) => isCellIndexValid(value), {
   message: `Expected valid cell index [0, ${TILE_CELL_COUNT - 1}]`,
@@ -130,6 +131,7 @@ export const cursorUpdateSchema = strictTaggedMessage("curUp", {
   name: z.string().min(1),
   x: boundedWorldNumberSchema,
   y: boundedWorldNumberSchema,
+  ver: positiveIntSchema,
 });
 
 /** @deprecated JSON wire format is legacy; use binary codecs in `binary.ts`. */

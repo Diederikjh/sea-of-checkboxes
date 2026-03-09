@@ -32,6 +32,7 @@ import {
 import { handleConnectionShardClientMessage } from "./connectionShardClientMessageHandler";
 import { ConnectionShardSetCellQueue } from "./connectionShardSetCellQueue";
 import {
+  cursorRelayBatchMaxSeq,
   type CursorRelayBatch,
   type CursorTraceContext,
   isValidCursorRelayBatch,
@@ -1544,12 +1545,14 @@ export class ConnectionShardDO {
       }
 
       const deltaObserved = this.#ingestCursorBatchWithIngress(batch);
+      const batchMaxSeq = cursorRelayBatchMaxSeq(batch);
       this.#logEvent("cursor_pull_peer", {
         target_shard: peerShard,
         wake_reason: wakeReason,
         ok: true,
         response_status: response.status,
         update_count: batch.updates.length,
+        max_seq: batchMaxSeq || undefined,
         delta_observed: deltaObserved,
         trace_id: pullTraceId,
         ...peerScopeFields,
@@ -1562,7 +1565,10 @@ export class ConnectionShardDO {
         deltaObserved,
         pullTraceId,
         startedAtMs: startMs,
-        peerScopeFields,
+        peerScopeFields: {
+          ...peerScopeFields,
+          max_seq: batchMaxSeq || undefined,
+        },
       });
       return deltaObserved;
     } catch (error) {

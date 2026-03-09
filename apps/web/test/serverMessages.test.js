@@ -314,24 +314,39 @@ describe("server message handling", () => {
     const harness = createHarness();
     harness.selfIdentity.uid = "u_self";
 
-    harness.handler({ t: "curUp", uid: "u_self", name: "Me", x: 1, y: 2 });
+    harness.handler({ t: "curUp", uid: "u_self", name: "Me", x: 1, y: 2, ver: 1 });
     expect(harness.cursors.size).toBe(0);
     expect(harness.onVisualStateChanged).not.toHaveBeenCalled();
 
-    harness.handler({ t: "curUp", uid: "u_other", name: "Other", x: 10, y: 20 });
+    harness.handler({ t: "curUp", uid: "u_other", name: "Other", x: 10, y: 20, ver: 1 });
     const first = harness.cursors.get("u_other");
     expect(first).toBeDefined();
     expect(first.drawX).toBe(10);
     expect(first.drawY).toBe(20);
     expect(harness.onVisualStateChanged).not.toHaveBeenCalled();
 
-    harness.handler({ t: "curUp", uid: "u_other", name: "Other2", x: 14, y: 25 });
+    harness.handler({ t: "curUp", uid: "u_other", name: "Other2", x: 14, y: 25, ver: 2 });
     const second = harness.cursors.get("u_other");
     expect(second.name).toBe("Other2");
     expect(second.x).toBe(14);
     expect(second.y).toBe(25);
     expect(second.drawX).toBe(10);
     expect(second.drawY).toBe(20);
+    expect(second.ver).toBe(2);
+  });
+
+  it("ignores stale remote cursor versions", () => {
+    const harness = createHarness();
+
+    harness.handler({ t: "curUp", uid: "u_other", name: "Other", x: 10, y: 20, ver: 2 });
+    harness.handler({ t: "curUp", uid: "u_other", name: "Older", x: 4, y: 8, ver: 1 });
+
+    const cursor = harness.cursors.get("u_other");
+    expect(cursor).toBeDefined();
+    expect(cursor.name).toBe("Other");
+    expect(cursor.x).toBe(10);
+    expect(cursor.y).toBe(20);
+    expect(cursor.ver).toBe(2);
   });
 
   it("forwards server errors to status", () => {

@@ -147,6 +147,7 @@ function summarizeMessage(message) {
       return {
         uid: message.uid,
         name: message.name,
+        ver: message.ver,
         ...summarizeCursor(message),
       };
     case "err":

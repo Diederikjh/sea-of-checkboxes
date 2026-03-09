@@ -403,6 +403,7 @@ export class CursorCoordinator {
       name: cursor.name,
       x: cursor.x,
       y: cursor.y,
+      ver: cursor.seq,
     });
   }
 

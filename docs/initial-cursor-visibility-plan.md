@@ -38,6 +38,11 @@ What is already true in repo:
 - ingress suppression and post-ingress suppression are implemented
 - client/server trace correlation exists
 - alarm-path observability exists
+- cursor version tracing is now in repo:
+  - local cursor fanout emits monotonic `ver`
+  - protocol `curUp` carries `ver`
+  - client ignores stale `curUp` versions
+  - worker `cursor_pull_peer` logs include `max_seq` for pulled batches
 - stale-side scope-to-wake instrumentation is now in repo:
   - `cursor_pull_scope`
   - `cursor_pull_scope_unchanged`
@@ -146,7 +151,7 @@ For each asymmetric run:
 
 1. Validate the new empty-scope watch probe behavior in a real cross-shard run.
 2. Confirm that a shard which starts with no peers now learns about a newly active peer well before the old `~60s` renew cadence.
-3. Add cursor version tracing so we can distinguish:
+3. Use the new cursor version tracing to determine, on the weak direction, whether:
    - source cursor movement happened
    - `/cursor-state` returned a newer version
    - destination ingested that newer version

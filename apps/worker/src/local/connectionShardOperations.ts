@@ -209,6 +209,7 @@ export function handleCursorMessage(
   x: number,
   y: number
 ): void {
+  client.cursorSeq += 1;
   for (const target of context.clients.values()) {
     if (target.uid === client.uid) {
       continue;
@@ -220,6 +221,7 @@ export function handleCursorMessage(
       name: client.name,
       x,
       y,
+      ver: client.cursorSeq,
     });
   }
 }

@@ -309,7 +309,7 @@ describe("ConnectionShardDO websocket handling", () => {
             && message.tile === "0:0"
             && message.fromVer === 1
             && message.toVer === 1
-            && message.ops.some(([index, value]) => index === 42 && value === 1)
+            && message.ops.some((op) => op[0] === 42 && op[1] === 1)
         )
       ).toBe(true);
     });
@@ -472,7 +472,7 @@ describe("ConnectionShardDO websocket handling", () => {
             && message.tile === "0:0"
             && message.fromVer === 1
             && message.toVer === 1
-            && message.ops.some(([index, value]) => index === 77 && value === 1)
+            && message.ops.some((op) => op[0] === 77 && op[1] === 1)
         )
       ).toBe(true);
     }, { attempts: 120, delayMs: 10 });
@@ -848,7 +848,7 @@ describe("ConnectionShardDO websocket handling", () => {
 
     await waitFor(() => {
       const messagesA = decodeMessages(socketA);
-      expect(messagesA.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(true);
+      expect(messagesA.some((message) => message.t === "curUp" && message.uid === "u_remote" && message.ver === 1)).toBe(true);
     });
 
     const messagesB = decodeMessages(socketB);
@@ -1959,7 +1959,7 @@ describe("ConnectionShardDO websocket handling", () => {
 
     await waitFor(() => {
       const messagesB = decodeMessages(socketB);
-      expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_a")).toBe(true);
+      expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_a" && message.ver === 1)).toBe(true);
     });
   });
 

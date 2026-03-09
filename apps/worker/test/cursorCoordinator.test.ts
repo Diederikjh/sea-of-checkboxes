@@ -362,4 +362,75 @@ describe("CursorCoordinator", () => {
       vi.useRealTimers();
     }
   });
+
+  it("includes cursor versions when fanning remote updates to subscribed clients", () => {
+    const watcher = createClient("u_watch", "Watcher");
+    watcher.lastCursorX = 1.0;
+    watcher.lastCursorY = 1.0;
+    watcher.cursorSubscriptions = new Set(["u_remote"]);
+    const clients = new Map<string, ConnectedClient>([[watcher.uid, watcher]]);
+    const sendServerMessage = vi.fn();
+
+    const coordinator = new CursorCoordinator({
+      clients,
+      getCurrentShardName: () => "shard-5",
+      defer: () => {},
+      clock: {
+        nowMs: () => 10_000,
+      },
+      shardTopology: {
+        peerShardNames: () => [],
+      },
+      cursorRelayTransport: {
+        relayCursorBatch: async () => {},
+      },
+      sendServerMessage,
+    });
+
+    coordinator.onCursorBatch({
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.25,
+          y: 0.75,
+          seenAt: 10_000,
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+    coordinator.onCursorBatch({
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 2.5,
+          y: 1.5,
+          seenAt: 10_001,
+          seq: 2,
+          tileKey: "0:0",
+        },
+      ],
+    });
+
+    expect(sendServerMessage).toHaveBeenNthCalledWith(1, watcher, {
+      t: "curUp",
+      uid: "u_remote",
+      name: "Remote",
+      x: 1.25,
+      y: 0.75,
+      ver: 1,
+    });
+    expect(sendServerMessage).toHaveBeenNthCalledWith(2, watcher, {
+      t: "curUp",
+      uid: "u_remote",
+      name: "Remote",
+      x: 2.5,
+      y: 1.5,
+      ver: 2,
+    });
+  });
 });

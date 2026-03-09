@@ -56,6 +56,7 @@ describe("server message schema matrix", () => {
         name: "Alice",
         x: WORLD_MAX,
         y: -WORLD_MAX,
+        ver: 1,
       }).t
     ).toBe("curUp");
 
@@ -211,11 +212,15 @@ describe("server message schema matrix", () => {
         name: "Alice",
         x: WORLD_MAX + 1,
         y: 0,
+        ver: 1,
       })
     ).toThrow();
 
-    expect(() => parseServerMessage({ t: "curUp", uid: "u_a", name: "Alice", x: 1 })).toThrow();
-    expect(() => parseServerMessage({ t: "curUp", uid: "u_a", name: "Alice", x: Number.NEGATIVE_INFINITY, y: 0 })).toThrow();
+    expect(() => parseServerMessage({ t: "curUp", uid: "u_a", name: "Alice", x: 1, ver: 1 })).toThrow();
+    expect(() =>
+      parseServerMessage({ t: "curUp", uid: "u_a", name: "Alice", x: Number.NEGATIVE_INFINITY, y: 0, ver: 1 })
+    ).toThrow();
+    expect(() => parseServerMessage({ t: "curUp", uid: "u_a", name: "Alice", x: 0, y: 0, ver: 0 })).toThrow();
 
     expect(() => parseServerMessage({ t: "err", code: "", msg: "m" })).toThrow();
     expect(() => parseServerMessage({ t: "err", code: "c", msg: "" })).toThrow();
