@@ -171,6 +171,29 @@ Recent concrete evidence:
     - first late hub scope discovery
     - then delayed first useful reverse pull even after scope was known
     - then sparse/coalesced follow-up visibility once the peer finally became visible
+- `2026-03-10T20:21Z`:
+  - this was a third local swarm-backed run with `4` protocol bots and captured dev-worker stdout after reducing the empty-scope hub watch probe interval from `5000ms` to `500ms`
+  - shard placement was:
+    - `bot-001` on `shard-0`
+    - `bot-002` on `shard-7`
+    - `bot-003` on `shard-1`
+    - `bot-004` on `shard-5`
+  - all directions were materially better:
+    - all bots saw first remote cursors in about `893ms` to `1292ms`
+  - peer scope also arrived quickly:
+    - `cursor_pull_scope` on `shard-7` at `2026-03-10T20:21:01.990Z`
+    - `cursor_pull_scope` on `shard-1` at `2026-03-10T20:21:01.991Z`
+    - `cursor_pull_scope` on `shard-5` at `2026-03-10T20:21:01.992Z`
+    - `cursor_pull_scope` on `shard-0` at `2026-03-10T20:21:02.662Z`
+  - first peer visibility followed promptly after scope:
+    - `cursor_pull_first_peer_visibility` on `shard-5` at about `2026-03-10T20:21:03.299Z`
+    - `cursor_pull_first_peer_visibility` on `shard-1` at about `2026-03-10T20:21:03.894Z`
+    - `cursor_pull_first_peer_visibility` on `shard-7` at about `2026-03-10T20:21:03.895Z`
+    - `cursor_pull_first_peer_visibility` on `shard-0` at about `2026-03-10T20:21:03.895Z` and `20:21:04.233Z`
+  - this run is the strongest evidence so far that late empty-scope peer discovery was a real contributor to the delayed initial cursor problem
+  - it also confirms the tradeoff of the tactical fix:
+    - quiet connected shards with zero peers now renew hub watch state much more often
+    - the latency gain is real, but the steady empty-scope watch cost is higher than we want permanently
 
 Interpretation:
 
@@ -191,6 +214,11 @@ Interpretation:
   - late scope discovery and delayed first useful reverse pull can happen in the same run
   - once the stale shard finally starts seeing peers, visibility is better than before first discovery, but it is still bursty and version-coalesced
   - that means "peer discovered" is not the whole fix; it improves reliability, but it does not restore prompt per-move visibility
+- the `2026-03-10T20:21Z` local swarm run adds the first strong mitigation result:
+  - reducing the empty-scope watch probe interval removed the multi-second peer-discovery stall in that run shape
+  - that makes late empty-scope hub discovery a confirmed bug, not just a hypothesis
+  - but the current `500ms` probe is a tactical setting, not the desired final design
+  - we should keep the discovery win while reducing idle cost, ideally with adaptive probing or an event-driven peer-appearance signal instead of permanent fast polling
 
 ## Working Hypotheses
 
@@ -283,20 +311,26 @@ For each asymmetric run:
 
 ## Immediate Next Steps
 
-1. Validate the new empty-scope watch probe behavior in a real cross-shard run.
-2. Confirm that a shard which starts with no peers now learns about a newly active peer well before the old `~60s` renew cadence.
-3. Add the next layer of versioned cursor observability:
+1. Validate the shorter empty-scope probe across a few more real cross-shard runs, not just one representative success case.
+2. Replace the fixed `500ms` empty-scope probe with an adaptive policy, for example:
+   - probe quickly for the first few seconds after connect or local cursor activity
+   - then back off toward a slower cadence if peer scope stays empty
+3. Explore an event-driven alternative to repeated empty-scope polling:
+   - when the hub sees a newly active watched peer, emit a lightweight "peer appeared" nudge to existing empty-scope watchers
+   - use that nudge to force an immediate watch refresh or pull wake on the stale shard
+   - evaluate whether this can preserve fast first visibility with less idle hub traffic than continuous short probes
+4. Add the next layer of versioned cursor observability:
    - source local cursor publish log with `uid`, `seq`, `tileKey`, and shard
    - source `/cursor-state` snapshot log with included cursor `uid`s and max local seq
    - destination remote ingest log with previous seq, new seq, and whether client fanout happened
    - stale-side local-activity wake scheduling log with scheduler state and action
-4. Use those logs on the weak direction to determine whether the problem is:
+5. Use those logs on the weak direction to determine whether the problem is:
    - source cursor movement not being published
    - `/cursor-state` exposing stale or empty snapshots
    - destination discarding or not fanning newer versions
-5. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
-6. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
-7. Keep validating that any latency fix preserves:
+6. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
+7. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
+8. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
    - no hidden recursive `/cursor-state` storm
 
@@ -322,6 +356,8 @@ These are not part of the immediate latency fix, but may help later hardening:
   - probe quickly for a small number of empty renews after first client attach
   - then relax back toward a slower cadence such as `30s` if no peers ever appear
   - this would preserve faster peer discovery without keeping quiet single-client shards on a permanent short renew loop
+- hub-driven peer-appearance notifications, so empty-scope watchers can react to membership changes without depending only on repeated watch polling
+- hybrid discovery, where short adaptive probing covers the first few seconds and a hub event path covers later peer arrivals more efficiently
 - best-effort stale remote payload suppression via per-source version watermarks
 - if version tracing confirms snapshot coalescing is the main issue, revisit whether cursor-state should expose a slightly richer freshness signal than a bare latest snapshot
 - further reduction of steady-state `subAck` churn
