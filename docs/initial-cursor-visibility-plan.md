@@ -140,6 +140,37 @@ Recent concrete evidence:
     - followed by `cursor_pull_peer` on `shard-3` at `2026-03-10T19:47:26.560Z`
     - `wake_reason: "local_activity"`
   - this points away from late scope discovery and toward stale-side scheduling or wake behavior before first non-empty reverse pull
+- `2026-03-10T20:04Z`:
+  - this was a second local swarm-backed run with `4` protocol bots and captured dev-worker stdout
+  - shard placement was:
+    - `bot-001` on `shard-4`
+    - `bot-002` on `shard-1`
+    - `bot-003` on `shard-6`
+    - `bot-004` on `shard-5`
+  - three directions were fast:
+    - `bot-001`, `bot-003`, and `bot-004` saw first remote cursors in about `633ms` to `727ms`
+  - one direction was still slow:
+    - `bot-002` on `shard-1` saw first remote cursors only after about `11.4s` to `11.6s`
+  - the weak shard showed two distinct delays:
+    - late scope discovery:
+      - `ws_connect` on `shard-1` at `2026-03-10T20:04:11.044Z`
+      - first `cursor_pull_scope` on `shard-1` only at `2026-03-10T20:04:16.131Z`
+      - about `5.1s`
+    - then delayed first non-empty reverse pulls after scope was already known:
+      - repeated `cursor_pull_local_activity_wake` logs on `shard-1` between `2026-03-10T20:04:17Z` and `2026-03-10T20:04:23Z`
+      - first `cursor_pull_first_peer_visibility` on `shard-1` only at `2026-03-10T20:04:23.428Z` to `20:04:23.460Z`
+      - `scope_age_ms` about `7288` to `7327`
+      - `wake_reason: "local_activity"`
+  - after first visibility, the weak direction did continue to receive later cursor updates:
+    - for example `shard-1` pulled `next_seq: 14` around `2026-03-10T20:04:25.284Z` to `20:04:25.332Z`
+    - and later `next_seq: 29` around `2026-03-10T20:04:40.217Z` to `20:04:40.219Z`
+  - but those follow-up updates were still coarse and bursty rather than one-for-one with source moves:
+    - the destination often jumped multiple source versions at once, for example `previous_seq: 12 -> next_seq: 14`
+    - client-side `curUp` delivery after first visibility came in bursts separated by seconds, not at the source send cadence
+  - this run points to a compounded failure mode:
+    - first late hub scope discovery
+    - then delayed first useful reverse pull even after scope was known
+    - then sparse/coalesced follow-up visibility once the peer finally became visible
 
 Interpretation:
 
@@ -156,6 +187,10 @@ Interpretation:
   - source local publish can also be prompt
   - yet first reverse visibility can still wait until a later `local_activity` wake
   - that shifts suspicion toward stale-side wake scheduling, wake coalescing, or delayed first non-empty reverse pull after scope is already known
+- the `2026-03-10T20:04Z` local swarm run adds a third pattern:
+  - late scope discovery and delayed first useful reverse pull can happen in the same run
+  - once the stale shard finally starts seeing peers, visibility is better than before first discovery, but it is still bursty and version-coalesced
+  - that means "peer discovered" is not the whole fix; it improves reliability, but it does not restore prompt per-move visibility
 
 ## Working Hypotheses
 
@@ -172,6 +207,7 @@ The newest evidence splits the likely causes by run shape:
 
 - when scope itself arrives late, `1` remains the leading hypothesis
 - when scope arrives promptly but first visibility still waits for later `local_activity`, `2`, `3`, and `4` become stronger candidates
+- when both happen in the same run, the likely shape is late scope delivery first, then `2`, `3`, or `4` before the first useful reverse pull
 - `5` remains the leading hypothesis for sparse follow-up visibility after the first cursor appears
 
 ## Swarm Debug Method
