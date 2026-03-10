@@ -40,7 +40,7 @@ function createControllerHarness(options: {
     },
     maybeUnrefTimer: () => {},
     watchRenewMs: options.watchRenewMs ?? 60_000,
-    watchProbeRenewMs: options.watchProbeRenewMs ?? 5_000,
+    watchProbeRenewMs: options.watchProbeRenewMs ?? 500,
   });
 
   return {
@@ -186,7 +186,7 @@ describe("ConnectionShardCursorHubController", () => {
           },
         ],
         watchRenewMs: 60_000,
-        watchProbeRenewMs: 5_000,
+        watchProbeRenewMs: 500,
       });
 
       harness.controller.refreshWatchState();
@@ -197,7 +197,7 @@ describe("ConnectionShardCursorHubController", () => {
       ]);
       expect(harness.watchedPeerShards).toEqual([[]]);
 
-      await vi.advanceTimersByTimeAsync(4_999);
+      await vi.advanceTimersByTimeAsync(499);
       expect(harness.gateway.watchCalls).toEqual([
         { shard: "shard-a", action: "sub" },
       ]);
@@ -230,7 +230,7 @@ describe("ConnectionShardCursorHubController", () => {
           null,
         ],
         watchRenewMs: 60_000,
-        watchProbeRenewMs: 5_000,
+        watchProbeRenewMs: 500,
       });
 
       harness.controller.refreshWatchState();
@@ -241,12 +241,12 @@ describe("ConnectionShardCursorHubController", () => {
       ]);
       expect(harness.watchedPeerShards).toEqual([["shard-b"]]);
 
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(500);
       expect(harness.gateway.watchCalls).toEqual([
         { shard: "shard-a", action: "sub" },
       ]);
 
-      await vi.advanceTimersByTimeAsync(55_000);
+      await vi.advanceTimersByTimeAsync(59_500);
       await flushControllerLoop();
 
       expectWatchCalls(harness.gateway.watchCalls, [
