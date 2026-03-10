@@ -484,7 +484,7 @@ export class ConnectionShardDO {
     const client: ConnectedClient = {
       uid: identity.uid,
       name: identity.name,
-      clientSessionId: identity.clientSessionId,
+      ...(identity.clientSessionId ? { clientSessionId: identity.clientSessionId } : {}),
       socket: serverSocket,
       connectedAtMs: this.#nowMs(),
       subscribed: new Set(),
@@ -1499,7 +1499,18 @@ export class ConnectionShardDO {
     extraFields = {},
   }: {
     eventName: string;
-    decision: CursorPullScheduleDecision;
+    decision: Pick<
+      CursorPullScheduleDecision,
+      | "wakeReason"
+      | "requestedDelayMs"
+      | "floorDelayMs"
+      | "effectiveDelayMs"
+      | "scheduledAtMs"
+      | "existingScheduledAtMs"
+      | "existingWakeReason"
+    > & {
+      action: CursorPullScheduleDecision["action"] | "deferred_for_ingress";
+    };
     requestedDelayMs: number;
     adjustedDelayMs: number;
     suppressionRemainingMs: number;
