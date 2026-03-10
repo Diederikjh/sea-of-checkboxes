@@ -1,4 +1,6 @@
 const TILE_SIZE = 64;
+const TILE_CELL_COUNT = TILE_SIZE * TILE_SIZE;
+const SHARD_COUNT = 8;
 
 const CLIENT_TAG = Object.freeze({
   sub: 1,
@@ -372,6 +374,41 @@ export function decodeServerMessageBinary(payload) {
   return decoded;
 }
 
+export function decodeRle64(encoded, expectedLength = TILE_CELL_COUNT) {
+  if (!encoded) {
+    if (expectedLength === 0) {
+      return new Uint8Array(0);
+    }
+    throw new Error("Encoded payload is empty");
+  }
+
+  const bytes = new Uint8Array(Buffer.from(encoded, "base64"));
+  if (bytes.length % 2 !== 0) {
+    throw new Error("Corrupt RLE payload: expected even number of bytes");
+  }
+
+  const output = [];
+  for (let index = 0; index < bytes.length; index += 2) {
+    const runLength = bytes[index];
+    const value = bytes[index + 1];
+    if (runLength === undefined || runLength < 1) {
+      throw new Error(`Invalid run length at byte ${index}`);
+    }
+    if (value !== 0 && value !== 1) {
+      throw new Error(`Invalid bit value at byte ${index + 1}: ${value}`);
+    }
+    for (let repeat = 0; repeat < runLength; repeat += 1) {
+      output.push(value);
+    }
+  }
+
+  if (output.length !== expectedLength) {
+    throw new Error(`Decoded bit length mismatch: expected ${expectedLength}, got ${output.length}`);
+  }
+
+  return Uint8Array.from(output);
+}
+
 export function parseTileKey(tileKey) {
   const match = /^(-?\d+):(-?\d+)$/.exec(tileKey);
   if (!match) {
@@ -391,6 +428,16 @@ export function worldToCellIndex(x, y) {
   const localX = mod(Math.floor(x), TILE_SIZE);
   const localY = mod(Math.floor(y), TILE_SIZE);
   return (localY * TILE_SIZE) + localX;
+}
+
+export function shardNameForUid(uid) {
+  let hash = 2166136261;
+  for (let index = 0; index < uid.length; index += 1) {
+    hash ^= uid.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const shard = Math.abs(hash) % SHARD_COUNT;
+  return `shard-${shard}`;
 }
 
 export function buildSocketUrl(baseUrl, token) {
@@ -420,4 +467,3 @@ export function toUint8Array(messageData) {
 function mod(value, divisor) {
   return ((value % divisor) + divisor) % divisor;
 }
-

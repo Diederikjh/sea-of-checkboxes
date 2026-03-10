@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { parseSwarmBotArgs } from "./lib/config.mjs";
 import { createSwarmBotMetrics } from "./lib/metrics.mjs";
 import {
+  decodeRle64,
   decodeServerMessageBinary,
   encodeClientMessageBinary,
+  shardNameForUid,
   worldToCellIndex,
   worldToTileKey,
 } from "./lib/protocol.mjs";
@@ -153,6 +155,11 @@ describe("swarm protocol helpers", () => {
         y: -4.25,
       },
     });
+  });
+
+  it("decodes rle64 golden vectors and computes shard names", () => {
+    expect(Array.from(decodeRle64("AgADAQEA", 6))).toEqual([0, 0, 1, 1, 1, 0]);
+    expect(shardNameForUid("u_test123")).toMatch(/^shard-\d+$/);
   });
 });
 
