@@ -178,6 +178,23 @@ describe("swarm bot metrics", () => {
     expect(summary.latencyMs.subscribeAck.p50Ms).toBe(25);
     expect(summary.latencyMs.setCellSync.p50Ms).toBe(25);
   });
+
+  it("clears pending setCell samples on tile snapshot fallback", () => {
+    let now = 0;
+    const metrics = createSwarmBotMetrics({
+      nowMs: () => now,
+    });
+
+    metrics.markSetCellSent("0:0", 5, 0);
+    metrics.markSetCellSent("0:0", 6, 10);
+    metrics.markSetCellSent("1:0", 1, 20);
+    now = 40;
+    metrics.markTileSnapshotResolved("0:0", now);
+
+    const summary = metrics.summary();
+    expect(summary.latencyMs.setCellSync.count).toBe(2);
+    expect(summary.pending.setCell).toBe(1);
+  });
 });
 
 describe("swarm bot session", () => {
@@ -250,4 +267,3 @@ function decodeClientMessageBinaryForTest(payload) {
 
   throw new Error(`Unsupported client tag in test helper: ${tag}`);
 }
-

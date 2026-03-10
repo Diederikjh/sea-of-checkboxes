@@ -41,6 +41,7 @@ async function main() {
   } finally {
     await logger.close();
   }
+  process.exit(process.exitCode ?? 0);
 }
 
 main().catch((error) => {

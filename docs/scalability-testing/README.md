@@ -20,13 +20,32 @@ The target is not only "how many users can connect", but "how the real backend b
 - benchmark only browser rendering performance
 - hide backend guardrails such as `tile_readonly_hot` or `tile_sub_denied`
 
+## Current Status
+
+Implemented now:
+
+- one live protocol bot CLI at `scripts/swarm/swarm-bot.mjs`
+- shared JS protocol, config, metrics, and session helpers in `scripts/swarm/lib/`
+- per-bot NDJSON event logs and per-bot summary JSON
+- focused tests for the Phase 1 bot path
+
+Current output shape:
+
+- one NDJSON file per bot process:
+  - `logs/swarm/<run-id>/bots/<bot-id>.ndjson`
+- one summary JSON file per bot process:
+  - `logs/swarm/<run-id>/bots/<bot-id>-summary.json`
+
+Every log record also carries `runId` and `botId`, so the writer is identifiable both from the filename and from the file contents.
+
 ## Proposed Layout
 
-Planned scripts:
+Current and planned scripts:
 
 - `scripts/swarm/run-swarm.mjs`
   - top-level coordinator
-  - starts a run, picks scenarios, launches bots, aggregates results
+  - starts a run and launches bot processes
+  - initial implementation is a small short-duration coordinator for smoke runs
 - `scripts/swarm/swarm-bot.mjs`
   - single lightweight protocol bot process
   - connects to the live websocket backend and executes assigned actions
@@ -43,6 +62,7 @@ Planned output:
 - `logs/swarm/<run-id>/coordinator.log`
 - `logs/swarm/<run-id>/summary.json`
 - `logs/swarm/<run-id>/bots/<bot-id>.ndjson`
+- `logs/swarm/<run-id>/bots/<bot-id>-summary.json`
 - optional canary browser logs in `logs/swarm/<run-id>/canary-*.log`
 
 ## Safety Requirements
@@ -193,6 +213,13 @@ Inputs:
 - canary browser count
 - swarm origin coordinate, for example `originX` and `originY`
 
+Initial implemented defaults:
+
+- `2` bots
+- about `10s` duration
+- one active Phase 1 bot plus one read-only lurker bot
+- small origin offsets per bot so they do not overlap exactly
+
 Measurements:
 
 - planned bot count vs started count
@@ -230,6 +257,15 @@ Bot behavior should support:
 - structured per-bot log output
 - immediate shutdown on coordinator signal
 - coordinate generation relative to the configured swarm origin
+
+Implemented now:
+
+- anonymous connect to the real `/ws` endpoint
+- token reuse after `hello`
+- initial subscribe to the origin tile
+- periodic cursor sends
+- optional periodic `setCell`
+- per-bot NDJSON and summary output
 
 Measurements:
 

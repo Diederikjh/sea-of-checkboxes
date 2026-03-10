@@ -91,6 +91,17 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
         increment("setCellResolved");
       }
     },
+    markTileSnapshotResolved(tile, receivedAtMs = nowMs()) {
+      const prefix = `${tile}:`;
+      for (const [key, sentAtMs] of pendingSetCell.entries()) {
+        if (!key.startsWith(prefix)) {
+          continue;
+        }
+        latencies.setCellSync.push(receivedAtMs - sentAtMs);
+        pendingSetCell.delete(key);
+        increment("setCellResolved");
+      }
+    },
     markReconnect(durationMs) {
       increment("reconnects");
       latencies.reconnect.push(durationMs);
@@ -149,4 +160,3 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
     },
   };
 }
-

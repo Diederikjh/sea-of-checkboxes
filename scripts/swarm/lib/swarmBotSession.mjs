@@ -220,6 +220,9 @@ export class SwarmBotSession {
           subscribedCount: message.subscribedCount,
         });
         return;
+      case "tileSnap":
+        this.metrics.markTileSnapshotResolved(message.tile, this.nowMs());
+        return;
       case "cellUp":
         this.metrics.markAuthoritativeUpdate();
         this.metrics.markSetCellResolved(message.tile, message.i, this.nowMs());

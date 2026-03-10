@@ -10,6 +10,7 @@
     "logs:server:query": "node scripts/query-worker-logs.mjs",
     "logs:client:capture": "node scripts/capture-client-console.mjs",
     "swarm:bot": "node scripts/swarm/swarm-bot.mjs",
+    "swarm:run": "node scripts/swarm/run-swarm.mjs",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
