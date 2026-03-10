@@ -1120,6 +1120,47 @@ describe("ConnectionShardDO websocket handling", () => {
     });
   });
 
+  it("logs versioned cursor-state snapshot assembly details", async () => {
+    const harness = createRelayHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 5.5, y: 6.5 }));
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 6.5, y: 7.5 }));
+
+      const state = await getCursorStateWithHeaders(harness.shard, {
+        "x-sea-cursor-pull": "1",
+        "x-sea-cursor-trace-id": "trace-snapshot",
+        "x-sea-cursor-trace-hop": "0",
+        "x-sea-cursor-trace-origin": "shard-1",
+      });
+
+      expect(state.updates.some((update) => update.uid === "u_a" && update.seq === 2)).toBe(true);
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "cursor_state_snapshot_served"
+            && event.from_shard === "shard-0"
+            && event.update_count === 1
+            && event.max_seq === 2
+            && Array.isArray(event.uid_sample)
+            && event.uid_sample.includes("u_a")
+            && event.trace_id === "trace-snapshot"
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it("backs off cursor-state polling after repeated quiet polls", async () => {
     vi.useFakeTimers();
     try {
@@ -1685,6 +1726,106 @@ describe("ConnectionShardDO websocket handling", () => {
     await drainDeferred(harness);
     const afterRelayCount = countCursorRelaySubrequests(harness);
     expect(afterRelayCount).toBe(beforeRelayCount);
+  });
+
+  it("logs remote cursor ingest decisions with previous and next versions", async () => {
+    const harness = createRelayHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+
+      await waitFor(() => {
+        const messages = decodeMessages(socket);
+        expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+      });
+
+      const headers = {
+        "x-sea-cursor-trace-id": "trace-ingest",
+        "x-sea-cursor-trace-hop": "0",
+        "x-sea-cursor-trace-origin": "shard-1",
+      };
+      const staleHeaders = {
+        "x-sea-cursor-trace-id": "trace-ingest-stale",
+        "x-sea-cursor-trace-hop": "0",
+        "x-sea-cursor-trace-origin": "shard-1",
+      };
+
+      await postCursorBatchWithHeaders(
+        harness.shard,
+        {
+          from: "shard-1",
+          updates: [
+            {
+              uid: "u_remote",
+              name: "Remote",
+              x: 1.5,
+              y: 1.5,
+              seenAt: Date.now(),
+              seq: 1,
+              tileKey: "0:0",
+            },
+          ],
+        },
+        staleHeaders
+      );
+      await postCursorBatchWithHeaders(
+        harness.shard,
+        {
+          from: "shard-1",
+          updates: [
+            {
+              uid: "u_remote",
+              name: "Remote",
+              x: 1.0,
+              y: 1.0,
+              seenAt: Date.now() - 1,
+              seq: 1,
+              tileKey: "0:0",
+            },
+          ],
+        },
+        headers
+      );
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "cursor_remote_ingest"
+            && event.from_shard === "shard-1"
+            && event.uid === "u_remote"
+            && event.previous_seq === undefined
+            && event.next_seq === 1
+            && event.applied === true
+            && event.trace_id === "trace-ingest-stale"
+        )
+      ).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            event.scope === "connection_shard_do"
+            && event.event === "cursor_remote_ingest"
+            && event.from_shard === "shard-1"
+            && event.uid === "u_remote"
+            && event.previous_seq === 1
+            && event.next_seq === 1
+            && event.fanout_count === 0
+            && event.applied === false
+            && event.ignored_reason === "stale"
+            && event.trace_id === "trace-ingest"
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it("suppresses local cursor relay re-entry while processing inbound cursor batches", async () => {

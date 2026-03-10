@@ -433,4 +433,149 @@ describe("CursorCoordinator", () => {
       ver: 2,
     });
   });
+
+  it("emits local cursor publish events with monotonic versions", () => {
+    const localClient = createClient("u_local", "Local");
+    const published: Array<{
+      uid: string;
+      seq: number;
+      tileKey: string;
+      fanoutCount: number;
+    }> = [];
+
+    const coordinator = new CursorCoordinator({
+      clients: new Map([[localClient.uid, localClient]]),
+      getCurrentShardName: () => "shard-5",
+      defer: () => {},
+      clock: {
+        nowMs: () => 10_000,
+      },
+      shardTopology: {
+        peerShardNames: () => [],
+      },
+      cursorRelayTransport: {
+        relayCursorBatch: async () => {},
+      },
+      onLocalCursorPublished: ({ cursor, fanoutCount }) => {
+        published.push({
+          uid: cursor.uid,
+          seq: cursor.seq,
+          tileKey: cursor.tileKey,
+          fanoutCount,
+        });
+      },
+      sendServerMessage: vi.fn(),
+    });
+
+    coordinator.onLocalCursor(localClient, 1.25, 0.75);
+    coordinator.onLocalCursor(localClient, 2.5, 1.5);
+
+    expect(published).toEqual([
+      {
+        uid: "u_local",
+        seq: 1,
+        tileKey: "0:0",
+        fanoutCount: 0,
+      },
+      {
+        uid: "u_local",
+        seq: 2,
+        tileKey: "0:0",
+        fanoutCount: 0,
+      },
+    ]);
+  });
+
+  it("emits remote ingest events for applied and stale cursor versions", () => {
+    const watcher = createClient("u_watch", "Watcher");
+    watcher.lastCursorX = 1.0;
+    watcher.lastCursorY = 1.0;
+    watcher.cursorSubscriptions = new Set(["u_remote"]);
+    const ingested: Array<{
+      fromShard: string;
+      uid: string;
+      previousSeq: number | null;
+      nextSeq: number;
+      fanoutCount: number;
+      applied: boolean;
+      ignoredReason: string | undefined;
+    }> = [];
+
+    const coordinator = new CursorCoordinator({
+      clients: new Map([[watcher.uid, watcher]]),
+      getCurrentShardName: () => "shard-5",
+      defer: () => {},
+      clock: {
+        nowMs: () => 10_000,
+      },
+      shardTopology: {
+        peerShardNames: () => [],
+      },
+      cursorRelayTransport: {
+        relayCursorBatch: async () => {},
+      },
+      onRemoteCursorIngested: (event) => {
+        ingested.push({
+          fromShard: event.fromShard,
+          uid: event.cursor.uid,
+          previousSeq: event.previousSeq,
+          nextSeq: event.cursor.seq,
+          fanoutCount: event.fanoutCount,
+          applied: event.applied,
+          ignoredReason: event.ignoredReason,
+        });
+      },
+      sendServerMessage: vi.fn(),
+    });
+
+    coordinator.onCursorBatch({
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.25,
+          y: 0.75,
+          seenAt: 10_000,
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+    coordinator.onCursorBatch({
+      from: "shard-1",
+      updates: [
+        {
+          uid: "u_remote",
+          name: "Remote",
+          x: 1.0,
+          y: 0.5,
+          seenAt: 9_999,
+          seq: 1,
+          tileKey: "0:0",
+        },
+      ],
+    });
+
+    expect(ingested).toEqual([
+      {
+        fromShard: "shard-1",
+        uid: "u_remote",
+        previousSeq: null,
+        nextSeq: 1,
+        fanoutCount: 1,
+        applied: true,
+        ignoredReason: undefined,
+      },
+      {
+        fromShard: "shard-1",
+        uid: "u_remote",
+        previousSeq: 1,
+        nextSeq: 1,
+        fanoutCount: 0,
+        applied: false,
+        ignoredReason: "stale",
+      },
+    ]);
+  });
 });

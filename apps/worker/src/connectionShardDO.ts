@@ -228,6 +228,29 @@ export class ConnectionShardDO {
           setcell_suppressed_remaining_ms: Math.max(0, this.#setCellSuppressedUntilMs - this.#nowMs()),
         });
       },
+      onLocalCursorPublished: ({ cursor, fanoutCount }) => {
+        this.#logEvent("cursor_local_publish", {
+          uid: cursor.uid,
+          seq: cursor.seq,
+          tile: cursor.tileKey,
+          x: cursor.x,
+          y: cursor.y,
+          fanout_count: fanoutCount,
+        });
+      },
+      onRemoteCursorIngested: ({ fromShard, cursor, previousSeq, fanoutCount, applied, ignoredReason }) => {
+        this.#logEvent("cursor_remote_ingest", {
+          from_shard: fromShard,
+          uid: cursor.uid,
+          previous_seq: previousSeq ?? undefined,
+          next_seq: cursor.seq,
+          tile: cursor.tileKey,
+          fanout_count: fanoutCount,
+          applied,
+          ignored_reason: ignoredReason,
+          ...this.#cursorTraceState.traceFields(this.#cursorTraceState.activeTraceContext()),
+        });
+      },
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
       },
@@ -344,9 +367,18 @@ export class ConnectionShardDO {
       const previousTrace = this.#cursorTraceState.pushActiveTrace(pullTrace);
       this.#cursorStateIngressDepth += 1;
       try {
+        const updates = this.#cursorCoordinator.localCursorSnapshot();
+        this.#logEvent("cursor_state_snapshot_served", {
+          from_shard: this.#currentShardName(),
+          update_count: updates.length,
+          max_seq: this.#cursorSnapshotMaxSeq(updates) || undefined,
+          uid_sample: this.#cursorSnapshotUidSample(updates),
+          is_inbound_cursor_pull: isInboundCursorPull,
+          ...this.#cursorTraceState.traceFields(pullTrace),
+        });
         return jsonResponse({
           from: this.#currentShardName(),
-          updates: this.#cursorCoordinator.localCursorSnapshot(),
+          updates,
         } satisfies CursorRelayBatch);
       } finally {
         this.#cursorStateIngressDepth = Math.max(0, this.#cursorStateIngressDepth - 1);
@@ -1623,6 +1655,21 @@ export class ConnectionShardDO {
       ...peerScopeFields,
       duration_ms: elapsedMs(startedAtMs),
     });
+  }
+
+  #cursorSnapshotMaxSeq(updates: Array<{ seq: number }>): number {
+    let maxSeq = 0;
+    for (const update of updates) {
+      maxSeq = Math.max(maxSeq, update.seq);
+    }
+    return maxSeq;
+  }
+
+  #cursorSnapshotUidSample(
+    updates: Array<{ uid: string }>,
+    limit: number = 5
+  ): string[] {
+    return updates.slice(0, limit).map((update) => update.uid);
   }
 
   async #pollTileIfNeeded(tileKey: string): Promise<boolean> {

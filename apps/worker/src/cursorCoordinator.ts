@@ -35,6 +35,20 @@ export interface CursorRelaySuppression {
   reason: CursorRelaySuppressionReason;
 }
 
+export interface LocalCursorPublishedEvent {
+  cursor: CursorPresence;
+  fanoutCount: number;
+}
+
+export interface RemoteCursorIngestEvent {
+  fromShard: string;
+  cursor: CursorPresence;
+  previousSeq: number | null;
+  fanoutCount: number;
+  applied: boolean;
+  ignoredReason?: "local_owned" | "stale";
+}
+
 interface CursorCoordinatorOptions {
   clients: Map<string, ConnectedClient>;
   getCurrentShardName: () => string;
@@ -44,6 +58,8 @@ interface CursorCoordinatorOptions {
   cursorRelayTransport: CursorRelayTransport;
   canRelayNow?: () => boolean;
   onRelaySuppressed?: (suppression: CursorRelaySuppression) => void;
+  onLocalCursorPublished?: (event: LocalCursorPublishedEvent) => void;
+  onRemoteCursorIngested?: (event: RemoteCursorIngestEvent) => void;
   sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
   relayEnabled?: boolean;
 }
@@ -57,6 +73,8 @@ export class CursorCoordinator {
   #cursorRelayTransport: CursorRelayTransport;
   #canRelayNow: () => boolean;
   #onRelaySuppressed: (suppression: CursorRelaySuppression) => void;
+  #onLocalCursorPublished: (event: LocalCursorPublishedEvent) => void;
+  #onRemoteCursorIngested: (event: RemoteCursorIngestEvent) => void;
   #sendServerMessage: (client: ConnectedClient, message: ServerMessage) => void;
   #relayEnabled: boolean;
 
@@ -81,6 +99,8 @@ export class CursorCoordinator {
     this.#cursorRelayTransport = options.cursorRelayTransport;
     this.#canRelayNow = options.canRelayNow ?? (() => true);
     this.#onRelaySuppressed = options.onRelaySuppressed ?? (() => {});
+    this.#onLocalCursorPublished = options.onLocalCursorPublished ?? (() => {});
+    this.#onRemoteCursorIngested = options.onRemoteCursorIngested ?? (() => {});
     this.#sendServerMessage = options.sendServerMessage;
     this.#relayEnabled = options.relayEnabled ?? true;
 
@@ -141,7 +161,11 @@ export class CursorCoordinator {
     this.#localCursorUids.add(client.uid);
     this.#markCursorSelectionDirty();
     this.#refreshCursorSelections(false);
-    this.#sendCursorToSubscribedClients(state);
+    const fanoutCount = this.#sendCursorToSubscribedClients(state);
+    this.#onLocalCursorPublished({
+      cursor: state,
+      fanoutCount,
+    });
 
     if (!this.#relayEnabled) {
       return;
@@ -169,15 +193,38 @@ export class CursorCoordinator {
     let hadChanges = false;
     for (const update of batch.updates) {
       if (this.#localCursorUids.has(update.uid)) {
+        this.#onRemoteCursorIngested({
+          fromShard: batch.from,
+          cursor: update,
+          previousSeq: this.#cursorByUid.get(update.uid)?.seq ?? null,
+          fanoutCount: 0,
+          applied: false,
+          ignoredReason: "local_owned",
+        });
         continue;
       }
       const existing = this.#cursorByUid.get(update.uid);
       if (existing && existing.seq >= update.seq) {
+        this.#onRemoteCursorIngested({
+          fromShard: batch.from,
+          cursor: update,
+          previousSeq: existing.seq,
+          fanoutCount: 0,
+          applied: false,
+          ignoredReason: "stale",
+        });
         continue;
       }
 
       this.#upsertCursor(update);
-      this.#sendCursorToSubscribedClients(update);
+      const fanoutCount = this.#sendCursorToSubscribedClients(update);
+      this.#onRemoteCursorIngested({
+        fromShard: batch.from,
+        cursor: update,
+        previousSeq: existing?.seq ?? null,
+        fanoutCount,
+        applied: true,
+      });
       hadChanges = true;
     }
 
@@ -387,13 +434,16 @@ export class CursorCoordinator {
     this.#cursorSelectionDirty = false;
   }
 
-  #sendCursorToSubscribedClients(cursor: CursorPresence): void {
+  #sendCursorToSubscribedClients(cursor: CursorPresence): number {
+    let fanoutCount = 0;
     for (const client of this.#clients.values()) {
       if (!client.cursorSubscriptions?.has(cursor.uid)) {
         continue;
       }
       this.#sendCursorUpdate(client, cursor);
+      fanoutCount += 1;
     }
+    return fanoutCount;
   }
 
   #sendCursorUpdate(client: ConnectedClient, cursor: CursorPresence): void {
