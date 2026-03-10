@@ -39,6 +39,34 @@ Current output shape:
 
 Every log record also carries `runId` and `botId`, so the writer is identifiable both from the filename and from the file contents.
 
+## Dev-Local Operation Note
+
+For dev-local swarm runs against a local worker, both sides need to run outside the sandbox:
+
+- `pnpm dev:worker` may need unsandboxed execution because `pnpm dlx wrangler` resolves tooling over the network
+- `pnpm swarm:run` may need unsandboxed execution because local HTTP and websocket traffic to the dev worker can be blocked in the sandbox
+- if either side is sandboxed, the run can fail before useful protocol activity begins:
+  - share-link creation can fail
+  - bots may never reach `hello`
+  - resulting logs are not valid for backend diagnosis
+
+This matters for local cursor investigation work in particular, because the whole point is to correlate swarm timing with captured dev-worker stdout in the same run folder.
+
+## Current Cursor Debug Result
+
+Recent local swarm-backed cursor probes are already useful for debugging the delayed initial cursor problem:
+
+- one run after the shorter empty-scope probe change showed all shards seeing first remote cursors in about `0.9s` to `1.3s`
+- a later rerun still showed one shard taking about `10s`, even though peer scope had arrived promptly
+
+Current takeaway:
+
+- the shorter empty-scope probe helped, but it is only a partial fix
+- the swarm harness is now good enough to distinguish:
+  - late peer discovery
+  - prompt peer discovery followed by delayed first useful reverse pull
+- the remaining cursor lead is stale-side post-scope wake scheduling, suppression, or first useful pull behavior
+
 ## Proposed Layout
 
 Current and planned scripts:

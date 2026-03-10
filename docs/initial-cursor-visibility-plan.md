@@ -194,6 +194,29 @@ Recent concrete evidence:
   - it also confirms the tradeoff of the tactical fix:
     - quiet connected shards with zero peers now renew hub watch state much more often
     - the latency gain is real, but the steady empty-scope watch cost is higher than we want permanently
+- `2026-03-10T20:30Z`:
+  - this was a fourth local swarm-backed run with `4` protocol bots and captured dev-worker stdout after the same `500ms` empty-scope probe change
+  - shard placement was:
+    - `bot-001` on `shard-7`
+    - `bot-002` on `shard-5`
+    - `bot-003` on `shard-3`
+    - `bot-004` on `shard-0`
+  - three shards were still fast:
+    - `shard-0` saw first remote cursors in about `605ms` to `645ms`
+    - `shard-3` saw first remote cursor in about `796ms`
+    - `shard-7` saw first remote cursors in about `798ms` to `831ms`
+  - one shard was still slow:
+    - `shard-5` saw first remote cursors only after about `9835ms` to `10081ms`
+  - the slow shard did not suffer late peer discovery this time:
+    - `cursor_pull_scope` on `shard-5` at `2026-03-10T20:30:40.657Z`
+    - peer scope already included `shard-0`, `shard-3`, and `shard-7`
+  - but first peer visibility on `shard-5` still lagged badly:
+    - `cursor_pull_first_peer_visibility` on `shard-5` at `2026-03-10T20:30:50.950Z` to `20:30:50.999Z`
+    - `scope_age_ms` about `10241` to `10294`
+    - `wake_reason: "local_activity"`
+  - this run shows the empty-scope probe fix is not sufficient by itself:
+    - fast scope arrival can still be followed by a long wait for first useful reverse pull
+    - the remaining delay is now more clearly in stale-side post-scope wake scheduling, suppression, or first useful pull execution
 
 Interpretation:
 
@@ -219,6 +242,11 @@ Interpretation:
   - that makes late empty-scope hub discovery a confirmed bug, not just a hypothesis
   - but the current `500ms` probe is a tactical setting, not the desired final design
   - we should keep the discovery win while reducing idle cost, ideally with adaptive probing or an event-driven peer-appearance signal instead of permanent fast polling
+- the `2026-03-10T20:30Z` local swarm run narrows the remaining problem:
+  - the same `500ms` probe can produce a fast run for most shards and still leave one shard waiting about `10s`
+  - in that run, peer scope on the slow shard was already prompt
+  - so the residual delay is no longer explained by empty-scope discovery
+  - this makes stale-side post-scope scheduling or first useful reverse-pull behavior the primary remaining lead
 
 ## Working Hypotheses
 
@@ -242,10 +270,18 @@ The newest evidence splits the likely causes by run shape:
 
 We now have a promising local debug loop using the swarm harness plus captured dev-worker logs.
 
+Important operational note:
+
+- for dev-local reproduction, both the local worker and the local swarm coordinator need to run outside the sandbox
+- sandboxed runs can fail before the useful part of the experiment:
+  - `pnpm dev:worker` may fail because `pnpm dlx wrangler` needs network access
+  - `pnpm swarm:run` may fail because local HTTP and websocket traffic to the dev worker is blocked
+- if either side stays sandboxed, the run may never reach `hello`, share-link creation can fail, and the resulting logs are not valid for cursor diagnosis
+
 Recommended local workflow:
 
-1. Start the local worker and capture stdout to a file.
-2. Run a longer swarm against the local `/ws` endpoint with enough bots to increase cross-shard placement probability, for example `4` bots for `30s`.
+1. Start the local worker outside the sandbox and capture stdout to a file.
+2. Run a longer swarm outside the sandbox against the local `/ws` endpoint with enough bots to increase cross-shard placement probability, for example `4` bots for `30s`.
 3. Inspect the swarm per-bot summaries first:
    - shard placement
    - first remote cursor latency
@@ -311,26 +347,29 @@ For each asymmetric run:
 
 ## Immediate Next Steps
 
-1. Validate the shorter empty-scope probe across a few more real cross-shard runs, not just one representative success case.
-2. Replace the fixed `500ms` empty-scope probe with an adaptive policy, for example:
+1. Treat the empty-scope probe change as a partial fix, not a complete resolution:
+   - it removes one discovery failure mode
+   - it does not remove the delayed-first-useful-pull failure mode
+2. Validate the shorter empty-scope probe across a few more real cross-shard runs, not just one representative success case.
+3. Replace the fixed `500ms` empty-scope probe with an adaptive policy, for example:
    - probe quickly for the first few seconds after connect or local cursor activity
    - then back off toward a slower cadence if peer scope stays empty
-3. Explore an event-driven alternative to repeated empty-scope polling:
+4. Explore an event-driven alternative to repeated empty-scope polling:
    - when the hub sees a newly active watched peer, emit a lightweight "peer appeared" nudge to existing empty-scope watchers
    - use that nudge to force an immediate watch refresh or pull wake on the stale shard
    - evaluate whether this can preserve fast first visibility with less idle hub traffic than continuous short probes
-4. Add the next layer of versioned cursor observability:
+5. Add the next layer of versioned cursor observability:
    - source local cursor publish log with `uid`, `seq`, `tileKey`, and shard
    - source `/cursor-state` snapshot log with included cursor `uid`s and max local seq
    - destination remote ingest log with previous seq, new seq, and whether client fanout happened
    - stale-side local-activity wake scheduling log with scheduler state and action
-5. Use those logs on the weak direction to determine whether the problem is:
+6. Use those logs on the weak direction to determine whether the problem is:
    - source cursor movement not being published
    - `/cursor-state` exposing stale or empty snapshots
    - destination discarding or not fanning newer versions
-6. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
-7. Only if scope already arrives promptly should we return to scheduler priority/coalescing work for fresh `watch_scope_change`.
-8. Keep validating that any latency fix preserves:
+7. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
+8. Now that we have a reproduced prompt-scope but late-visibility run, prioritize scheduler priority, suppression, and first useful reverse-pull behavior for fresh `watch_scope_change`.
+9. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
    - no hidden recursive `/cursor-state` storm
 
