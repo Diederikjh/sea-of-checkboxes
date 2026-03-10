@@ -339,10 +339,10 @@ export class SwarmBotSession {
     const worldPoint = setCellPointForStep(this.config.originX, this.config.originY, sequence);
     const tile = worldToTileKey(worldPoint.x, worldPoint.y);
     const index = worldToCellIndex(worldPoint.x, worldPoint.y);
-    const value = sequence % 2 === 0 ? 1 : 0;
     const op = `${this.config.botId}-op-${String(this.sequence.op).padStart(6, "0")}`;
     this.sequence.op += 1;
     const localBeforeV = this.#getLocalCellValue(tile, index);
+    const value = localBeforeV === null ? ((sequence % 2 === 0) ? 1 : 0) : (localBeforeV === 1 ? 0 : 1);
     const expectChange = localBeforeV === null ? null : localBeforeV !== value;
     this.pendingSetCells.set(`${tile}:${index}`, {
       tile,
