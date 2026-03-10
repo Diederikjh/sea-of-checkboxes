@@ -119,6 +119,27 @@ Recent concrete evidence:
     - source local cursor publish
     - source `/cursor-state` snapshot selection
     - destination ingest/fanout
+- `2026-03-10T19:47Z`:
+  - this was a local swarm-backed run with `4` protocol bots and captured dev-worker stdout
+  - shard placement was:
+    - `bot-001` on `shard-4`
+    - `bot-002`, `bot-003`, and `bot-004` on `shard-3`
+  - `shard-4 -> shard-3` first visibility was fast:
+    - `cursor_pull_scope` on `shard-4` at `2026-03-10T19:47:19.588Z`
+    - first `cursor_pull_first_peer_visibility` on `shard-4` at `2026-03-10T19:47:20.650Z`
+    - about `1.06s`
+  - `shard-3 -> shard-4` still lagged:
+    - `cursor_pull_scope` on `shard-3` at `2026-03-10T19:47:19.696Z`
+    - first `cursor_pull_first_peer_visibility` on `shard-3` at `2026-03-10T19:47:26.561Z`
+    - about `6.86s`
+  - the stale side already had prompt scope, so this run does not support late hub scope delivery as the main cause
+  - the source side was already publishing before first visibility on the stale side:
+    - `cursor_local_publish` on `shard-4` at `2026-03-10T19:47:20.604Z`, `21.606Z`, `22.627Z`, `23.611Z`, `24.615Z`, `25.617Z`
+  - the first successful reverse pull on the stale side was:
+    - `cursor_state_snapshot_served` from `shard-4` at `2026-03-10T19:47:26.557Z` with `update_count: 1`, `max_seq: 6`
+    - followed by `cursor_pull_peer` on `shard-3` at `2026-03-10T19:47:26.560Z`
+    - `wake_reason: "local_activity"`
+  - this points away from late scope discovery and toward stale-side scheduling or wake behavior before first non-empty reverse pull
 
 Interpretation:
 
@@ -130,6 +151,11 @@ Interpretation:
   - the source was publishing those versions continuously
   - `/cursor-state` was omitting them until later
   - or the destination was ingesting only some of the newer versions
+- the `2026-03-10T19:47Z` local swarm run adds a second important pattern:
+  - scope can arrive promptly on the stale side
+  - source local publish can also be prompt
+  - yet first reverse visibility can still wait until a later `local_activity` wake
+  - that shifts suspicion toward stale-side wake scheduling, wake coalescing, or delayed first non-empty reverse pull after scope is already known
 
 ## Working Hypotheses
 
@@ -140,9 +166,52 @@ For the stale shard in an asymmetric run, one of these is likely true:
 3. the alarm is armed later than intended, or fired later than intended after scope is finally known.
 4. early reverse pulls are happening but returning no updates until later.
 5. repeated peer pulls are succeeding, but the destination often sees no effective delta because cursor-state is a latest-snapshot pull and intermediate moves are being coalesced away.
-6. the remaining observability gap is between source local publish, snapshot assembly, and destination ingest; we still cannot prove which of those stages is causing the long empty or sparse periods.
+6. the remaining observability gap is between source local publish, snapshot assembly, destination ingest, and stale-side wake scheduling; we still cannot prove which of those stages is causing the long empty or sparse periods.
 
-The newest evidence makes `1` the leading hypothesis for late first visibility, with `5` now the leading hypothesis for sparse follow-up visibility after the first cursor appears.
+The newest evidence splits the likely causes by run shape:
+
+- when scope itself arrives late, `1` remains the leading hypothesis
+- when scope arrives promptly but first visibility still waits for later `local_activity`, `2`, `3`, and `4` become stronger candidates
+- `5` remains the leading hypothesis for sparse follow-up visibility after the first cursor appears
+
+## Swarm Debug Method
+
+We now have a promising local debug loop using the swarm harness plus captured dev-worker logs.
+
+Recommended local workflow:
+
+1. Start the local worker and capture stdout to a file.
+2. Run a longer swarm against the local `/ws` endpoint with enough bots to increase cross-shard placement probability, for example `4` bots for `30s`.
+3. Inspect the swarm per-bot summaries first:
+   - shard placement
+   - first remote cursor latency
+   - remote cursor counts by peer
+4. If the run is same-shard only, discard it for cursor-latency diagnosis and rerun.
+5. If the run is cross-shard and asymmetric, pivot immediately to the worker log and trace:
+   - `cursor_pull_scope`
+   - `cursor_pull_watch_scope_wake`
+   - `cursor_pull_local_activity_wake`
+   - `cursor_pull_alarm_armed`
+   - `cursor_pull_alarm_fired`
+   - `cursor_pull_peer`
+   - `cursor_pull_first_peer_visibility`
+   - `cursor_local_publish`
+   - `cursor_state_snapshot_served`
+   - `cursor_remote_ingest`
+
+Why this is useful:
+
+- it gives deterministic bot identities, shard placement, and timing without needing manual paired-browser choreography
+- it lets us capture the full worker stdout chain in one local file
+- it is good at separating:
+  - late scope discovery
+  - prompt scope but delayed first non-empty reverse pull
+  - prompt pull with stale or unchanged snapshots
+
+Current artifact shape from a useful local run:
+
+- swarm summary and per-bot logs in `logs/swarm/<run-id>/`
+- captured worker stdout copied into the same folder as `worker.log`
 
 ## Investigation Flow
 
@@ -153,6 +222,7 @@ For each asymmetric run:
 3. Use `pnpm logs:server:query` on the stale shard and trace this pipeline:
    - `cursor_pull_scope`
    - `cursor_pull_watch_scope_wake`
+   - `cursor_pull_local_activity_wake`
    - `cursor_pull_alarm_armed`
    - `cursor_pull_alarm_fired`
    - first reverse-direction `cursor_pull_peer`
@@ -167,7 +237,7 @@ For each asymmetric run:
    - any relevant `local_activity`
 6. Decide whether the real delay is:
    - late scope delivery from the hub
-   - delayed wake/alarm after scope delivery
+   - delayed `watch_scope_change` or `local_activity` wake after scope delivery
    - delayed first non-empty peer snapshot after scope delivery
    - repeated unchanged snapshots after pull succeeds
 7. If versioned pull logs still show late empty-to-high-version jumps, inspect the missing internal stages:
@@ -183,6 +253,7 @@ For each asymmetric run:
    - source local cursor publish log with `uid`, `seq`, `tileKey`, and shard
    - source `/cursor-state` snapshot log with included cursor `uid`s and max local seq
    - destination remote ingest log with previous seq, new seq, and whether client fanout happened
+   - stale-side local-activity wake scheduling log with scheduler state and action
 4. Use those logs on the weak direction to determine whether the problem is:
    - source cursor movement not being published
    - `/cursor-state` exposing stale or empty snapshots

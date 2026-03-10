@@ -1659,6 +1659,18 @@ describe("ConnectionShardDO websocket handling", () => {
         parseStructuredLogs(logSpy).some(
           (entry) =>
             entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_local_activity_wake"
+            && entry.wake_reason === "local_activity"
+            && typeof entry.adjusted_delay_ms === "number"
+            && entry.adjusted_delay_ms >= 299
+            && typeof entry.suppression_remaining_ms === "number"
+            && entry.suppression_remaining_ms >= 299
+        )
+      ).toBe(true);
+      expect(
+        parseStructuredLogs(logSpy).some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
             && entry.event === "cursor_pull_peer"
             && entry.wake_reason === "local_activity"
         )

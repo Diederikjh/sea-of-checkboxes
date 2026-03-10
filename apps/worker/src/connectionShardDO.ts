@@ -1138,17 +1138,30 @@ export class ConnectionShardDO {
     if (this.#cursorStateIngressDepth > 0) {
       const beforeState = this.#cursorPullIngressGate.inspectState();
       this.#cursorPullIngressGate.defer(wakeReason);
-      if (wakeReason === "watch_scope_change") {
+      if (wakeReason === "watch_scope_change" || wakeReason === "local_activity") {
         const afterState = this.#cursorPullIngressGate.inspectState();
-        this.#logEvent("cursor_pull_watch_scope_wake", {
-          action: "deferred_for_ingress",
-          wake_reason: wakeReason,
-          requested_delay_ms: delayMs,
-          adjusted_delay_ms: delayMs,
-          ingress_depth: this.#cursorStateIngressDepth,
-          gate_pending_wake_reason_before: beforeState.pendingWakeReason ?? undefined,
-          gate_pending_wake_reason_after: afterState.pendingWakeReason ?? undefined,
-          gate_flush_queued: afterState.flushQueued,
+        this.#logCursorPullWakeDecision({
+          eventName: this.#cursorPullWakeEventName(wakeReason),
+          decision: {
+            action: "deferred_for_ingress",
+            wakeReason,
+            requestedDelayMs: delayMs,
+            floorDelayMs: delayMs,
+            effectiveDelayMs: delayMs,
+            scheduledAtMs: 0,
+            existingScheduledAtMs: null,
+            existingWakeReason: beforeState.pendingWakeReason ?? null,
+          },
+          requestedDelayMs: delayMs,
+          adjustedDelayMs: delayMs,
+          suppressionRemainingMs: 0,
+          schedulerBeforeState: this.#cursorPullScheduler.inspectState(),
+          extraFields: {
+            ingress_depth: this.#cursorStateIngressDepth,
+            gate_pending_wake_reason_before: beforeState.pendingWakeReason ?? undefined,
+            gate_pending_wake_reason_after: afterState.pendingWakeReason ?? undefined,
+            gate_flush_queued: afterState.flushQueued,
+          },
         });
       }
       return;
@@ -1157,8 +1170,9 @@ export class ConnectionShardDO {
     const adjustedDelayMs = this.#applyCursorPullSuppressionDelay(delayMs);
     const schedulerBeforeState = this.#cursorPullScheduler.inspectState();
     const decision = this.#cursorPullScheduler.schedule(adjustedDelayMs, wakeReason);
-    if (wakeReason === "watch_scope_change") {
-      this.#logCursorPullWatchScopeWakeDecision({
+    if (wakeReason === "watch_scope_change" || wakeReason === "local_activity") {
+      this.#logCursorPullWakeDecision({
+        eventName: this.#cursorPullWakeEventName(wakeReason),
         decision,
         requestedDelayMs: delayMs,
         adjustedDelayMs,
@@ -1465,21 +1479,35 @@ export class ConnectionShardDO {
     };
   }
 
-  #logCursorPullWatchScopeWakeDecision({
+  #cursorPullWakeEventName(wakeReason: CursorPullWakeReason): string {
+    switch (wakeReason) {
+      case "local_activity":
+        return "cursor_pull_local_activity_wake";
+      case "watch_scope_change":
+      default:
+        return "cursor_pull_watch_scope_wake";
+    }
+  }
+
+  #logCursorPullWakeDecision({
+    eventName,
     decision,
     requestedDelayMs,
     adjustedDelayMs,
     suppressionRemainingMs,
     schedulerBeforeState,
+    extraFields = {},
   }: {
+    eventName: string;
     decision: CursorPullScheduleDecision;
     requestedDelayMs: number;
     adjustedDelayMs: number;
     suppressionRemainingMs: number;
     schedulerBeforeState: ReturnType<ConnectionShardCursorPullScheduler["inspectState"]>;
+    extraFields?: Record<string, unknown>;
   }): void {
     const schedulerAfterState = this.#cursorPullScheduler.inspectState();
-    this.#logEvent("cursor_pull_watch_scope_wake", {
+    this.#logEvent(eventName, {
       action: decision.action,
       wake_reason: decision.wakeReason,
       requested_delay_ms: requestedDelayMs,
@@ -1494,6 +1522,7 @@ export class ConnectionShardDO {
       armed_wake_reason: schedulerAfterState.wakeReason ?? undefined,
       last_started_at_ms: schedulerAfterState.lastStartedAtMs || undefined,
       last_completed_at_ms: schedulerAfterState.lastCompletedAtMs || undefined,
+      ...extraFields,
     });
   }
 
