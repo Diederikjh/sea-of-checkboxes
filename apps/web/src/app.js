@@ -40,6 +40,7 @@ import { createServerMessageHandler } from "./serverMessages";
 import { createSetCellOutboxSync } from "./setCellOutboxSync";
 import { createSubscriptionRebuildTracker } from "./subscriptionRebuildTracker";
 import { createRenderLoop } from "./renderLoop";
+import { resolveClientSessionId } from "./clientSessionId";
 import {
   createShareLink,
   readShareIdFromLocation,
@@ -215,6 +216,8 @@ export async function startApp() {
     logOther(event, fields);
   };
   const nextClientMessageId = createClientMessageIdFactory();
+  const clientSessionId = resolveClientSessionId();
+  logOther("client_session", { clientSessionId });
 
   const app = new Application({
     view: canvas,
@@ -326,6 +329,7 @@ export async function startApp() {
   const wireTransport = createWireTransport({
     env,
     identityProvider: readStoredIdentity,
+    clientSessionId,
   });
   let transportOnline = false;
   let wsSessionId = 0;

@@ -440,10 +440,13 @@ export function shardNameForUid(uid) {
   return `shard-${shard}`;
 }
 
-export function buildSocketUrl(baseUrl, token) {
+export function buildSocketUrl(baseUrl, token = "", clientSessionId = "") {
   const parsed = new URL(baseUrl);
   if (typeof token === "string" && token.length > 0) {
     parsed.searchParams.set("token", token);
+  }
+  if (typeof clientSessionId === "string" && clientSessionId.length > 0) {
+    parsed.searchParams.set("clientSessionId", clientSessionId);
   }
   return parsed.toString();
 }

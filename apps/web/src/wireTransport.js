@@ -8,6 +8,7 @@ export function createWireTransport({
   locationLike = typeof window !== "undefined" ? window.location : undefined,
   wsFactory,
   identityProvider,
+  clientSessionId = "",
 } = {}) {
   if (isMockTransportEnabled(env)) {
     logger.other("transport", { mode: "mock" });
@@ -15,8 +16,8 @@ export function createWireTransport({
   }
 
   const resolveIdentity = typeof identityProvider === "function" ? identityProvider : () => null;
-  const resolveUrl = () => resolveWebSocketUrl(locationLike, env, resolveIdentity());
+  const resolveUrl = () => resolveWebSocketUrl(locationLike, env, resolveIdentity(), clientSessionId);
   const wsUrl = resolveUrl();
-  logger.other("transport", { mode: "ws", wsUrl });
+  logger.other("transport", { mode: "ws", wsUrl, clientSessionId });
   return createWebSocketTransport(wsUrl, { wsFactory, resolveUrl });
 }

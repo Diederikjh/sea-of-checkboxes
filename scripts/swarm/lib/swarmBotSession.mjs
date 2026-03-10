@@ -65,6 +65,7 @@ export class SwarmBotSession {
     this.logger.log("bot_start", {
       runId: this.config.runId,
       botId: this.config.botId,
+      clientSessionId: this.config.clientSessionId,
       wsUrl: this.config.wsUrl,
       originX: this.config.originX,
       originY: this.config.originY,
@@ -108,7 +109,7 @@ export class SwarmBotSession {
   }
 
   #openSocket() {
-    const wsUrl = buildSocketUrl(this.config.wsUrl, this.currentToken);
+    const wsUrl = buildSocketUrl(this.config.wsUrl, this.currentToken, this.config.clientSessionId);
     this.metrics.markConnectAttempt(this.nowMs());
     this.logger.log("ws_connect_attempt", {
       runId: this.config.runId,
@@ -203,6 +204,7 @@ export class SwarmBotSession {
           name: message.name,
           token: message.token,
           shard: shardNameForUid(message.uid),
+          clientSessionId: this.config.clientSessionId,
         };
         this.logger.log("hello_received", {
           runId: this.config.runId,
@@ -210,6 +212,7 @@ export class SwarmBotSession {
           uid: message.uid,
           name: message.name,
           shard: this.identity.shard,
+          clientSessionId: this.config.clientSessionId,
           hasSpawn: Boolean(message.spawn),
         });
         this.#sendSubscribe();
@@ -416,6 +419,7 @@ export class SwarmBotSession {
       originY: this.config.originY,
       readonly: this.config.readonly,
       identity: this.identity,
+      clientSessionId: this.config.clientSessionId,
       shard: this.identity?.shard ?? null,
       durationMs: this.startedAtMs === null ? null : this.nowMs() - this.startedAtMs,
     });

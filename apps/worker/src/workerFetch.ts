@@ -49,6 +49,7 @@ const SHARE_LINK_KEY_PREFIX = "share:";
 const SHARE_LINK_TTL_SECONDS = 90 * 24 * 60 * 60;
 const SHARE_LINK_MAX_ZOOM = 64;
 const WS_DISABLED_VALUES = new Set(["1", "true", "yes", "on"]);
+const CLIENT_SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 interface ShareLinkRecord {
   x: number;
@@ -71,11 +72,20 @@ function buildShardUrl(identity: ConnectionIdentity, shardName: string): URL {
   shardUrl.searchParams.set("name", identity.name);
   shardUrl.searchParams.set("token", identity.token);
   shardUrl.searchParams.set("shard", shardName);
+  if (typeof identity.clientSessionId === "string" && identity.clientSessionId.length > 0) {
+    shardUrl.searchParams.set("clientSessionId", identity.clientSessionId);
+  }
   return shardUrl;
+}
+
+function resolveClientSessionId(url: URL): string | undefined {
+  const raw = url.searchParams.get("clientSessionId")?.trim() ?? "";
+  return CLIENT_SESSION_ID_PATTERN.test(raw) ? raw : undefined;
 }
 
 async function resolveIdentity(url: URL, env: Env): Promise<ConnectionIdentity | null> {
   const requestedToken = url.searchParams.get("token")?.trim() ?? "";
+  const clientSessionId = resolveClientSessionId(url);
   const signingSecret = resolveIdentitySigningSecret(env);
   const authMode = resolveAuthMode(env);
 
@@ -90,6 +100,7 @@ async function resolveIdentity(url: URL, env: Env): Promise<ConnectionIdentity |
         uid: verifiedIdentity.uid,
         name: verifiedIdentity.name,
         token,
+        ...(clientSessionId ? { clientSessionId } : {}),
       };
     }
   }
@@ -104,6 +115,7 @@ async function resolveIdentity(url: URL, env: Env): Promise<ConnectionIdentity |
     uid,
     name,
     token: await createIdentityToken(uid, name, signingSecret),
+    ...(clientSessionId ? { clientSessionId } : {}),
   };
 }
 

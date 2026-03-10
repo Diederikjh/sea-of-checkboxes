@@ -484,6 +484,7 @@ export class ConnectionShardDO {
     const client: ConnectedClient = {
       uid: identity.uid,
       name: identity.name,
+      clientSessionId: identity.clientSessionId,
       socket: serverSocket,
       connectedAtMs: this.#nowMs(),
       subscribed: new Set(),
@@ -498,6 +499,7 @@ export class ConnectionShardDO {
     this.#clients.set(identity.uid, client);
     this.#logEvent("ws_connect", {
       uid: identity.uid,
+      ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
       clients_connected: this.#clients.size,
     });
     const spawn = await this.#resolveHelloSpawn();
@@ -528,6 +530,7 @@ export class ConnectionShardDO {
       closed = true;
       this.#logEvent("ws_close", {
         uid: client.uid,
+        ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
         clients_connected: Math.max(0, this.#clients.size - 1),
         ...fields,
       });
@@ -566,6 +569,7 @@ export class ConnectionShardDO {
       this.#sendError(client, "bad_message", "Invalid message payload");
       this.#logEvent("bad_message", {
         uid,
+        ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
       });
       return;
     }
@@ -577,7 +581,10 @@ export class ConnectionShardDO {
         uid,
         message,
         logEvent: (event, fields) => {
-          this.#logEvent(event, fields);
+          this.#logEvent(event, {
+            ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+            ...fields,
+          });
         },
         recordTileVersion: (tileKey, ver) => {
           this.#recordTileVersion(tileKey, ver);
@@ -613,6 +620,7 @@ export class ConnectionShardDO {
       });
       this.#logEvent("internal_error", {
         uid,
+        ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
         ...this.#cursorTraceState.traceFields(traceContext),
         ...this.#errorFields(error),
       });
@@ -840,6 +848,7 @@ export class ConnectionShardDO {
     });
     this.#logEvent("server_error_sent", {
       uid: client.uid,
+      ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
       code,
       msg,
       ...this.#cursorTraceState.traceFields(activeTrace),

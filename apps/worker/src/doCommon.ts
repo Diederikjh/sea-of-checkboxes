@@ -65,6 +65,7 @@ export interface ConnectionIdentity {
   uid: string;
   name: string;
   token: string;
+  clientSessionId?: string;
 }
 
 export interface TileWatchRequest {

@@ -9,15 +9,16 @@ function toBool(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function withIdentityQueryParams(wsUrl, identity) {
+function withIdentityQueryParams(wsUrl, identity, clientSessionId = "") {
   const normalized = normalizeStoredIdentity(identity);
-  if (!normalized) {
-    return wsUrl;
-  }
-
   try {
     const parsed = new URL(wsUrl);
-    parsed.searchParams.set("token", normalized.token);
+    if (normalized) {
+      parsed.searchParams.set("token", normalized.token);
+    }
+    if (typeof clientSessionId === "string" && clientSessionId.trim().length > 0) {
+      parsed.searchParams.set("clientSessionId", clientSessionId.trim());
+    }
     return parsed.toString();
   } catch {
     return wsUrl;
@@ -33,24 +34,25 @@ export function isMockTransportEnabled(
 export function resolveWebSocketUrl(
   locationLike = typeof window !== "undefined" ? window.location : undefined,
   env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {},
-  identity = null
+  identity = null,
+  clientSessionId = ""
 ) {
   const envUrl = typeof env.VITE_WS_URL === "string" ? env.VITE_WS_URL.trim() : "";
   if (envUrl.length > 0) {
-    return withIdentityQueryParams(envUrl, identity);
+    return withIdentityQueryParams(envUrl, identity, clientSessionId);
   }
 
   if (!locationLike || typeof locationLike.host !== "string") {
-    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity);
+    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity, clientSessionId);
   }
 
   const host = locationLike.host.toLowerCase();
   if (host === "localhost:5173" || host === "127.0.0.1:5173") {
-    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity);
+    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity, clientSessionId);
   }
 
   const protocol = locationLike.protocol === "https:" ? "wss:" : "ws:";
-  return withIdentityQueryParams(`${protocol}//${locationLike.host}/ws`, identity);
+  return withIdentityQueryParams(`${protocol}//${locationLike.host}/ws`, identity, clientSessionId);
 }
 
 export function resolveApiBaseUrl(

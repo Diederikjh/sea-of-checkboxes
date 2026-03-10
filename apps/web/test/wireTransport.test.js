@@ -83,6 +83,7 @@ describe("wire transport selection", () => {
         protocol: "https:",
         host: "example.com",
       },
+      clientSessionId: "web_session_1",
       identityProvider: () => ({
         uid: "u_saved123",
         name: "BriskOtter481",
@@ -91,7 +92,7 @@ describe("wire transport selection", () => {
     });
 
     const wsUrl = mocks.createWebSocketTransport.mock.calls[0]?.[0];
-    expect(wsUrl).toBe("wss://example.com/ws?token=tok_abc");
+    expect(wsUrl).toBe("wss://example.com/ws?token=tok_abc&clientSessionId=web_session_1");
     const parsed = new URL(wsUrl);
     expect(parsed.searchParams.has("uid")).toBe(false);
     expect(parsed.searchParams.has("name")).toBe(false);
@@ -105,17 +106,18 @@ describe("wire transport selection", () => {
         protocol: "https:",
         host: "example.com",
       },
+      clientSessionId: "web_session_2",
       identityProvider: () => currentIdentity,
     });
 
     const options = mocks.createWebSocketTransport.mock.calls[0]?.[1];
-    expect(options.resolveUrl()).toBe("wss://example.com/ws");
+    expect(options.resolveUrl()).toBe("wss://example.com/ws?clientSessionId=web_session_2");
 
     currentIdentity = {
       uid: "u_saved123",
       name: "BriskOtter481",
       token: "tok_abc",
     };
-    expect(options.resolveUrl()).toBe("wss://example.com/ws?token=tok_abc");
+    expect(options.resolveUrl()).toBe("wss://example.com/ws?token=tok_abc&clientSessionId=web_session_2");
   });
 });

@@ -46,6 +46,16 @@ describe("transport config", () => {
     expect(resolveWebSocketUrl(undefined, {})).toBe("ws://127.0.0.1:8787/ws");
   });
 
+  it("appends client session id to websocket url", () => {
+    const resolved = resolveWebSocketUrl(
+      { protocol: "https:", host: "example.com" },
+      {},
+      null,
+      "web_session_1"
+    );
+    expect(resolved).toBe("wss://example.com/ws?clientSessionId=web_session_1");
+  });
+
   it("appends persisted identity to websocket url", () => {
     const resolved = resolveWebSocketUrl(
       { protocol: "https:", host: "example.com" },

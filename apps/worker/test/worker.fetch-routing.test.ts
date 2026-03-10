@@ -388,6 +388,27 @@ describe("top-level worker fetch routing", () => {
     expect(forwarded?.headers.get("x-trace-id")).toBe("trace_123");
   });
 
+  it("forwards client session id on websocket requests", async () => {
+    const { env, connectionShard } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/ws?clientSessionId=web_session_1", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    const shardName = connectionShard.requestedNames[0];
+    if (!shardName) {
+      throw new Error("Expected shard name");
+    }
+
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
+    expect(forwardedUrl.searchParams.get("clientSessionId")).toBe("web_session_1");
+  });
+
   it("reuses identity from a valid signed token", async () => {
     const { env, connectionShard, identitySigningSecret } = createEnv();
     const token = await createIdentityToken("u_saved123", "BriskOtter481", identitySigningSecret);

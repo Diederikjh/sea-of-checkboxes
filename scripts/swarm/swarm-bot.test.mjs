@@ -116,6 +116,17 @@ describe("swarm bot config", () => {
     expect(config.originY).toBe(-456);
     expect(config.readonly).toBe(true);
   });
+
+  it("derives a stable client session id from run and bot ids", () => {
+    const config = parseSwarmBotArgs([
+      "--run-id",
+      "run-1",
+      "--bot-id",
+      "bot-2",
+    ]);
+
+    expect(config.clientSessionId).toBe("swarm_run-1_bot-2");
+  });
 });
 
 describe("swarm protocol helpers", () => {
@@ -231,6 +242,7 @@ describe("swarm bot session", () => {
 
       const startPromise = session.start();
       expect(sockets).toHaveLength(1);
+      expect(sockets[0].url).toContain("clientSessionId=swarm_");
       sockets[0].emit("open", {});
       sockets[0].emit("message", {
         data: encodeHelloMessage(),

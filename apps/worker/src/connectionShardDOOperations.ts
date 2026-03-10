@@ -20,6 +20,7 @@ import type { SocketLike } from "./socketPair";
 export interface ConnectedClient {
   uid: string;
   name: string;
+  clientSessionId?: string;
   socket: SocketLike;
   connectedAtMs?: number;
   subscribed: Set<string>;

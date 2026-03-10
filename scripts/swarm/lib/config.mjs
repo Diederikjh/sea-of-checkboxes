@@ -33,6 +33,7 @@ export function defaultSwarmBotConfig({
     wsUrl: env.SOC_SWARM_WS_URL ?? env.SOC_TEST_WS_URL ?? "ws://127.0.0.1:8787/ws",
     runId,
     botId,
+    clientSessionId: `swarm_${runId}_${botId}`,
     output,
     summaryOutput: resolvePath(path.dirname(output), `${botId}-summary.json`),
     durationMs: 30_000,
@@ -50,6 +51,7 @@ export function parseSwarmBotArgs(argv, options = {}) {
   const config = defaultSwarmBotConfig(options);
   let outputProvided = false;
   let summaryProvided = false;
+  let clientSessionIdProvided = false;
   const args = [...argv];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -83,6 +85,17 @@ export function parseSwarmBotArgs(argv, options = {}) {
     }
     if (arg.startsWith("--bot-id=")) {
       config.botId = arg.slice("--bot-id=".length);
+      continue;
+    }
+    if (arg === "--client-session-id") {
+      config.clientSessionId = argValue(args, index, arg);
+      clientSessionIdProvided = true;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--client-session-id=")) {
+      config.clientSessionId = arg.slice("--client-session-id=".length);
+      clientSessionIdProvided = true;
       continue;
     }
     if (arg === "--output") {
@@ -193,6 +206,9 @@ export function parseSwarmBotArgs(argv, options = {}) {
   if (!outputProvided) {
     config.output = resolvePath("logs", "swarm", config.runId, "bots", `${config.botId}.ndjson`);
   }
+  if (!clientSessionIdProvided || typeof config.clientSessionId !== "string" || config.clientSessionId.trim().length === 0) {
+    config.clientSessionId = `swarm_${config.runId}_${config.botId}`;
+  }
   if (!summaryProvided) {
     config.summaryOutput = resolvePath(path.dirname(config.output), `${config.botId}-summary.json`);
   }
@@ -210,6 +226,7 @@ Options:
   --ws-url <url>                WebSocket URL (default: SOC_SWARM_WS_URL or ws://127.0.0.1:8787/ws)
   --run-id <id>                 Run identifier for logs
   --bot-id <id>                 Bot identifier for logs
+  --client-session-id <id>      Stable session correlation id for worker logs
   --output <file>               NDJSON event log output path
   --summary-output <file>       Summary JSON output path
   --duration-ms <n>             Total runtime in ms (default: 30000)
