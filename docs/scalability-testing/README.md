@@ -35,6 +35,7 @@ Current output shape:
   - `logs/swarm/<run-id>/bots/<bot-id>.ndjson`
 - one summary JSON file per bot process:
   - `logs/swarm/<run-id>/bots/<bot-id>-summary.json`
+- coordinator run config and summary may also include a share link for the swarm origin so a human can inspect the board location directly
 
 Every log record also carries `runId` and `botId`, so the writer is identifiable both from the filename and from the file contents.
 
@@ -64,6 +65,7 @@ Planned output:
 - `logs/swarm/<run-id>/bots/<bot-id>.ndjson`
 - `logs/swarm/<run-id>/bots/<bot-id>-summary.json`
 - optional canary browser logs in `logs/swarm/<run-id>/canary-*.log`
+- share-link metadata at run start when the backend supports share-link creation
 
 ## Safety Requirements
 

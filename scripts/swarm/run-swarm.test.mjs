@@ -40,6 +40,8 @@ describe("run swarm config", () => {
     const config = parseRunSwarmArgs([
       "--duration-ms",
       "15000",
+      "--app-url",
+      "https://app.example.com/",
       "--origin-x",
       "-123",
       "--origin-y",
@@ -49,9 +51,9 @@ describe("run swarm config", () => {
     ]);
 
     expect(config.durationMs).toBe(15000);
+    expect(config.appUrl).toBe("https://app.example.com/");
     expect(config.originX).toBe(-123);
     expect(config.originY).toBe(-456);
     expect(config.killAfterMs).toBe(500);
   });
 });
-

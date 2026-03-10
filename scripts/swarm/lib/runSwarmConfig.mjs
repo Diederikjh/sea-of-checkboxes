@@ -30,6 +30,7 @@ export function defaultRunSwarmConfig({
   const runDir = resolvePath("logs", "swarm", runId);
   return {
     wsUrl: env.SOC_SWARM_WS_URL ?? env.SOC_TEST_WS_URL ?? "ws://127.0.0.1:8787/ws",
+    appUrl: env.SOC_SWARM_APP_URL ?? env.SOC_TEST_APP_URL ?? "",
     runId,
     runDir,
     coordinatorLog: resolvePath(runDir, "coordinator.log"),
@@ -70,6 +71,15 @@ export function parseRunSwarmArgs(argv, options = {}) {
     }
     if (arg.startsWith("--ws-url=")) {
       config.wsUrl = arg.slice("--ws-url=".length);
+      continue;
+    }
+    if (arg === "--app-url") {
+      config.appUrl = argValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--app-url=")) {
+      config.appUrl = arg.slice("--app-url=".length);
       continue;
     }
     if (arg === "--run-id") {
@@ -268,6 +278,7 @@ export function writeRunConfig(config, botConfigs) {
   const payload = {
     runId: config.runId,
     wsUrl: config.wsUrl,
+    appUrl: config.appUrl,
     durationMs: config.durationMs,
     botCount: config.botCount,
     originX: config.originX,
@@ -298,6 +309,7 @@ Usage:
 
 Options:
   --ws-url <url>                WebSocket URL (default: SOC_SWARM_WS_URL or ws://127.0.0.1:8787/ws)
+  --app-url <url>               Human-facing web app URL used to build the share link
   --run-id <id>                 Run identifier
   --run-dir <dir>               Run output directory
   --coordinator-log <file>      Coordinator log file
@@ -313,4 +325,3 @@ Options:
   -h, --help                    Show this help
 `;
 }
-

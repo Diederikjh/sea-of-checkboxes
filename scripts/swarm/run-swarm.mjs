@@ -22,11 +22,17 @@ async function main() {
   fs.mkdirSync(path.resolve(config.runDir, "bots"), { recursive: true });
   const logger = createNdjsonLogger(config.coordinatorLog);
   const botConfigs = buildBotLaunchConfigs(config);
-  writeRunConfig(config, botConfigs);
+  const runConfigPayload = writeRunConfig(config, botConfigs);
+  const shareLink = await createRunShareLink(config, logger);
+  if (shareLink) {
+    runConfigPayload.shareLink = shareLink;
+    fs.writeFileSync(path.resolve(config.runDir, "run-config.json"), `${JSON.stringify(runConfigPayload, null, 2)}\n`);
+  }
 
   logger.log("run_start", {
     runId: config.runId,
     wsUrl: config.wsUrl,
+    ...(shareLink ? { shareUrl: shareLink.url, shareId: shareLink.id } : {}),
     botCount: config.botCount,
     durationMs: config.durationMs,
     runDir: config.runDir,
@@ -170,6 +176,7 @@ async function main() {
       config,
       childResults,
       stopReason,
+      shareLink,
     });
     fs.writeFileSync(config.summaryOutput, `${JSON.stringify(summary, null, 2)}\n`);
     logger.log("run_summary", summary);
@@ -201,7 +208,7 @@ async function main() {
   }
 }
 
-function buildSummary({ config, childResults, stopReason }) {
+function buildSummary({ config, childResults, stopReason, shareLink }) {
   const botSummaries = [];
   for (const result of childResults) {
     let summary = null;
@@ -228,6 +235,7 @@ function buildSummary({ config, childResults, stopReason }) {
     ok: failedBots === 0,
     runId: config.runId,
     stopReason,
+    shareLink,
     botCount: config.botCount,
     forcedKillCount,
     failedBots,
@@ -235,8 +243,93 @@ function buildSummary({ config, childResults, stopReason }) {
   };
 }
 
+async function createRunShareLink(config, logger) {
+  const apiBaseUrl = resolveApiBaseUrl(config.wsUrl);
+  const appUrl = resolveAppUrl(config);
+  const requestBody = {
+    x: config.originX,
+    y: config.originY,
+    zoom: 16,
+  };
+
+  try {
+    const response = await fetch(`${apiBaseUrl}/share-links`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      logger.log("share_link_failed", {
+        runId: config.runId,
+        status: response.status,
+        apiBaseUrl,
+      });
+      return null;
+    }
+
+    const payload = await response.json();
+    if (typeof payload?.id !== "string" || payload.id.length === 0) {
+      logger.log("share_link_failed", {
+        runId: config.runId,
+        reason: "invalid_id",
+        apiBaseUrl,
+      });
+      return null;
+    }
+
+    const url = buildShareUrl(appUrl, payload.id);
+    const shareLink = {
+      id: payload.id,
+      url,
+      apiBaseUrl,
+      appUrl,
+      camera: {
+        x: config.originX,
+        y: config.originY,
+        zoom: requestBody.zoom,
+      },
+    };
+    logger.log("share_link_created", {
+      runId: config.runId,
+      shareId: shareLink.id,
+      shareUrl: shareLink.url,
+    });
+    return shareLink;
+  } catch (error) {
+    logger.log("share_link_failed", {
+      runId: config.runId,
+      reason: error instanceof Error ? error.message : String(error),
+      apiBaseUrl,
+    });
+    return null;
+  }
+}
+
+function resolveApiBaseUrl(wsUrl) {
+  const parsed = new URL(wsUrl);
+  const protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+  return `${protocol}//${parsed.host}`;
+}
+
+function resolveAppUrl(config) {
+  if (typeof config.appUrl === "string" && config.appUrl.trim().length > 0) {
+    return config.appUrl.trim();
+  }
+  return resolveApiBaseUrl(config.wsUrl);
+}
+
+function buildShareUrl(appUrl, shareId) {
+  const parsed = new URL(appUrl);
+  parsed.search = "";
+  parsed.hash = "";
+  parsed.searchParams.set("share", shareId);
+  return parsed.toString();
+}
+
 main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
-
