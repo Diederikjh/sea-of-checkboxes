@@ -273,6 +273,48 @@ Recent concrete evidence:
     - first post-scope pull decisions all logged `action: "started"` with `bypass_enabled: true`
   - no multi-second or `10s` initial cursor stall reappeared in this sample
   - this run supports keeping the bypass enabled for ongoing investigation, but it does not yet justify treating the bypass as the whole fix
+- `2026-03-13T19:38Z`:
+  - this was the first local swarm run after adding `cursor_pull_pre_visibility_observation`
+  - shard placement was:
+    - `bot-001` on `shard-4`
+    - `bot-002` and `bot-004` on `shard-5`
+    - `bot-003` on `shard-0`
+  - the slower path in this sample was `shard-4`, which saw first remote cursors in about `1687ms` to `2095ms`
+  - the useful new signal is that all pre-visibility observations in this run were:
+    - `cursor_pull_pre_visibility_observation`
+    - `outcome: "empty_snapshot"`
+  - there were no observed `nonempty_without_delta` cases in this sample
+  - worker evidence showed:
+    - first-post-scope decisions still started promptly
+    - the stale side pulled peers early
+    - but those peers initially served `update_count: 0`
+    - first visibility arrived only after those peer shards produced their first local cursor publish
+  - this narrows the lead for this run shape:
+    - the delay is not destination ingest with a non-empty snapshot
+    - it is source-side time-to-first-local-cursor
+  - this also exposed a swarm-harness artifact:
+    - bots were waiting a full `cursorIntervalMs` before sending their first `cur`
+    - with the default `1000ms` interval, early `empty_snapshot` pulls were expected even when the backend was healthy
+  - the swarm harness should send an immediate bootstrap cursor on startup so future runs isolate backend delay instead of bot startup delay
+- `2026-03-13T19:48Z`:
+  - this was the next local swarm run after changing the swarm harness to send a bootstrap cursor immediately instead of waiting one full `cursorIntervalMs`
+  - shard placement was:
+    - `bot-001` on `shard-7`
+    - `bot-002` and `bot-004` on `shard-3`
+    - `bot-003` on `shard-6`
+  - first local cursor publishes were prompt on every source shard:
+    - `cursor_first_local_publish` on `shard-3` at connection age about `156ms` and `159ms`
+    - `cursor_first_local_publish` on `shard-6` at connection age about `158ms`
+    - `cursor_first_local_publish` on `shard-7` at connection age about `178ms`
+  - the resulting first remote cursor timings were materially better:
+    - `shard-3` bots saw first remote cursors in about `368ms` to `623ms`
+    - `shard-6` saw first remote cursor at about `619ms`
+    - `shard-7` saw first remote cursors at about `1270ms` to `1271ms`
+  - importantly, this run did not produce early `cursor_pull_pre_visibility_observation` rows for `empty_snapshot`
+  - the worker log instead showed prompt first post-scope decisions and prompt first peer visibility with `max_seq: 1`
+  - this confirms the earlier `empty_snapshot` lead was at least partly a swarm artifact:
+    - waiting a full interval before the first bot cursor send was injecting avoidable startup delay into the experiment
+  - after removing that artifact, the remaining cursor latency is still worth tracking, but it is much closer to the scheduler / scope timing we actually care about
 
 Interpretation:
 
@@ -317,6 +359,14 @@ Interpretation:
     - source snapshot is non-empty but destination has no new delta
     - destination finally ingests and fans out a real first visible cursor
   - worker logging should now make that distinction explicit, instead of inferring it by hand from separate `cursor_state_snapshot_served` and `cursor_remote_ingest` rows
+- the `2026-03-13T19:38Z` run narrows the next step again:
+  - in that sample, the remaining delay was entirely explained by `empty_snapshot`
+  - that makes source-side first local cursor publish latency the main lead for that run shape
+  - it also means swarm startup behavior has to be corrected before using those early empty pulls as backend evidence
+- the `2026-03-13T19:48Z` run validates that correction:
+  - once bots publish a bootstrap cursor immediately, the artificial startup `empty_snapshot` gap largely disappears
+  - that means future swarm runs are more trustworthy for backend diagnosis
+  - it also raises the bar for any remaining delay: if we still see slow first visibility now, it is less likely to be caused by the harness itself
 
 ## Working Hypotheses
 
@@ -341,6 +391,7 @@ The newest evidence splits the likely causes by run shape:
 - after the `2026-03-13T19:28Z` confirmation run, `4` needs to be split in two:
   - `4a`: early reverse pulls are happening, but the source peer snapshot is still empty because no local cursor has been published yet
   - `4b`: early reverse pulls are happening, the source peer snapshot is non-empty, but the destination still sees no effective delta
+- after the `2026-03-13T19:38Z` pre-visibility run, `4a` is now directly observed in worker logs rather than inferred
 
 ## Swarm Debug Method
 
