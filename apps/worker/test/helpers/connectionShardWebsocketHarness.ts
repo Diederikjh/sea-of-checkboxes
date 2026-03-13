@@ -6,6 +6,7 @@ import { expect } from "vitest";
 
 import { ConnectionShardDO } from "../../src/worker";
 import type { CursorRelayBatch } from "../../src/cursorRelay";
+import type { Env } from "../../src/doCommon";
 import {
   MockSocket,
   MockSocketPairFactory,
@@ -136,17 +137,18 @@ export function parseStructuredLogs(logSpy: StructuredLogSpy) {
     });
 }
 
-export function createHarness(options: { alarmMode?: AlarmMode } = {}) {
+export function createHarness(options: { alarmMode?: AlarmMode; envOverrides?: Partial<Env> } = {}) {
   const socketPairFactory = new MockSocketPairFactory();
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
   const tileOwners = new StubNamespace((name) => new TileOwnerDurableObjectStub(name));
   const cursorHub = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const storage = new AlarmEnabledNullStorage(options.alarmMode ?? "auto");
 
-  const env = {
+  const env: Env = {
     CONNECTION_SHARD: tileOwners,
     TILE_OWNER: tileOwners,
     CURSOR_HUB: cursorHub,
+    ...(options.envOverrides ?? {}),
   };
 
   const state = {
@@ -176,7 +178,7 @@ export function createHarness(options: { alarmMode?: AlarmMode } = {}) {
   };
 }
 
-export function createRelayHarness(options: { alarmMode?: AlarmMode } = {}) {
+export function createRelayHarness(options: { alarmMode?: AlarmMode; envOverrides?: Partial<Env> } = {}) {
   const socketPairFactory = new MockSocketPairFactory();
   const upgradeResponseFactory = new MockUpgradeResponseFactory(200);
   const connectionShards = new StubNamespace((name) => new RecordingDurableObjectStub(name));
@@ -184,10 +186,11 @@ export function createRelayHarness(options: { alarmMode?: AlarmMode } = {}) {
   const cursorHub = new StubNamespace((name) => new RecordingDurableObjectStub(name));
   const storage = new AlarmEnabledNullStorage(options.alarmMode ?? "auto");
 
-  const env = {
+  const env: Env = {
     CONNECTION_SHARD: connectionShards,
     TILE_OWNER: tileOwners,
     CURSOR_HUB: cursorHub,
+    ...(options.envOverrides ?? {}),
   };
 
   const state = {

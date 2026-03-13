@@ -98,10 +98,17 @@ const CURSOR_PULL_CONCURRENCY = 2;
 const CURSOR_HUB_NAME = "global";
 const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
 const CURSOR_BATCH_TRACE_MAX_HOP = 1;
+const ENABLED_FLAG_VALUES = new Set(["1", "true", "yes", "on"]);
 
 type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
   | "tile_batch_cooldown";
+
+interface CursorPullFirstPostScopeState {
+  observedAtMs: number;
+  peerCount: number;
+  bypassEnabled: boolean;
+}
 
 export class ConnectionShardDO {
   #state: DurableObjectStateLike;
@@ -135,6 +142,7 @@ export class ConnectionShardDO {
   #cursorPullPendingWakeReason: CursorPullWakeReason | null;
   #cursorPullAlarmArmed: boolean;
   #cursorPullAlarmScheduledAtMs: number | null;
+  #cursorPullFirstPostScopeState: CursorPullFirstPostScopeState | null;
   #cursorHubPublishSuppressedUntilMs: number;
   #cursorHubGateway: ConnectionShardCursorHubGateway | null;
   #cursorHubController: ConnectionShardCursorHubController;
@@ -171,6 +179,7 @@ export class ConnectionShardDO {
     this.#cursorPullPendingWakeReason = null;
     this.#cursorPullAlarmArmed = false;
     this.#cursorPullAlarmScheduledAtMs = null;
+    this.#cursorPullFirstPostScopeState = null;
     this.#cursorHubPublishSuppressedUntilMs = 0;
     this.#cursorTraceState = new ConnectionShardCursorTraceState({
       nowMs: () => this.#nowMs(),
@@ -1091,6 +1100,7 @@ export class ConnectionShardDO {
       this.#cursorPullActiveUntilMs = 0;
       this.#cursorPullPeerScopeTracker.reset();
       this.#cursorPullSuppressedUntilMs = 0;
+      this.#cursorPullFirstPostScopeState = null;
       return;
     }
 
@@ -1103,6 +1113,7 @@ export class ConnectionShardDO {
       this.#cursorPullActiveUntilMs = 0;
       this.#cursorPullPeerScopeTracker.reset();
       this.#cursorPullSuppressedUntilMs = 0;
+      this.#cursorPullFirstPostScopeState = null;
       return;
     }
 
@@ -1292,25 +1303,51 @@ export class ConnectionShardDO {
 
   async #runCursorPullTick(wakeReason: CursorPullWakeReason): Promise<void> {
     if (this.#clients.size === 0) {
+      this.#logFirstPostScopeDecisionIfPending("aborted_no_clients", wakeReason, {
+        suppressionRemainingMs: this.#cursorPullSuppressionRemainingMs(),
+      });
+      this.#cursorPullFirstPostScopeState = null;
       return;
     }
 
     if (this.#cursorStateIngressDepth > 0) {
+      this.#logFirstPostScopeDecisionIfPending("delayed_for_ingress", wakeReason, {
+        suppressionRemainingMs: this.#cursorPullSuppressionRemainingMs(),
+      });
       this.#cursorPullIngressGate.defer(wakeReason);
       return;
     }
 
+    const firstPostScopeState = this.#cursorPullFirstPostScopeState;
     const suppressedDelayMs = this.#cursorPullSuppressionRemainingMs();
-    if (suppressedDelayMs > 0) {
+    const bypassSuppressionOnce = firstPostScopeState?.bypassEnabled === true && suppressedDelayMs > 0;
+    if (suppressedDelayMs > 0 && !bypassSuppressionOnce) {
+      this.#logFirstPostScopeDecisionIfPending("delayed_for_suppression", wakeReason, {
+        suppressionRemainingMs: suppressedDelayMs,
+      });
       this.#scheduleCursorPullTick(suppressedDelayMs, wakeReason);
       return;
     }
+    if (bypassSuppressionOnce) {
+      this.#logFirstPostScopeDecisionIfPending("started_with_suppression_bypass", wakeReason, {
+        suppressionRemainingMs: suppressedDelayMs,
+      });
+    }
 
     if (this.#cursorPullInFlight) {
+      this.#logFirstPostScopeDecisionIfPending("delayed_for_in_flight", wakeReason, {
+        suppressionRemainingMs: suppressedDelayMs,
+      });
       this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MIN_MS, "timer");
       return;
     }
 
+    if (!bypassSuppressionOnce) {
+      this.#logFirstPostScopeDecisionIfPending("started", wakeReason, {
+        suppressionRemainingMs: suppressedDelayMs,
+      });
+    }
+    this.#cursorPullFirstPostScopeState = null;
     this.#cursorPullInFlight = true;
     this.#cursorPullScheduler.markRunStarted();
     try {
@@ -1428,10 +1465,19 @@ export class ConnectionShardDO {
     }
 
     if (nextPeerShards.length === 0) {
+      this.#cursorPullFirstPostScopeState = null;
       this.#clearCursorPullTimer();
       this.#clearDetachedCursorPullAlarm();
       this.#cursorPullActiveUntilMs = 0;
       return;
+    }
+
+    if (change.previousPeerShards.length === 0) {
+      this.#cursorPullFirstPostScopeState = {
+        observedAtMs: nowMs,
+        peerCount: nextPeerShards.length,
+        bypassEnabled: this.#isCursorPullFirstPostScopeBypassEnabled(),
+      };
     }
 
     this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_ACTIVITY_WINDOW_MS;
@@ -1487,6 +1533,54 @@ export class ConnectionShardDO {
       default:
         return "cursor_pull_watch_scope_wake";
     }
+  }
+
+  #isCursorPullFirstPostScopeBypassEnabled(): boolean {
+    const raw = typeof this.#env.CURSOR_PULL_FIRST_POST_SCOPE_BYPASS === "string"
+      ? this.#env.CURSOR_PULL_FIRST_POST_SCOPE_BYPASS.trim().toLowerCase()
+      : "";
+    return ENABLED_FLAG_VALUES.has(raw);
+  }
+
+  #logFirstPostScopeDecisionIfPending(
+    action:
+      | "aborted_no_clients"
+      | "delayed_for_ingress"
+      | "delayed_for_in_flight"
+      | "delayed_for_suppression"
+      | "started"
+      | "started_with_suppression_bypass",
+    wakeReason: CursorPullWakeReason,
+    {
+      suppressionRemainingMs,
+    }: {
+      suppressionRemainingMs: number;
+    }
+  ): void {
+    const pending = this.#cursorPullFirstPostScopeState;
+    if (!pending) {
+      return;
+    }
+    const nowMs = this.#nowMs();
+    const schedulerState = this.#cursorPullScheduler.inspectState();
+    this.#logEvent("cursor_pull_first_post_scope_decision", {
+      action,
+      wake_reason: wakeReason,
+      first_post_scope_observed_at_ms: pending.observedAtMs,
+      first_post_scope_age_ms: Math.max(0, nowMs - pending.observedAtMs),
+      peer_count: pending.peerCount,
+      bypass_enabled: pending.bypassEnabled,
+      suppression_remaining_ms: suppressionRemainingMs,
+      ingress_depth: this.#cursorStateIngressDepth,
+      in_flight: this.#cursorPullInFlight,
+      scheduler_pending_wake_reason: schedulerState.wakeReason ?? undefined,
+      scheduler_scheduled_at_ms: schedulerState.scheduledAtMs ?? undefined,
+      scheduler_last_started_at_ms: schedulerState.lastStartedAtMs || undefined,
+      scheduler_last_completed_at_ms: schedulerState.lastCompletedAtMs || undefined,
+      alarm_armed: this.#cursorPullAlarmArmed,
+      alarm_pending_wake_reason: this.#cursorPullPendingWakeReason ?? undefined,
+      alarm_scheduled_at_ms: this.#cursorPullAlarmScheduledAtMs ?? undefined,
+    });
   }
 
   #logCursorPullWakeDecision({
