@@ -217,6 +217,30 @@ Recent concrete evidence:
   - this run shows the empty-scope probe fix is not sufficient by itself:
     - fast scope arrival can still be followed by a long wait for first useful reverse pull
     - the remaining delay is now more clearly in stale-side post-scope wake scheduling, suppression, or first useful pull execution
+- `2026-03-13T16:53Z`:
+  - this was a later local swarm-backed run with `4` protocol bots and captured dev-worker stdout after enabling the one-shot first-post-scope suppression bypass through local worker config
+  - the local worker finally showed the experiment binding loaded, and the worker logs included `bypass_enabled: true`
+  - shard placement was:
+    - `bot-001` on `shard-2`
+    - `bot-002` on `shard-0`
+    - `bot-003` on `shard-4`
+    - `bot-004` on `shard-1`
+  - client-side first remote cursor timings were materially better than the earlier bad runs:
+    - `shard-0` saw first remote cursors in about `609ms`
+    - `shard-4` saw first remote cursors in about `609ms`
+    - `shard-1` saw first remote cursors in about `609ms` to `610ms`
+    - `shard-2` saw first remote cursors in about `1332ms` to `1333ms`
+  - the key worker-side confirmation was on `shard-2`:
+    - `cursor_pull_scope` arrived at `2026-03-13T16:53:23.131Z`
+    - `cursor_pull_first_post_scope_decision` logged `action: "started_with_suppression_bypass"` at `2026-03-13T16:53:24.065Z`
+    - `bypass_enabled: true`
+    - `suppression_remaining_ms: 191`
+    - first peer visibility followed immediately after at `2026-03-13T16:53:24.067Z` to `16:53:24.069Z`
+    - `scope_age_ms` about `934` to `937`
+  - this run is the first direct evidence that stale-side suppression can delay the first useful post-scope pull, and that bypassing that suppression once can restore prompt first visibility for that run shape
+  - this run does not prove the whole cursor problem is solved:
+    - it is one successful sample
+    - it still needs repeat validation against more shard placements and more runs
 
 Interpretation:
 
@@ -247,6 +271,11 @@ Interpretation:
   - in that run, peer scope on the slow shard was already prompt
   - so the residual delay is no longer explained by empty-scope discovery
   - this makes stale-side post-scope scheduling or first useful reverse-pull behavior the primary remaining lead
+- the `2026-03-13T16:53Z` local swarm run adds the first successful scheduler-path experiment result:
+  - the worker logged a real `started_with_suppression_bypass` decision with `bypass_enabled: true`
+  - first peer visibility on that shard followed immediately afterward, rather than waiting for the suppression window to expire
+  - that is strong evidence that suppression on the stale-side first post-scope pull is at least one real contributor to the delayed initial cursor problem
+  - this still needs repeat validation, but the suppression-bypass experiment now looks like a credible causal lead rather than only a hypothesis
 
 ## Working Hypotheses
 
@@ -265,6 +294,9 @@ The newest evidence splits the likely causes by run shape:
 - when scope arrives promptly but first visibility still waits for later `local_activity`, `2`, `3`, and `4` become stronger candidates
 - when both happen in the same run, the likely shape is late scope delivery first, then `2`, `3`, or `4` before the first useful reverse pull
 - `5` remains the leading hypothesis for sparse follow-up visibility after the first cursor appears
+- after the `2026-03-13T16:53Z` bypass run, `2` and `4` are stronger than `3` for the first-useful-pull delay:
+  - stale-side suppression and scheduling policy now have a positive experimental signal
+  - alarm timing alone is a weaker lead than before
 
 ## Swarm Debug Method
 
@@ -347,29 +379,33 @@ For each asymmetric run:
 
 ## Immediate Next Steps
 
-1. Treat the empty-scope probe change as a partial fix, not a complete resolution:
+1. Treat the empty-scope probe change and the first-post-scope suppression bypass as partial fixes, not complete resolution:
    - it removes one discovery failure mode
-   - it does not remove the delayed-first-useful-pull failure mode
-2. Validate the shorter empty-scope probe across a few more real cross-shard runs, not just one representative success case.
-3. Replace the fixed `500ms` empty-scope probe with an adaptive policy, for example:
+   - the bypass experiment improves one stale-side scheduling failure mode
+   - neither result is yet validated enough to call the problem closed
+2. Repeat the enabled-bypass local probe across a few more cross-shard runs and compare it directly with the no-bypass baseline.
+3. If the bypass keeps improving first visibility, decide whether to:
+   - keep it as a narrow first-post-scope special case
+   - or replace it with a more principled scheduler rule for the first useful reverse pull
+4. Replace the fixed `500ms` empty-scope probe with an adaptive policy, for example:
    - probe quickly for the first few seconds after connect or local cursor activity
    - then back off toward a slower cadence if peer scope stays empty
-4. Explore an event-driven alternative to repeated empty-scope polling:
+5. Explore an event-driven alternative to repeated empty-scope polling:
    - when the hub sees a newly active watched peer, emit a lightweight "peer appeared" nudge to existing empty-scope watchers
    - use that nudge to force an immediate watch refresh or pull wake on the stale shard
    - evaluate whether this can preserve fast first visibility with less idle hub traffic than continuous short probes
-5. Add the next layer of versioned cursor observability:
+6. Add the next layer of versioned cursor observability:
    - source local cursor publish log with `uid`, `seq`, `tileKey`, and shard
    - source `/cursor-state` snapshot log with included cursor `uid`s and max local seq
    - destination remote ingest log with previous seq, new seq, and whether client fanout happened
    - stale-side local-activity wake scheduling log with scheduler state and action
-6. Use those logs on the weak direction to determine whether the problem is:
+7. Use those logs on the weak direction to determine whether the problem is:
    - source cursor movement not being published
    - `/cursor-state` exposing stale or empty snapshots
    - destination discarding or not fanning newer versions
-7. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
-8. Now that we have a reproduced prompt-scope but late-visibility run, prioritize scheduler priority, suppression, and first useful reverse-pull behavior for fresh `watch_scope_change`.
-9. Keep validating that any latency fix preserves:
+8. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
+9. Now that the bypass experiment has produced one successful positive result, prioritize scheduler priority, suppression, and first useful reverse-pull behavior for fresh `watch_scope_change`.
+10. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
    - no hidden recursive `/cursor-state` storm
 
