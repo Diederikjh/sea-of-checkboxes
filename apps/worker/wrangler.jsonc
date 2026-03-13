@@ -63,6 +63,7 @@
 	],
 	"vars": {
 		"AUTH_MODE": "hybrid",
-		"WS_DISABLED": "0"
+		"WS_DISABLED": "0",
+		"CURSOR_PULL_FIRST_POST_SCOPE_BYPASS": "1"
 	}
 }
