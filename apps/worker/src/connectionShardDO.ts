@@ -238,6 +238,23 @@ export class ConnectionShardDO {
         });
       },
       onLocalCursorPublished: ({ cursor, fanoutCount }) => {
+        const client = this.#clients.get(cursor.uid);
+        const connectionAgeMs = typeof client?.connectedAtMs === "number"
+          ? Math.max(0, this.#nowMs() - client.connectedAtMs)
+          : undefined;
+        if (cursor.seq === 1) {
+          this.#logEvent("cursor_first_local_publish", {
+            uid: cursor.uid,
+            ...(client?.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+            seq: cursor.seq,
+            tile: cursor.tileKey,
+            x: cursor.x,
+            y: cursor.y,
+            fanout_count: fanoutCount,
+            ...(typeof connectionAgeMs === "number" ? { connection_age_ms: connectionAgeMs } : {}),
+            subscribed_count: client?.subscribed.size ?? 0,
+          });
+        }
         this.#logEvent("cursor_local_publish", {
           uid: cursor.uid,
           seq: cursor.seq,
@@ -245,6 +262,7 @@ export class ConnectionShardDO {
           x: cursor.x,
           y: cursor.y,
           fanout_count: fanoutCount,
+          ...(typeof connectionAgeMs === "number" ? { connection_age_ms: connectionAgeMs } : {}),
         });
       },
       onRemoteCursorIngested: ({ fromShard, cursor, previousSeq, fanoutCount, applied, ignoredReason }) => {

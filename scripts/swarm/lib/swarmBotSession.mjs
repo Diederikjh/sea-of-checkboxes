@@ -288,7 +288,10 @@ export class SwarmBotSession {
 
   #startActionLoops() {
     this.#clearActionTimers();
-    this.#scheduleNextCursor();
+    this.#sendCursor();
+    if (!this.stopping && this.socket) {
+      this.#scheduleNextCursor();
+    }
     if (!this.config.readonly && this.config.setCellIntervalMs > 0) {
       this.#scheduleNextSetCell();
     }

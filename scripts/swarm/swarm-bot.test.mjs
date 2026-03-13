@@ -254,6 +254,11 @@ describe("swarm bot session", () => {
         cid: "bot-test-sub-000000",
         tiles: [worldToTileKey(config.originX, config.originY)],
       });
+      expect(sentMessages).toContainEqual({
+        t: "cur",
+        x: config.originX,
+        y: config.originY,
+      });
 
       await session.stop("test_complete");
       await startPromise;
@@ -281,6 +286,15 @@ function decodeClientMessageBinaryForTest(payload) {
       t: "sub",
       ...(cid ? { cid } : {}),
       tiles: [`${tx}:${ty}`],
+    };
+  }
+
+  if (tag === 4) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return {
+      t: "cur",
+      x: view.getFloat32(1),
+      y: view.getFloat32(5),
     };
   }
 

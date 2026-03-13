@@ -855,6 +855,50 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(messagesB.some((message) => message.t === "curUp" && message.uid === "u_remote")).toBe(false);
   });
 
+  it("logs first local cursor publish with connection age", async () => {
+    const harness = createHarness();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-a",
+      });
+
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 0.5, y: 0.5 }));
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_first_local_publish"
+            && entry.shard === "shard-a"
+            && entry.uid === "u_a"
+            && entry.seq === 1
+            && entry.tile === "0:0"
+            && typeof entry.connection_age_ms === "number"
+            && entry.connection_age_ms >= 0
+            && entry.subscribed_count === 1
+        )
+      ).toBe(true);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_local_publish"
+            && entry.shard === "shard-a"
+            && entry.uid === "u_a"
+            && entry.seq === 1
+            && typeof entry.connection_age_ms === "number"
+        )
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it("drops re-entrant cursor-batch requests while ingress is active", async () => {
     const harness = createHarness();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
