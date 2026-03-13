@@ -9,11 +9,13 @@ export class ConnectionShardCursorPullPeerScopeTracker {
   #peerShards: string[];
   #scopeObservedAtMs: Map<string, number>;
   #firstVisibilityScopeObservedAtMs: Map<string, number>;
+  #preVisibilityOutcomeKeysByPeer: Map<string, Set<string>>;
 
   constructor() {
     this.#peerShards = [];
     this.#scopeObservedAtMs = new Map();
     this.#firstVisibilityScopeObservedAtMs = new Map();
+    this.#preVisibilityOutcomeKeysByPeer = new Map();
   }
 
   get peerShards(): string[] {
@@ -24,6 +26,7 @@ export class ConnectionShardCursorPullPeerScopeTracker {
     this.#peerShards = [];
     this.#scopeObservedAtMs.clear();
     this.#firstVisibilityScopeObservedAtMs.clear();
+    this.#preVisibilityOutcomeKeysByPeer.clear();
   }
 
   replacePeerShards(nextPeerShards: string[], nowMs: number): CursorPullPeerScopeChange {
@@ -45,6 +48,7 @@ export class ConnectionShardCursorPullPeerScopeTracker {
     if (nextPeerShards.length === 0) {
       this.#scopeObservedAtMs.clear();
       this.#firstVisibilityScopeObservedAtMs.clear();
+      this.#preVisibilityOutcomeKeysByPeer.clear();
       return {
         previousPeerShards,
         nextPeerShards,
@@ -61,6 +65,7 @@ export class ConnectionShardCursorPullPeerScopeTracker {
       }
       this.#scopeObservedAtMs.delete(peerShard);
       this.#firstVisibilityScopeObservedAtMs.delete(peerShard);
+      this.#preVisibilityOutcomeKeysByPeer.delete(peerShard);
     }
 
     for (const peerShard of nextPeerShards) {
@@ -69,6 +74,7 @@ export class ConnectionShardCursorPullPeerScopeTracker {
       }
       this.#scopeObservedAtMs.set(peerShard, nowMs);
       this.#firstVisibilityScopeObservedAtMs.delete(peerShard);
+      this.#preVisibilityOutcomeKeysByPeer.delete(peerShard);
     }
 
     return {
@@ -89,9 +95,9 @@ export class ConnectionShardCursorPullPeerScopeTracker {
     };
   }
 
-  markFirstVisibility(peerShard: string, batchUpdateCount: number): boolean {
+  markFirstVisibility(peerShard: string, batchUpdateCount: number, deltaObserved: boolean): boolean {
     const scopeObservedAtMs = this.#scopeObservedAtMs.get(peerShard);
-    if (typeof scopeObservedAtMs !== "number" || batchUpdateCount <= 0) {
+    if (typeof scopeObservedAtMs !== "number" || batchUpdateCount <= 0 || !deltaObserved) {
       return false;
     }
     const loggedScopeObservedAtMs = this.#firstVisibilityScopeObservedAtMs.get(peerShard);
@@ -99,6 +105,28 @@ export class ConnectionShardCursorPullPeerScopeTracker {
       return false;
     }
     this.#firstVisibilityScopeObservedAtMs.set(peerShard, scopeObservedAtMs);
+    return true;
+  }
+
+  markPreVisibilityOutcome(peerShard: string, outcomeKey: string): boolean {
+    const scopeObservedAtMs = this.#scopeObservedAtMs.get(peerShard);
+    if (typeof scopeObservedAtMs !== "number") {
+      return false;
+    }
+    const loggedScopeObservedAtMs = this.#firstVisibilityScopeObservedAtMs.get(peerShard);
+    if (loggedScopeObservedAtMs === scopeObservedAtMs) {
+      return false;
+    }
+    let outcomeKeys = this.#preVisibilityOutcomeKeysByPeer.get(peerShard);
+    if (!outcomeKeys) {
+      outcomeKeys = new Set();
+      this.#preVisibilityOutcomeKeysByPeer.set(peerShard, outcomeKeys);
+    }
+    const scopedOutcomeKey = `${scopeObservedAtMs}:${outcomeKey}`;
+    if (outcomeKeys.has(scopedOutcomeKey)) {
+      return false;
+    }
+    outcomeKeys.add(scopedOutcomeKey);
     return true;
   }
 

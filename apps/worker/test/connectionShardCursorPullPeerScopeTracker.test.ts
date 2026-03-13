@@ -53,29 +53,47 @@ describe("ConnectionShardCursorPullPeerScopeTracker", () => {
 
     tracker.replacePeerShards(["shard-1"], 1_000);
 
-    expect(tracker.markFirstVisibility("shard-1", 0)).toBe(false);
-    expect(tracker.markFirstVisibility("shard-1", 2)).toBe(true);
-    expect(tracker.markFirstVisibility("shard-1", 3)).toBe(false);
+    expect(tracker.markFirstVisibility("shard-1", 0, false)).toBe(false);
+    expect(tracker.markFirstVisibility("shard-1", 2, false)).toBe(false);
+    expect(tracker.markFirstVisibility("shard-1", 2, true)).toBe(true);
+    expect(tracker.markFirstVisibility("shard-1", 3, true)).toBe(false);
 
     tracker.replacePeerShards(["shard-1", "shard-2"], 1_200);
-    expect(tracker.markFirstVisibility("shard-1", 1)).toBe(false);
-    expect(tracker.markFirstVisibility("shard-2", 1)).toBe(true);
+    expect(tracker.markFirstVisibility("shard-1", 1, true)).toBe(false);
+    expect(tracker.markFirstVisibility("shard-2", 1, true)).toBe(true);
 
     tracker.replacePeerShards([], 1_300);
     tracker.replacePeerShards(["shard-1"], 1_400);
-    expect(tracker.markFirstVisibility("shard-1", 1)).toBe(true);
+    expect(tracker.markFirstVisibility("shard-1", 1, true)).toBe(true);
+  });
+
+  it("logs distinct pre-visibility outcomes once per scope epoch", () => {
+    const tracker = new ConnectionShardCursorPullPeerScopeTracker();
+
+    tracker.replacePeerShards(["shard-1"], 1_000);
+
+    expect(tracker.markPreVisibilityOutcome("shard-1", "empty_snapshot")).toBe(true);
+    expect(tracker.markPreVisibilityOutcome("shard-1", "empty_snapshot")).toBe(false);
+    expect(tracker.markPreVisibilityOutcome("shard-1", "nonempty_without_delta")).toBe(true);
+    expect(tracker.markFirstVisibility("shard-1", 1, true)).toBe(true);
+    expect(tracker.markPreVisibilityOutcome("shard-1", "empty_snapshot")).toBe(false);
+
+    tracker.replacePeerShards([], 1_100);
+    tracker.replacePeerShards(["shard-1"], 1_200);
+    expect(tracker.markPreVisibilityOutcome("shard-1", "empty_snapshot")).toBe(true);
   });
 
   it("resets all state cleanly", () => {
     const tracker = new ConnectionShardCursorPullPeerScopeTracker();
 
     tracker.replacePeerShards(["shard-1"], 1_000);
-    tracker.markFirstVisibility("shard-1", 1);
+    tracker.markFirstVisibility("shard-1", 1, true);
     tracker.reset();
 
     expect(tracker.peerShards).toEqual([]);
     expect(tracker.scopeFields("shard-1", 1_100)).toEqual({});
     expect(tracker.oldestScopeAgeMs(["shard-1"], 1_100)).toBeUndefined();
-    expect(tracker.markFirstVisibility("shard-1", 1)).toBe(false);
+    expect(tracker.markFirstVisibility("shard-1", 1, true)).toBe(false);
+    expect(tracker.markPreVisibilityOutcome("shard-1", "empty_snapshot")).toBe(false);
   });
 });

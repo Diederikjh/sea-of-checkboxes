@@ -1733,6 +1733,18 @@ export class ConnectionShardDO {
         ...peerScopeFields,
         duration_ms: elapsedMs(startMs),
       });
+      this.#maybeLogCursorPullPreVisibilityObservation({
+        peerShard,
+        wakeReason,
+        batch,
+        deltaObserved,
+        pullTraceId,
+        startedAtMs: startMs,
+        peerScopeFields: {
+          ...peerScopeFields,
+          max_seq: batchMaxSeq || undefined,
+        },
+      });
       this.#maybeLogCursorPullFirstPeerVisibility({
         peerShard,
         wakeReason,
@@ -1786,7 +1798,7 @@ export class ConnectionShardDO {
     startedAtMs: number;
     peerScopeFields: Record<string, unknown>;
   }): void {
-    if (!this.#cursorPullPeerScopeTracker.markFirstVisibility(peerShard, batchUpdateCount)) {
+    if (!this.#cursorPullPeerScopeTracker.markFirstVisibility(peerShard, batchUpdateCount, deltaObserved)) {
       return;
     }
     this.#logEvent("cursor_pull_first_peer_visibility", {
@@ -1794,6 +1806,44 @@ export class ConnectionShardDO {
       wake_reason: wakeReason,
       update_count: batchUpdateCount,
       delta_observed: deltaObserved,
+      trace_id: pullTraceId,
+      ...peerScopeFields,
+      duration_ms: elapsedMs(startedAtMs),
+    });
+  }
+
+  #maybeLogCursorPullPreVisibilityObservation({
+    peerShard,
+    wakeReason,
+    batch,
+    deltaObserved,
+    pullTraceId,
+    startedAtMs,
+    peerScopeFields,
+  }: {
+    peerShard: string;
+    wakeReason: CursorPullWakeReason;
+    batch: CursorRelayBatch;
+    deltaObserved: boolean;
+    pullTraceId: string;
+    startedAtMs: number;
+    peerScopeFields: Record<string, unknown>;
+  }): void {
+    if (deltaObserved) {
+      return;
+    }
+    const outcome = batch.updates.length === 0 ? "empty_snapshot" : "nonempty_without_delta";
+    if (!this.#cursorPullPeerScopeTracker.markPreVisibilityOutcome(peerShard, outcome)) {
+      return;
+    }
+    this.#logEvent("cursor_pull_pre_visibility_observation", {
+      target_shard: peerShard,
+      wake_reason: wakeReason,
+      outcome,
+      update_count: batch.updates.length,
+      max_seq: cursorRelayBatchMaxSeq(batch) || undefined,
+      uid_sample: this.#cursorSnapshotUidSample(batch.updates),
+      delta_observed: false,
       trace_id: pullTraceId,
       ...peerScopeFields,
       duration_ms: elapsedMs(startedAtMs),
