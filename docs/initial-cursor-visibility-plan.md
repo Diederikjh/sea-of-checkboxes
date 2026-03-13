@@ -241,6 +241,38 @@ Recent concrete evidence:
   - this run does not prove the whole cursor problem is solved:
     - it is one successful sample
     - it still needs repeat validation against more shard placements and more runs
+- `2026-03-13T19:28Z`:
+  - this was the first pairwise confirmation run after leaving the first-post-scope suppression bypass enabled in local worker config
+  - the worker again showed `bypass_enabled: true`, and one shard used `action: "started_with_suppression_bypass"` promptly
+  - shard placement was:
+    - `bot-001` on `shard-0`
+    - `bot-002` on `shard-6`
+    - `bot-003` on `shard-6`
+    - `bot-004` on `shard-4`
+  - the result was mixed:
+    - `shard-4` saw first remote cursors quickly, about `211ms`
+    - `shard-0` and `shard-6` still saw first remote cursors only after about `3.9s` to `4.4s`
+  - the key worker-side detail is that the slower paths were not waiting on stale-side suppression anymore:
+    - `cursor_pull_first_post_scope_decision` on `shard-0` logged `action: "started"` with `suppression_remaining_ms: 0`
+    - `cursor_pull_first_post_scope_decision` on `shard-6` logged `action: "started_with_suppression_bypass"`
+  - but the early snapshots from those peers were empty:
+    - `cursor_state_snapshot_served` from `shard-0` and `shard-6` initially returned `update_count: 0`
+    - first visible remote cursor state from those peers only appeared once their local cursor state started publishing later
+  - this run weakens the idea that every remaining multi-second delay is stale-side scheduling:
+    - some of the "slow" first-visibility cases are actually first pulls against empty peer snapshots
+- `2026-03-13T19:30Z`:
+  - this was the second pairwise confirmation run under the same bypass-enabled local config
+  - shard placement was:
+    - `bot-001` on `shard-3`
+    - `bot-002` on `shard-2`
+    - `bot-003` on `shard-1`
+    - `bot-004` on `shard-3`
+  - this run was healthy end-to-end:
+    - all bots saw first remote cursors in about `306ms` to `1373ms`
+    - scope discovery was prompt
+    - first post-scope pull decisions all logged `action: "started"` with `bypass_enabled: true`
+  - no multi-second or `10s` initial cursor stall reappeared in this sample
+  - this run supports keeping the bypass enabled for ongoing investigation, but it does not yet justify treating the bypass as the whole fix
 
 Interpretation:
 
@@ -276,6 +308,15 @@ Interpretation:
   - first peer visibility on that shard followed immediately afterward, rather than waiting for the suppression window to expire
   - that is strong evidence that suppression on the stale-side first post-scope pull is at least one real contributor to the delayed initial cursor problem
   - this still needs repeat validation, but the suppression-bypass experiment now looks like a credible causal lead rather than only a hypothesis
+- the `2026-03-13T19:28Z` and `2026-03-13T19:30Z` confirmation runs refine that conclusion:
+  - the bypass remains useful and should stay enabled during investigation
+  - but it is not the whole story
+  - at least one of the mixed "slow" samples was explained by early pulls against empty peer snapshots, not by stale-side suppression
+  - that means the next debugging gap is distinguishing:
+    - source peer has not published a local cursor yet
+    - source snapshot is non-empty but destination has no new delta
+    - destination finally ingests and fans out a real first visible cursor
+  - worker logging should now make that distinction explicit, instead of inferring it by hand from separate `cursor_state_snapshot_served` and `cursor_remote_ingest` rows
 
 ## Working Hypotheses
 
@@ -297,6 +338,9 @@ The newest evidence splits the likely causes by run shape:
 - after the `2026-03-13T16:53Z` bypass run, `2` and `4` are stronger than `3` for the first-useful-pull delay:
   - stale-side suppression and scheduling policy now have a positive experimental signal
   - alarm timing alone is a weaker lead than before
+- after the `2026-03-13T19:28Z` confirmation run, `4` needs to be split in two:
+  - `4a`: early reverse pulls are happening, but the source peer snapshot is still empty because no local cursor has been published yet
+  - `4b`: early reverse pulls are happening, the source peer snapshot is non-empty, but the destination still sees no effective delta
 
 ## Swarm Debug Method
 
