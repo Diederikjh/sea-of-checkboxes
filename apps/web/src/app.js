@@ -549,6 +549,8 @@ export async function startApp() {
     perfProbe,
     onSubscriptionRebuildSubSent: subscriptionRebuildTracker.onDispatch,
     onSubscriptionRebuildSkipped: subscriptionRebuildTracker.onSkipped,
+    getPendingSetCellOpsForTile: setCellOutboxSync.getPendingSetCellOpsForTile,
+    schedulePendingSetCellReplay: (delayMs) => setCellOutboxSync.scheduleReplay(delayMs),
   });
   let hasAppliedServerSpawn = sharedCamera !== null;
 

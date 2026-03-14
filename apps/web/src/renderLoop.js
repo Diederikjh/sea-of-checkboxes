@@ -14,6 +14,8 @@ import { smoothCursors } from "./cursorSmoothing";
 import { renderDirtyAreas, renderScene } from "./renderer";
 import { reconcileSubscriptions } from "./subscriptions";
 
+const VIEWPORT_UNSUB_DRAIN_MS = 250;
+
 function shouldPatchDirtyAreas({
   needsRender,
   hasAnimatedHeat,
@@ -56,6 +58,8 @@ export function createRenderLoop({
   perfProbe = createPerfProbe(),
   onSubscriptionRebuildSubSent = () => {},
   onSubscriptionRebuildSkipped = () => {},
+  getPendingSetCellOpsForTile = () => [],
+  schedulePendingSetCellReplay = () => {},
 }) {
   let subscribedTiles = new Set();
   let visibleTiles = [];
@@ -64,7 +68,28 @@ export function createRenderLoop({
   let needsRender = true;
   let forceResubscribeVisibleTiles = false;
   let pendingSubscriptionRebuildReason = null;
+  let pendingViewportUnsubDrain = null;
   const dirtyTileCells = new Map();
+
+  const countPendingSetCellOpsForTiles = (tiles) => {
+    if (!Array.isArray(tiles) || tiles.length === 0) {
+      return 0;
+    }
+
+    let count = 0;
+    for (const tile of tiles) {
+      const pending = getPendingSetCellOpsForTile(tile);
+      if (!Array.isArray(pending) || pending.length === 0) {
+        continue;
+      }
+      count += pending.length;
+    }
+    return count;
+  };
+
+  const toTileSet = (tiles) => new Set(tiles);
+
+  const buildViewportUnsubDrainKey = (tiles) => [...tiles].sort().join(",");
 
   const requestSubscriptionRefresh = ({
     resetSubscribedTiles = false,
@@ -198,12 +223,36 @@ export function createRenderLoop({
       }
     }
 
+    let deferredViewportUnsub = false;
     if (updated.toUnsub.length > 0) {
-      transport.send({ t: "unsub", tiles: updated.toUnsub });
+      const pendingSetCellCount = countPendingSetCellOpsForTiles(updated.toUnsub);
+      if (pendingSetCellCount > 0) {
+        const drainKey = buildViewportUnsubDrainKey(updated.toUnsub);
+        if (!pendingViewportUnsubDrain || pendingViewportUnsubDrain.key !== drainKey) {
+          pendingViewportUnsubDrain = {
+            key: drainKey,
+            deadlineMs: Date.now() + VIEWPORT_UNSUB_DRAIN_MS,
+          };
+        }
+
+        if (Date.now() < pendingViewportUnsubDrain.deadlineMs) {
+          deferredViewportUnsub = true;
+          schedulePendingSetCellReplay(0);
+        }
+      }
+
+      if (!deferredViewportUnsub) {
+        pendingViewportUnsubDrain = null;
+        transport.send({ t: "unsub", tiles: updated.toUnsub });
+      }
+    } else {
+      pendingViewportUnsubDrain = null;
     }
 
     visibleTiles = updated.visibleTiles;
-    subscribedTiles = updated.subscribedTiles;
+    subscribedTiles = deferredViewportUnsub
+      ? new Set([...updated.subscribedTiles, ...toTileSet(updated.toUnsub)])
+      : updated.subscribedTiles;
     if (forceResubscribeVisibleTiles) {
       const tiles = Array.from(updated.subscribedTiles);
       if (tiles.length > 0) {
@@ -224,7 +273,7 @@ export function createRenderLoop({
       });
     }
     pendingSubscriptionRebuildReason = null;
-    needsSubscriptionRefresh = false;
+    needsSubscriptionRefresh = deferredViewportUnsub;
   };
 
   const onTick = (ticker) => {

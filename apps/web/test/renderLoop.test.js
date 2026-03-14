@@ -315,4 +315,60 @@ describe("render loop cursor dirty patching", () => {
       visibleTileCount: 0,
     });
   });
+
+  it("briefly defers viewport unsubscribes when pending writes exist on outgoing tiles", () => {
+    const { app, tick } = createAppHarness();
+    const transport = {
+      send: vi.fn(),
+    };
+    const getPendingSetCellOpsForTile = vi.fn((tileKey) => (
+      tileKey === "0:0" ? [{ i: 5, v: 1 }] : []
+    ));
+    const schedulePendingSetCellReplay = vi.fn();
+
+    mocks.reconcileSubscriptions
+      .mockReturnValueOnce({
+        visibleTiles: [{ tileKey: "0:0", tx: 0, ty: 0 }],
+        subscribedTiles: new Set(["0:0"]),
+        toSub: [],
+        toUnsub: [],
+      })
+      .mockReturnValue({
+        visibleTiles: [{ tileKey: "1:0", tx: 1, ty: 0 }],
+        subscribedTiles: new Set(["1:0"]),
+        toSub: ["1:0"],
+        toUnsub: ["0:0"],
+      });
+
+    const loop = createRenderLoop({
+      app,
+      graphics: {},
+      camera: { x: 64, y: 0, cellPixelSize: 16 },
+      tileStore: {},
+      heatStore: {
+        decay: () => false,
+      },
+      cursors: new Map(),
+      cursorLabels: { update: vi.fn() },
+      transport,
+      setStatus: () => {},
+      getPendingSetCellOpsForTile,
+      schedulePendingSetCellReplay,
+    });
+
+    transport.send.mockClear();
+    loop.markViewportDirty();
+    tick();
+
+    const sentMessagesAfterDrainStart = transport.send.mock.calls.map(([message]) => message);
+    expect(sentMessagesAfterDrainStart).toContainEqual({ t: "sub", tiles: ["1:0"] });
+    expect(sentMessagesAfterDrainStart).not.toContainEqual({ t: "unsub", tiles: ["0:0"] });
+    expect(schedulePendingSetCellReplay).toHaveBeenCalledWith(0);
+
+    vi.advanceTimersByTime(300);
+    tick();
+
+    const sentMessagesAfterDrainElapsed = transport.send.mock.calls.map(([message]) => message);
+    expect(sentMessagesAfterDrainElapsed).toContainEqual({ t: "unsub", tiles: ["0:0"] });
+  });
 });
