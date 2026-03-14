@@ -11,6 +11,7 @@ import {
   runSwarmHelpText,
   writeRunConfig,
 } from "./lib/runSwarmConfig.mjs";
+import { waitForWorkerReady } from "./lib/workerReadiness.mjs";
 
 async function main() {
   const config = parseRunSwarmArgs(process.argv.slice(2));
@@ -23,6 +24,14 @@ async function main() {
   const logger = createNdjsonLogger(config.coordinatorLog);
   const botConfigs = buildBotLaunchConfigs(config);
   const runConfigPayload = writeRunConfig(config, botConfigs);
+  const readiness = await waitForWorkerReady({
+    wsUrl: config.wsUrl,
+    runId: config.runId,
+    logger,
+  });
+  if (!readiness.ok) {
+    throw new Error(`Worker did not become ready in time: ${readiness.healthUrl}`);
+  }
   const shareLink = await createRunShareLink(config, logger);
   if (shareLink) {
     runConfigPayload.shareLink = shareLink;
