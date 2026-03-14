@@ -13,12 +13,13 @@ import {
 import { SwarmBotSession } from "./lib/swarmBotSession.mjs";
 
 class FakeSocket {
-  constructor(url) {
+  constructor(url, options = {}) {
     this.url = url;
     this.binaryType = "";
     this.sent = [];
     this.closed = false;
     this.listeners = new Map();
+    this.emitCloseOnClose = options.emitCloseOnClose ?? true;
   }
 
   addEventListener(type, listener) {
@@ -33,7 +34,9 @@ class FakeSocket {
 
   close() {
     this.closed = true;
-    this.emit("close", {});
+    if (this.emitCloseOnClose) {
+      this.emit("close", {});
+    }
   }
 
   emit(type, event) {
@@ -532,6 +535,78 @@ describe("swarm bot session", () => {
 
       await session.stop("test_complete");
       await startPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnect burst reconnects even if close does not emit a close event", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-reconnect",
+        "--scenario-id",
+        "reconnect-burst",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "0",
+        "--reconnect-delay-ms",
+        "1000",
+      ]);
+      let summary = null;
+      const session = new SwarmBotSession(config, {
+        logger,
+        onSummary(value) {
+          summary = value;
+        },
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url, {
+            emitCloseOnClose: sockets.length !== 0,
+          });
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage({
+          token: "tok_first",
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(9000);
+
+      expect(sockets[0].closed).toBe(true);
+      expect(logger.log).toHaveBeenCalledWith("reconnect_burst_triggered", expect.objectContaining({
+        botId: "bot-reconnect",
+        scenarioId: "reconnect-burst",
+      }));
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(sockets).toHaveLength(2);
+      sockets[1].emit("open", {});
+      sockets[1].emit("message", {
+        data: encodeHelloMessage({
+          token: "tok_second",
+        }),
+      });
+
+      await session.stop("test_complete");
+      await startPromise;
+
+      expect(summary.counters.connectAttempts).toBe(2);
+      expect(summary.counters.helloCount).toBe(2);
+      expect(summary.counters.forcedReconnects).toBe(1);
+      expect(summary.latencyMs.reconnect.count).toBe(1);
     } finally {
       vi.useRealTimers();
     }

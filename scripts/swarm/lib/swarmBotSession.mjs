@@ -158,9 +158,10 @@ export class SwarmBotSession {
       }
     });
     socket.addEventListener("close", () => {
-      if (this.socket === socket) {
-        this.socket = null;
+      if (this.socket !== socket) {
+        return;
       }
+      this.socket = null;
       this.metrics.markClose();
       this.#log("ws_close", {
         stopping: this.stopping,
@@ -170,12 +171,7 @@ export class SwarmBotSession {
         this.#finish("socket_closed");
         return;
       }
-      const reconnectStartedAt = this.nowMs();
-      this.reconnectTimer = this.setTimeoutFn(() => {
-        this.reconnectTimer = null;
-        this.metrics.markReconnect(this.nowMs() - reconnectStartedAt);
-        this.#openSocket();
-      }, this.config.reconnectDelayMs);
+      this.#scheduleReconnect(this.nowMs());
     });
     socket.addEventListener("error", () => {
       this.#log("ws_error");
@@ -338,11 +334,27 @@ export class SwarmBotSession {
     this.reconnectBurstTriggered = true;
     this.metrics.markForcedReconnect();
     this.#log("reconnect_burst_triggered");
+    const socket = this.socket;
+    this.socket = null;
+    this.#clearActionTimers();
+    this.#scheduleReconnect(this.nowMs());
     try {
-      this.socket.close();
+      socket.close();
     } catch {
       // Ignore close failures during reconnect injection.
     }
+  }
+
+  #scheduleReconnect(reconnectStartedAt) {
+    if (this.stopping || this.reconnectTimer !== null) {
+      return;
+    }
+
+    this.reconnectTimer = this.setTimeoutFn(() => {
+      this.reconnectTimer = null;
+      this.metrics.markReconnect(this.nowMs() - reconnectStartedAt);
+      this.#openSocket();
+    }, this.config.reconnectDelayMs);
   }
 
   #performViewportMove() {

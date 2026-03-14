@@ -521,3 +521,65 @@ Result:
 Next promotion:
 
 - local step 5 is now unblocked
+
+### 2026-03-14: Local Step 5
+
+Run:
+
+- `local-reconnect-b8-60s`
+
+Result:
+
+- not promoted yet
+- `0` failed bots
+- `0` force kills
+- reconnect scenario triggered, but reconnect recovery did not complete
+- `152/108` writes sent vs resolved at the aggregate level
+- all `8` bots still saw all `7` expected peers before the reconnect window
+- no explicit server errors were logged
+
+Failure noted:
+
+- all `4` `reconnect-burst` bots logged `reconnect_burst_triggered`
+- none of those bots logged a follow-up `ws_close`, second `ws_connect_attempt`, second `hello_received`, or any non-zero reconnect latency sample
+- each reconnect-burst bot finished with `forcedReconnects: 1`, `connectAttempts: 1`, and `pending.setCell: 11`
+- this means the forced reconnect path is not actually completing a disconnect-and-reconnect cycle
+
+Required follow-up before local step 6:
+
+- inspect the forced reconnect implementation and confirm why `socket.close()` is not leading to the normal close handler
+- make reconnect-burst prove recovery explicitly with a second `hello`, resubscribe, and resumed writes
+- rerun local step 5 and require reconnect-burst bots to show real reconnect samples with no unresolved write accumulation
+
+### 2026-03-14: Local Step 5 Investigation And Rerun
+
+Runs:
+
+- `local-reconnect-b8-60s`
+- `local-reconnect-b8-60s-rerun`
+
+Root cause:
+
+- the forced reconnect path depended on the websocket close event to schedule the reconnect timer
+- when that close handshake did not complete promptly, reconnect-burst bots never entered the normal reconnect flow
+
+Fix:
+
+- forced reconnect now schedules the reconnect timer directly instead of waiting for the close event
+- stale late close events are ignored so they cannot create duplicate reconnect attempts
+- the swarm tests now cover reconnect recovery even when `close()` does not emit a close event
+
+Result:
+
+- passed promotion gate on `local-reconnect-b8-60s-rerun`
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `148/148`
+- `4` reconnect samples across `4` reconnect-burst bots
+- each reconnect-burst bot finished with `connectAttempts: 2`, `helloCount: 2`, `subscribeSent: 2`, `reconnects: 1`, and `pending.setCell: 0`
+- all `8` bots saw all `7` expected peers
+- no explicit server errors were logged
+
+Next promotion:
+
+- local step 6 is now unblocked
