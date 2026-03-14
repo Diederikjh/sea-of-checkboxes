@@ -11,6 +11,11 @@ import {
   runSwarmHelpText,
   writeRunConfig,
 } from "./lib/runSwarmConfig.mjs";
+import {
+  buildRunSummary,
+  formatRunSummaryText,
+  loadBotRunResults,
+} from "./lib/runSummary.mjs";
 import { waitForWorkerReady } from "./lib/workerReadiness.mjs";
 
 async function main() {
@@ -181,13 +186,16 @@ async function main() {
       clearTimeout(forceKillTimer);
       forceKillTimer = null;
     }
-    const summary = buildSummary({
+    const botResults = loadBotRunResults(childResults);
+    const summary = buildRunSummary({
       config,
-      childResults,
+      botResults,
       stopReason,
       shareLink,
     });
+    const summaryText = formatRunSummaryText(summary);
     fs.writeFileSync(config.summaryOutput, `${JSON.stringify(summary, null, 2)}\n`);
+    fs.writeFileSync(resolveSummaryTextPath(config.summaryOutput), summaryText);
     logger.log("run_summary", summary);
     logger.close().finally(() => {
       process.exitCode = summary.ok ? 0 : 1;
@@ -217,39 +225,11 @@ async function main() {
   }
 }
 
-function buildSummary({ config, childResults, stopReason, shareLink }) {
-  const botSummaries = [];
-  for (const result of childResults) {
-    let summary = null;
-    try {
-      summary = JSON.parse(fs.readFileSync(result.summaryOutput, "utf8"));
-    } catch {
-      summary = null;
-    }
-    botSummaries.push({
-      botId: result.botId,
-      code: result.code,
-      signal: result.signal,
-      forced: result.forced,
-      summary,
-    });
+function resolveSummaryTextPath(summaryOutput) {
+  if (summaryOutput.endsWith(".json")) {
+    return `${summaryOutput.slice(0, -".json".length)}.txt`;
   }
-
-  const forcedKillCount = botSummaries.filter((item) => item.forced).length;
-  const failedBots = botSummaries.filter(
-    (item) => item.code !== 0 || item.signal !== null
-  ).length;
-
-  return {
-    ok: failedBots === 0,
-    runId: config.runId,
-    stopReason,
-    shareLink,
-    botCount: config.botCount,
-    forcedKillCount,
-    failedBots,
-    bots: botSummaries,
-  };
+  return `${summaryOutput}.txt`;
 }
 
 async function createRunShareLink(config, logger) {
