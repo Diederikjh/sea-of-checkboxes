@@ -5,6 +5,17 @@ import { applyTileOffset, buildScenarioRuntime } from "./runtime.mjs";
 describe("scenario runtime", () => {
   it("builds runtime timing and reconnect behavior per scenario", () => {
     expect(buildScenarioRuntime({
+      scenarioId: "hot-tile-contention",
+      cursorIntervalMs: 1_000,
+      setCellIntervalMs: 3_000,
+      durationMs: 60_000,
+      readonly: false,
+    })).toMatchObject({
+      id: "hot-tile-contention",
+      shutdownDrainMs: 5_000,
+    });
+
+    expect(buildScenarioRuntime({
       scenarioId: "cursor-heavy",
       cursorIntervalMs: 1_000,
       setCellIntervalMs: 3_000,

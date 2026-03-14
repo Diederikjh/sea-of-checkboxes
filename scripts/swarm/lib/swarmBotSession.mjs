@@ -125,10 +125,15 @@ export class SwarmBotSession {
       });
       this.stopDrainTimer = this.setTimeoutFn(() => {
         this.stopDrainTimer = null;
+        const replayedSetCell = this.#replayPendingSetCellsForTiles(
+          this.#pendingSetCellTiles(),
+          "stop_drain_elapsed",
+        );
         this.#log("stop_drain_elapsed", {
           reason,
           pendingSetCell: this.#pendingSetCellCount(),
           shutdownDrainMs,
+          replayedSetCell,
         });
         this.#beginShutdown(this.stopReason ?? reason);
       }, shutdownDrainMs);
@@ -731,6 +736,13 @@ export class SwarmBotSession {
 
   #pendingSetCellCount() {
     return this.pendingSetCells.size;
+  }
+
+  #pendingSetCellTiles() {
+    if (this.pendingSetCells.size === 0) {
+      return [];
+    }
+    return [...new Set([...this.pendingSetCells.values()].map((pending) => pending.tile))];
   }
 
   #pendingSetCellCountForTiles(tiles) {

@@ -32,7 +32,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: null,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
-        shutdownDrainMs: 1_500,
+        shutdownDrainMs: 5_000,
         reconnectBurstDelayMs: null,
       };
     },

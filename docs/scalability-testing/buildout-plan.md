@@ -801,3 +801,47 @@ Next promotion:
 
 - local ladder is complete through the current stress ceiling
 - begin production at prod step 1
+
+### 2026-03-14: Local Wildcard Mix
+
+Runs:
+
+- `local-wildcard-b8-60s`
+- `local-wildcard-b8-60s-rerun-after-hotspot-drain`
+
+Purpose:
+
+- run a noisy random local mix for `60s` to catch harness edge cases earlier than the fixed ladder
+
+Initial result:
+
+- `local-wildcard-b8-60s` failed promotion
+- the randomized pool for that run was `read-only-lurker,cursor-heavy,spread-editing,hot-tile-contention`
+- `cursor-heavy` only produced tolerated movement warnings
+- the real blocker was hotspot shutdown tail pressure, with `148/146` writes sent vs resolved and `2` hotspot bots finishing with `pending.setCell: 1`
+
+Root cause:
+
+- `hot-tile-contention` was still using a `1500ms` shutdown drain even though the observed hotspot `setCellSync` tail in that run reached beyond `5s`
+- if the drain budget expired, the bot shut down immediately instead of making one final replay attempt
+
+Fix:
+
+- increased `hot-tile-contention` shutdown drain to `5000ms`
+- when stop drain elapses with pending writes, the bot now replays those pending hotspot writes once before final shutdown
+- added regression coverage for hotspot drain timeout replay and runtime timing
+
+Rerun result:
+
+- `local-wildcard-b8-60s-rerun-after-hotspot-drain` passed promotion
+- the randomized pool for the rerun was `read-only-lurker,spread-editing,reconnect-burst,hot-tile-contention`
+- `0` failed bots
+- `0` force kills
+- `172/172` writes resolved
+- `0` pending writes at shutdown
+- `Assessment: pass`
+
+Notes:
+
+- wildcard runs should stay outside the main promotion ladder because their scenario mix changes run to run
+- they are still useful as a fast noisy regression pass before production work

@@ -761,6 +761,73 @@ describe("swarm bot session", () => {
     }
   });
 
+  it("replays pending hotspot writes when stop drain elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      let summary = null;
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-hot-replay",
+        "--scenario-id",
+        "hot-tile-contention",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "3000",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        onSummary(value) {
+          summary = value;
+        },
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      await vi.advanceTimersByTimeAsync(1300);
+
+      const stopPromise = session.stop("test_complete");
+      await vi.advanceTimersByTimeAsync(5000);
+      await stopPromise;
+      await startPromise;
+
+      const sentMessages = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const setCellMessages = sentMessages.filter((message) => message.t === "setCell");
+
+      expect(setCellMessages).toHaveLength(2);
+      expect(setCellMessages[0]).toMatchObject(setCellMessages[1]);
+      expect(summary.counters.setCellSent).toBe(1);
+      expect(summary.counters.setCellResolved ?? 0).toBe(0);
+      expect(summary.pending.setCell).toBe(1);
+      expect(logger.log).toHaveBeenCalledWith("setcell_replayed", expect.objectContaining({
+        botId: "bot-hot-replay",
+        scenarioId: "hot-tile-contention",
+        reason: "stop_drain_elapsed",
+        count: 1,
+      }));
+      expect(logger.log).toHaveBeenCalledWith("stop_drain_elapsed", expect.objectContaining({
+        botId: "bot-hot-replay",
+        scenarioId: "hot-tile-contention",
+        replayedSetCell: 1,
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drains pending reconnect-burst writes before final shutdown", async () => {
     vi.useFakeTimers();
     try {
