@@ -98,7 +98,6 @@ const CURSOR_PULL_CONCURRENCY = 2;
 const CURSOR_HUB_NAME = "global";
 const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
 const CURSOR_BATCH_TRACE_MAX_HOP = 1;
-const ENABLED_FLAG_VALUES = new Set(["1", "true", "yes", "on"]);
 
 type SetCellSuppressionReason =
   | "tile_batch_ingress_active"
@@ -107,7 +106,6 @@ type SetCellSuppressionReason =
 interface CursorPullFirstPostScopeState {
   observedAtMs: number;
   peerCount: number;
-  bypassEnabled: boolean;
 }
 
 export class ConnectionShardDO {
@@ -1338,7 +1336,7 @@ export class ConnectionShardDO {
 
     const firstPostScopeState = this.#cursorPullFirstPostScopeState;
     const suppressedDelayMs = this.#cursorPullSuppressionRemainingMs();
-    const bypassSuppressionOnce = firstPostScopeState?.bypassEnabled === true && suppressedDelayMs > 0;
+    const bypassSuppressionOnce = firstPostScopeState !== null && suppressedDelayMs > 0;
     if (suppressedDelayMs > 0 && !bypassSuppressionOnce) {
       this.#logFirstPostScopeDecisionIfPending("delayed_for_suppression", wakeReason, {
         suppressionRemainingMs: suppressedDelayMs,
@@ -1494,7 +1492,6 @@ export class ConnectionShardDO {
       this.#cursorPullFirstPostScopeState = {
         observedAtMs: nowMs,
         peerCount: nextPeerShards.length,
-        bypassEnabled: this.#isCursorPullFirstPostScopeBypassEnabled(),
       };
     }
 
@@ -1553,13 +1550,6 @@ export class ConnectionShardDO {
     }
   }
 
-  #isCursorPullFirstPostScopeBypassEnabled(): boolean {
-    const raw = typeof this.#env.CURSOR_PULL_FIRST_POST_SCOPE_BYPASS === "string"
-      ? this.#env.CURSOR_PULL_FIRST_POST_SCOPE_BYPASS.trim().toLowerCase()
-      : "";
-    return ENABLED_FLAG_VALUES.has(raw);
-  }
-
   #logFirstPostScopeDecisionIfPending(
     action:
       | "aborted_no_clients"
@@ -1587,7 +1577,6 @@ export class ConnectionShardDO {
       first_post_scope_observed_at_ms: pending.observedAtMs,
       first_post_scope_age_ms: Math.max(0, nowMs - pending.observedAtMs),
       peer_count: pending.peerCount,
-      bypass_enabled: pending.bypassEnabled,
       suppression_remaining_ms: suppressionRemainingMs,
       ingress_depth: this.#cursorStateIngressDepth,
       in_flight: this.#cursorPullInFlight,

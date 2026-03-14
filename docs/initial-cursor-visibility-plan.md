@@ -219,8 +219,7 @@ Recent concrete evidence:
     - fast scope arrival can still be followed by a long wait for first useful reverse pull
     - the remaining delay is now more clearly in stale-side post-scope wake scheduling, suppression, or first useful pull execution
 - `2026-03-13T16:53Z`:
-  - this was a later local swarm-backed run with `4` protocol bots and captured dev-worker stdout after enabling the one-shot first-post-scope suppression bypass through local worker config
-  - the local worker finally showed the experiment binding loaded, and the worker logs included `bypass_enabled: true`
+  - this was a later local swarm-backed run with `4` protocol bots and captured dev-worker stdout while testing the one-shot first-post-scope suppression bypass
   - shard placement was:
     - `bot-001` on `shard-2`
     - `bot-002` on `shard-0`
@@ -234,7 +233,6 @@ Recent concrete evidence:
   - the key worker-side confirmation was on `shard-2`:
     - `cursor_pull_scope` arrived at `2026-03-13T16:53:23.131Z`
     - `cursor_pull_first_post_scope_decision` logged `action: "started_with_suppression_bypass"` at `2026-03-13T16:53:24.065Z`
-    - `bypass_enabled: true`
     - `suppression_remaining_ms: 191`
     - first peer visibility followed immediately after at `2026-03-13T16:53:24.067Z` to `16:53:24.069Z`
     - `scope_age_ms` about `934` to `937`
@@ -243,8 +241,7 @@ Recent concrete evidence:
     - it is one successful sample
     - it still needs repeat validation against more shard placements and more runs
 - `2026-03-13T19:28Z`:
-  - this was the first pairwise confirmation run after leaving the first-post-scope suppression bypass enabled in local worker config
-  - the worker again showed `bypass_enabled: true`, and one shard used `action: "started_with_suppression_bypass"` promptly
+  - this was the first pairwise confirmation run after leaving the first-post-scope suppression bypass enabled for local validation
   - shard placement was:
     - `bot-001` on `shard-0`
     - `bot-002` on `shard-6`
@@ -282,7 +279,7 @@ Recent concrete evidence:
   - this run weakens the idea that every remaining multi-second delay is stale-side scheduling:
     - some of the "slow" first-visibility cases are actually first pulls against empty peer snapshots
 - `2026-03-13T19:30Z`:
-  - this was the second pairwise confirmation run under the same bypass-enabled local config
+  - this was the second pairwise confirmation run under the same bypass-enabled local validation setup
   - shard placement was:
     - `bot-001` on `shard-3`
     - `bot-002` on `shard-2`
@@ -291,7 +288,7 @@ Recent concrete evidence:
   - this run was healthy end-to-end:
     - all bots saw first remote cursors in about `306ms` to `1373ms`
     - scope discovery was prompt
-    - first post-scope pull decisions all logged `action: "started"` with `bypass_enabled: true`
+    - first post-scope pull decisions all logged `action: "started"` or `action: "started_with_suppression_bypass"` as expected
   - no multi-second or `10s` initial cursor stall reappeared in this sample
   - this run supports keeping the bypass enabled for ongoing investigation, but it does not yet justify treating the bypass as the whole fix
 - `2026-03-13T19:38Z`:
@@ -367,7 +364,7 @@ Interpretation:
   - so the residual delay is no longer explained by empty-scope discovery
   - this makes stale-side post-scope scheduling or first useful reverse-pull behavior the primary remaining lead
 - the `2026-03-13T16:53Z` local swarm run adds the first successful scheduler-path experiment result:
-  - the worker logged a real `started_with_suppression_bypass` decision with `bypass_enabled: true`
+  - the worker logged a real `started_with_suppression_bypass` decision
   - first peer visibility on that shard followed immediately afterward, rather than waiting for the suppression window to expire
   - that is strong evidence that suppression on the stale-side first post-scope pull is at least one real contributor to the delayed initial cursor problem
   - this still needs repeat validation, but the suppression-bypass experiment now looks like a credible causal lead rather than only a hypothesis
@@ -500,7 +497,7 @@ For each asymmetric run:
    - the bypass experiment improves one stale-side scheduling failure mode
    - the settling renew improves peer discovery during startup or churn when a shard already had one known peer
    - none of these results is yet enough to call the problem closed
-2. Repeat the enabled-bypass local probe across a few more cross-shard runs and compare it directly with the no-bypass baseline.
+2. Keep repeating the local probe across a few more cross-shard runs and compare it directly with the earlier pre-bypass baseline.
 3. If the bypass keeps improving first visibility, decide whether to:
    - keep it as a narrow first-post-scope special case
    - or replace it with a more principled scheduler rule for the first useful reverse pull

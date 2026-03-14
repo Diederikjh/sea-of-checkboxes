@@ -1721,80 +1721,11 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
-  it("logs when suppression delays the first pull after peer scope becomes non-empty", async () => {
+  it("bypasses suppression once for the first pull after peer scope becomes non-empty", async () => {
     vi.useFakeTimers();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       const harness = createRelayHarness({ alarmMode: "manual" });
-      setCursorHubWatchResponse(harness, {
-        peerShards: ["shard-1"],
-      });
-      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
-        from: "shard-1",
-        updates: [],
-      });
-
-      const socket = await connectClient(harness.shard, harness.socketPairFactory, {
-        uid: "u_a",
-        name: "Alice",
-        shard: "shard-0",
-      });
-
-      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
-
-      for (let index = 0; index < 5 && !harness.hasPendingAlarm(); index += 1) {
-        await Promise.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-      }
-
-      await getCursorStateWithHeaders(harness.shard, {
-        "x-sea-cursor-pull": "1",
-        "x-sea-cursor-trace-id": "trace-suppressed-first-post-scope",
-        "x-sea-cursor-trace-hop": "0",
-        "x-sea-cursor-trace-origin": "shard-1",
-      });
-
-      await harness.fireAlarm();
-
-      const events = parseStructuredLogs(logSpy);
-      expect(
-        events.some(
-          (entry) =>
-            entry.scope === "connection_shard_do"
-            && entry.event === "cursor_pull_first_post_scope_decision"
-            && entry.shard === "shard-0"
-            && entry.action === "delayed_for_suppression"
-            && (entry.wake_reason === "watch_scope_change" || entry.wake_reason === "local_activity")
-            && entry.bypass_enabled === false
-            && typeof entry.suppression_remaining_ms === "number"
-            && entry.suppression_remaining_ms > 0
-        )
-      ).toBe(true);
-      expect(
-        events.some(
-          (entry) =>
-            entry.scope === "connection_shard_do"
-            && entry.event === "cursor_pull_peer"
-            && entry.shard === "shard-0"
-            && (entry.wake_reason === "watch_scope_change" || entry.wake_reason === "local_activity")
-        )
-      ).toBe(false);
-    } finally {
-      logSpy.mockRestore();
-      vi.useRealTimers();
-    }
-  });
-
-  it("can bypass suppression once for the first pull after peer scope becomes non-empty", async () => {
-    vi.useFakeTimers();
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    try {
-      const harness = createRelayHarness({
-        alarmMode: "manual",
-        envOverrides: {
-          CURSOR_PULL_FIRST_POST_SCOPE_BYPASS: "1",
-        },
-      });
       setCursorHubWatchResponse(harness, {
         peerShards: ["shard-1"],
       });
@@ -1844,7 +1775,6 @@ describe("ConnectionShardDO websocket handling", () => {
             && entry.shard === "shard-0"
             && entry.action === "started_with_suppression_bypass"
             && (entry.wake_reason === "watch_scope_change" || entry.wake_reason === "local_activity")
-            && entry.bypass_enabled === true
             && typeof entry.suppression_remaining_ms === "number"
             && entry.suppression_remaining_ms > 0
         )
