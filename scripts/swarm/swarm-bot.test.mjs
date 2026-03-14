@@ -322,6 +322,58 @@ describe("swarm bot session", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps spread-editing writes inside the subscribed tile", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-spread",
+        "--scenario-id",
+        "spread-editing",
+        "--origin-x",
+        "900000096",
+        "--origin-y",
+        "-900000000",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "3000",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      await vi.advanceTimersByTimeAsync(9500);
+
+      const sentMessages = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const subscribedTile = worldToTileKey(config.originX, config.originY);
+      const setCellMessages = sentMessages.filter((message) => message.t === "setCell");
+
+      expect(setCellMessages.length).toBeGreaterThan(0);
+      expect(setCellMessages.every((message) => message.tile === subscribedTile)).toBe(true);
+
+      await session.stop("test_complete");
+      await startPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function decodeClientMessageBinaryForTest(payload) {
@@ -367,6 +419,18 @@ function decodeClientMessageBinaryForTest(payload) {
       t: "unsub",
       ...(cid ? { cid } : {}),
       tiles: [`${tx}:${ty}`],
+    };
+  }
+
+  if (tag === 3) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const tx = view.getInt32(1);
+    const ty = view.getInt32(5);
+    return {
+      t: "setCell",
+      tile: `${tx}:${ty}`,
+      i: view.getUint16(9),
+      v: bytes[11],
     };
   }
 

@@ -329,3 +329,76 @@ We start with:
 - `spread-editing,read-only-lurker`
 
 Only after log inspection do we move to local step 2.
+
+## Run Notes
+
+### 2026-03-14: Local Step 1
+
+Run:
+
+- `local-smoke-b2-15s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- `4/4` writes resolved
+- both bots saw the expected peer
+
+Notes:
+
+- first remote cursor visibility was slower than ideal for a tiny local run, around `1.57s` to `1.66s`
+- this did not block promotion to local step 2
+
+### 2026-03-14: Local Step 2
+
+Run:
+
+- `local-baseline-b4-30s`
+
+Result:
+
+- mostly healthy, but not promoted yet
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- `18/18` writes resolved
+- all bots saw all `3` expected peers
+
+Failure noted:
+
+- one unexpected `not_subscribed` error occurred during `spread-editing`
+- the bot attempted a write on tile `14062502:-14062500` without that tile being subscribed
+- this looks like a swarm-harness scenario bug, not a backend scaling failure
+
+Required follow-up before local step 3:
+
+- fix `spread-editing` so its write pattern stays inside the subscribed area, or expand subscriptions to match the write pattern
+- rerun local step 2 and require a clean summary before moving up the ladder
+
+### 2026-03-14: Local Step 2 Rerun
+
+Run:
+
+- `local-baseline-b4-30s-rerun`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- `18/18` writes resolved
+- all bots saw all `3` expected peers
+- no unexpected errors
+
+Fix verified:
+
+- `spread-editing` write placement was tightened to stay inside the subscribed tile
+- the previous `not_subscribed` harness error did not recur
+
+Next promotion:
+
+- local step 3 is now unblocked

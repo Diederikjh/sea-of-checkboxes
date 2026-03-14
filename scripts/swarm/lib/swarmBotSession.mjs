@@ -707,15 +707,15 @@ function setCellPointForScenario(pattern, anchor, step) {
       ]);
     case "spread":
     default:
-      return pointFromPattern(anchorFloor(anchor), step, [
-        { x: 0, y: 0 },
-        { x: 8, y: 0 },
-        { x: 16, y: 0 },
-        { x: 0, y: 8 },
+      return pointFromPattern(tileOrigin(anchor), step, [
         { x: 8, y: 8 },
         { x: 16, y: 8 },
+        { x: 24, y: 8 },
+        { x: 8, y: 16 },
+        { x: 16, y: 16 },
         { x: 24, y: 16 },
         { x: 32, y: 24 },
+        { x: 40, y: 32 },
       ]);
   }
 }
@@ -732,5 +732,12 @@ function anchorFloor(anchor) {
   return {
     x: Math.floor(anchor.x),
     y: Math.floor(anchor.y),
+  };
+}
+
+function tileOrigin(anchor) {
+  return {
+    x: Math.floor(anchor.x / 64) * 64,
+    y: Math.floor(anchor.y / 64) * 64,
   };
 }
