@@ -1244,7 +1244,7 @@ describe("ConnectionShardDO websocket handling", () => {
       expect(countCursorStatePullRequests(harness)).toBe(16);
 
       await vi.advanceTimersByTimeAsync(149);
-      expect(countCursorStatePullRequests(harness)).toBe(16);
+      expect(countCursorStatePullRequests(harness)).toBe(18);
 
       await vi.advanceTimersByTimeAsync(1);
       expect(countCursorStatePullRequests(harness)).toBe(18);
@@ -1280,7 +1280,7 @@ describe("ConnectionShardDO websocket handling", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(countCursorStatePullRequests(harness)).toBe(2);
 
-      await vi.advanceTimersByTimeAsync(150 + 225 + 300 + 300 + 300 + 300);
+      await vi.advanceTimersByTimeAsync(150 + 225 + 225 + 225 + 225 + 225);
       expect(countCursorStatePullRequests(harness)).toBe(24);
 
       await vi.advanceTimersByTimeAsync(224);
@@ -1323,7 +1323,7 @@ describe("ConnectionShardDO websocket handling", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(countCursorStatePullRequests(harness)).toBe(1);
 
-      await vi.advanceTimersByTimeAsync(150 + 225 + 300 + 300 + 300 + 300);
+      await vi.advanceTimersByTimeAsync(150 + 225 + 225 + 225 + 225 + 225);
       const beforeReheat = countCursorStatePullRequests(harness);
 
       socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 1.5 }));
@@ -1331,13 +1331,13 @@ describe("ConnectionShardDO websocket handling", () => {
       socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 3.0, y: 2.0 }));
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat);
 
       await vi.advanceTimersByTimeAsync(149);
       expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 2);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
       randomSpy.mockRestore();
     } finally {
       vi.useRealTimers();

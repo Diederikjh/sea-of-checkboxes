@@ -1,7 +1,7 @@
 export const CURSOR_PULL_TIMING = Object.freeze({
   intervalMinMs: 75,
-  intervalMaxMs: 300,
-  intervalBackoffStepMs: 75,
+  intervalMaxMs: 225,
+  intervalBackoffStepMs: 50,
   intervalIdleMaxMs: 1_500,
   intervalIdleBackoffStepMs: 300,
   idleStreakBeforeLongBackoff: 4,
