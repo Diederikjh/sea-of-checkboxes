@@ -1,6 +1,6 @@
-# Scalability Testing Plan
+# Scalability Testing
 
-This folder is for planning and building live-backend scalability testing for Sea of Checkboxes.
+This folder defines the structure and operating approach for live-backend swarm testing in Sea of Checkboxes.
 
 The target is not only "how many users can connect", but "how the real backend behaves under distinct load shapes" so we can debug failures from logs and reproduce them reliably.
 
@@ -19,25 +19,6 @@ The target is not only "how many users can connect", but "how the real backend b
 - replace manual browser testing
 - benchmark only browser rendering performance
 - hide backend guardrails such as `tile_readonly_hot` or `tile_sub_denied`
-
-## Current Status
-
-Implemented now:
-
-- one live protocol bot CLI at `scripts/swarm/swarm-bot.mjs`
-- shared JS protocol, config, metrics, and session helpers in `scripts/swarm/lib/`
-- per-bot NDJSON event logs and per-bot summary JSON
-- focused tests for the Phase 1 bot path
-
-Current output shape:
-
-- one NDJSON file per bot process:
-  - `logs/swarm/<run-id>/bots/<bot-id>.ndjson`
-- one summary JSON file per bot process:
-  - `logs/swarm/<run-id>/bots/<bot-id>-summary.json`
-- coordinator run config and summary may also include a share link for the swarm origin so a human can inspect the board location directly
-
-Every log record also carries `runId` and `botId`, so the writer is identifiable both from the filename and from the file contents.
 
 ## Dev-Local Operation Note
 
@@ -121,34 +102,13 @@ Human verification:
 - the coordinator creates a share link at run start
 - open that link in the deployed app to confirm the bot sector and visually check that writes and cursors are appearing in the expected remote area
 
-## Current Cursor Debug Result
+## Layout
 
-Recent local swarm-backed cursor probes are already useful for debugging the delayed initial cursor problem:
-
-- one run after the shorter empty-scope probe change showed all shards seeing first remote cursors in about `0.9s` to `1.3s`
-- a later rerun still showed one shard taking about `10s`, even though peer scope had arrived promptly
-
-Current takeaway:
-
-- the shorter empty-scope probe helped, but it is only a partial fix
-- the swarm harness is now good enough to distinguish:
-  - late peer discovery
-  - prompt peer discovery followed by delayed first useful reverse pull
-- the later local burstiness investigation found another scope problem:
-  - shards that already had one watched peer could fall back to `60s` watch renews too early
-  - if a second peer arrived shortly after, that peer could remain undiscovered for the rest of a `30s` run
-- current local mitigation:
-  - keep fast watch renews for a short settling window after peer scope changes
-  - this improved local `curUp` continuity materially in the latest `v13` run
-
-## Proposed Layout
-
-Current and planned scripts:
+Scripts:
 
 - `scripts/swarm/run-swarm.mjs`
   - top-level coordinator
   - starts a run and launches bot processes
-  - initial implementation is a small short-duration coordinator for smoke runs
 - `scripts/swarm/swarm-bot.mjs`
   - single lightweight protocol bot process
   - connects to the live websocket backend and executes assigned actions
@@ -159,7 +119,7 @@ Current and planned scripts:
 - `scripts/swarm/report-run.mjs`
   - reads bot logs and produces a concise run summary
 
-Planned output:
+Run output:
 
 - `logs/swarm/<run-id>/run-config.json`
 - `logs/swarm/<run-id>/coordinator.log`
@@ -168,6 +128,8 @@ Planned output:
 - `logs/swarm/<run-id>/bots/<bot-id>-summary.json`
 - optional canary browser logs in `logs/swarm/<run-id>/canary-*.log`
 - share-link metadata at run start when the backend supports share-link creation
+
+Every log record should carry `runId` and `botId`, so the writer is identifiable both from the filename and from the file contents.
 
 ## Safety Requirements
 
@@ -796,24 +758,3 @@ Exit criteria:
 
 - the main swarm control path is covered well enough that we trust it during live backend incidents
 
-## Open Questions
-
-- should the first bot implementation run as one process per bot, or many bot sessions inside one process
-- do we want auth coverage in the first phase, or only anonymous identities first
-- how many browser canaries are practical on the current dev machine
-- should run summaries also emit CSV in addition to JSON
-- do we want explicit server-side dashboards later, or keep analysis file-based first
-- what default remote origin should we choose for the first live runs in the top-right quadrant
-
-## Recommended First Build Slice
-
-Build the smallest thing that still teaches us something:
-
-1. one protocol bot script
-2. one hot-tile scenario
-3. one spread scenario
-4. one coordinator that picks one of those two for each bot
-5. per-bot NDJSON logs
-6. one run summary with latency percentiles and rejection counts
-
-That is enough to start learning from `10`- and `50`-bot runs without overbuilding the framework.

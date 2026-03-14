@@ -278,6 +278,37 @@ Recent concrete evidence:
   - this does not fully solve steady-state cursor smoothness, but it is the strongest evidence so far that stale non-empty peer scope was a major contributor to the bursty local stream
   - this run weakens the idea that every remaining multi-second delay is stale-side scheduling:
     - some of the "slow" first-visibility cases are actually first pulls against empty peer snapshots
+- `2026-03-14T07:15Z`:
+  - this was a local `4` bot / `30s` swarm run after removing the extra post-response `/cursor-state` cooldown
+  - shard placement was narrower than ideal, but steady-state throughput improved dramatically:
+    - every bot saw `30` updates from every peer over `30s`
+    - worst observed `curUp` gap was about `1.35s`
+    - first remote cursor visibility was about `381ms` to `712ms`
+  - this is the strongest local evidence that inbound `/cursor-state` serving was stretching outbound pull cadence enough to create multi-second quiet gaps
+  - this run materially improved the steady-state problem, but it did not yet prove the result across a broader cross-shard spread
+- `2026-03-14T07:54Z`:
+  - this was the next local `4` bot / `30s` swarm run after shortening the steady-state pull backoff from `300ms` max / `75ms` step to `225ms` max / `50ms` step
+  - shard placement was broader than the immediately previous local run:
+    - `bot-001` and `bot-004` on `shard-1`
+    - `bot-002` on `shard-6`
+    - `bot-003` on `shard-2`
+  - client-side cursor continuity stayed healthy across all peers:
+    - per-peer remote cursor counts were `27-30` over `30s`
+    - raw `curUp` max gaps were:
+      - `bot-001`: `1305ms`
+      - `bot-002`: `2037ms`
+      - `bot-003`: `1329ms`
+      - `bot-004`: `1226ms`
+    - first remote cursor visibility was about `1226ms` to `1574ms`
+  - this did not beat the best-case local sample on every shard, but it held the wider run close to the target:
+    - initial visibility stayed under `2s`
+    - steady-state throughput stayed near `1s` on most paths
+    - the remaining tail was one shard at about `2.0s`
+  - the remaining problem is now narrower:
+    - not startup
+    - not empty-scope discovery
+    - not `/cursor-state` response cooldown
+    - it is the residual steady-state cadence tail on some cross-shard paths
 - `2026-03-13T19:30Z`:
   - this was the second pairwise confirmation run under the same bypass-enabled local validation setup
   - shard placement was:
@@ -518,22 +549,26 @@ For each asymmetric run:
    - source cursor movement not being published
    - `/cursor-state` exposing stale or empty snapshots
    - destination discarding or not fanning newer versions
-8. Now that local burstiness improved when peer-set convergence improved, inspect the remaining `2s-3s` gaps as a separate steady-state problem:
-   - measure whether they align with pull suppression
-   - measure whether they align with timer backoff
-   - confirm whether the remaining loss is per-shard cadence or per-peer snapshot freshness
-9. Now that the bypass experiment has produced one successful positive result, prioritize scheduler priority, suppression, and first useful reverse-pull behavior for fresh `watch_scope_change`.
+8. Now that `/cursor-state` cooldown removal and the shorter steady-state pull interval improved local continuity, inspect the remaining `~2s` tail as a separate steady-state problem:
+   - measure whether the worst tail aligns with one shard repeatedly serving multiple peers from the same timer cadence
+   - measure whether the tail appears only when a shard is both serving snapshots and pulling peers concurrently
+   - confirm whether the residual gap is timer cadence, concurrency saturation, or per-peer fairness
+9. For the steady-state target, focus next on simple two-peer fairness:
+   - target about `500ms` max gap for `2` shards actively exchanging cursors
+   - keep about `1s` max gap acceptable for `3+` peers or mixed edit/cursor traffic
+   - validate that any tuning still holds the `4` bot / `30s` case near `1s` without reintroducing storms
 10. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
    - no hidden recursive `/cursor-state` storm
 
 ## Acceptance Criteria
 
-- Initial remote cursor visibility is about `20s` or better in representative multi-shard runs.
+- Initial remote cursor visibility is about `2s` or better in representative multi-shard runs.
 - The result holds across representative watched topologies, not just one shard pair.
 - We do not need a later `local_activity` event to "kick" the stale shard into first visibility.
 - Existing shards learn about newly active watched peers promptly, rather than only on a later renew cycle.
-- In a `30s` `4` bot local probe, each bot sees all remote peers and the worst `curUp` gap stays comfortably below `10s`.
+- In a `30s` `4` bot local probe, each bot sees all remote peers and the worst `curUp` gap stays at about `1s`, with occasional tails allowed up to about `2s`.
+- In a simple `2` shard local probe, the worst `curUp` gap stays around `500ms` or better.
 - Cursor latency improvements do not regress storm protections or reintroduce client-visible pull failures.
 
 ## Representative Validation Cases
