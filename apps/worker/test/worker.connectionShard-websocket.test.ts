@@ -8,6 +8,7 @@ import {
 } from "@sea/protocol";
 import { describe, expect, it, vi } from "vitest";
 
+import { ConnectionShardCursorPullOrchestrator } from "../src/connectionShardCursorPullOrchestrator";
 import { ConnectionShardCursorPullScheduler } from "../src/connectionShardCursorPullScheduler";
 import { waitFor } from "./helpers/waitFor";
 import {
@@ -1570,6 +1571,7 @@ describe("ConnectionShardDO websocket handling", () => {
           (entry) =>
             entry.scope === "connection_shard_do"
             && entry.event === "cursor_pull_alarm_failed"
+            && entry.failure_stage === "run_tick"
             && entry.error_name === "Error"
             && entry.error_message === "alarm exploded"
             && typeof entry.error_stack === "string"
@@ -1581,6 +1583,35 @@ describe("ConnectionShardDO websocket handling", () => {
       markRunStartedSpy.mockRestore();
       logSpy.mockRestore();
       vi.useRealTimers();
+    }
+  });
+
+  it("logs primitive detached alarm failures before runTick begins", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const consumeAlarmWakeSpy = vi
+      .spyOn(ConnectionShardCursorPullOrchestrator.prototype, "consumeAlarmWake")
+      .mockImplementation(() => {
+        throw "2026-03-14T21:34:37.497Z";
+      });
+    try {
+      const harness = createRelayHarness({ alarmMode: "manual" });
+
+      await expect(harness.shard.alarm()).rejects.toBe("2026-03-14T21:34:37.497Z");
+
+      const events = parseStructuredLogs(logSpy);
+      expect(
+        events.some(
+          (entry) =>
+            entry.scope === "connection_shard_do"
+            && entry.event === "cursor_pull_alarm_failed"
+            && entry.failure_stage === "consume_wake"
+            && entry.error_type === "string"
+            && entry.error_message === "2026-03-14T21:34:37.497Z"
+        )
+      ).toBe(true);
+    } finally {
+      consumeAlarmWakeSpy.mockRestore();
+      logSpy.mockRestore();
     }
   });
 

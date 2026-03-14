@@ -386,29 +386,39 @@ export class ConnectionShardDO {
   }
 
   async alarm(): Promise<void> {
-    const wake = this.#cursorPullOrchestrator.consumeAlarmWake();
-    if (!wake) {
-      this.#logEvent("cursor_pull_alarm_stale", {
-        ...this.#cursorPullOrchestrator.alarmStateFields(),
-      });
-      return;
-    }
-    if (wake.wakeReason === "watch_scope_change") {
-      this.#logEvent("cursor_pull_alarm_fired", {
-        ...this.#cursorPullOrchestrator.alarmStateFields({
-          wake_reason: wake.wakeReason,
-          scheduled_at_ms: wake.scheduledAtMs ?? undefined,
-        }),
-      });
-    }
+    let wake:
+      | {
+        wakeReason: CursorPullWakeReason;
+        scheduledAtMs: number | null;
+      }
+      | null = null;
+    let failureStage = "consume_wake";
     try {
+      wake = this.#cursorPullOrchestrator.consumeAlarmWake();
+      if (!wake) {
+        this.#logEvent("cursor_pull_alarm_stale", {
+          ...this.#cursorPullOrchestrator.alarmStateFields(),
+        });
+        return;
+      }
+      if (wake.wakeReason === "watch_scope_change") {
+        failureStage = "log_watch_scope_change";
+        this.#logEvent("cursor_pull_alarm_fired", {
+          ...this.#cursorPullOrchestrator.alarmStateFields({
+            wake_reason: wake.wakeReason,
+            scheduled_at_ms: wake.scheduledAtMs ?? undefined,
+          }),
+        });
+      }
+      failureStage = "run_tick";
       await this.#cursorPullOrchestrator.runTick(wake.wakeReason);
     } catch (error) {
       this.#logEvent("cursor_pull_alarm_failed", {
         ...this.#cursorPullOrchestrator.alarmStateFields({
-          wake_reason: wake.wakeReason,
-          scheduled_at_ms: wake.scheduledAtMs ?? undefined,
+          wake_reason: wake?.wakeReason ?? undefined,
+          scheduled_at_ms: wake?.scheduledAtMs ?? undefined,
         }),
+        failure_stage: failureStage,
         ...this.#errorFields(error, { includeStack: true }),
       });
       throw error;
@@ -943,16 +953,38 @@ export class ConnectionShardDO {
   #errorFields(
     error: unknown,
     options: { includeStack?: boolean } = {}
-  ): { error_name?: string; error_message?: string; error_stack?: string } {
+  ): { error_name?: string; error_message?: string; error_stack?: string; error_type?: string } {
+    if (typeof error === "string") {
+      return {
+        error_type: "string",
+        error_message: error.slice(0, 240),
+      };
+    }
+
+    if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+      return {
+        error_type: typeof error,
+        error_message: String(error).slice(0, 240),
+      };
+    }
+
+    if (typeof error === "undefined") {
+      return {
+        error_type: "undefined",
+      };
+    }
+
     if (typeof error !== "object" || error === null) {
-      return {};
+      return {
+        error_type: typeof error,
+      };
     }
 
     const name = "name" in error && typeof error.name === "string" ? error.name : undefined;
     const message =
       "message" in error && typeof error.message === "string"
         ? error.message.slice(0, 240)
-        : undefined;
+        : String(error).slice(0, 240);
     const stack = options.includeStack
       && "stack" in error
       && typeof error.stack === "string"
@@ -961,6 +993,7 @@ export class ConnectionShardDO {
       : undefined;
 
     return {
+      error_type: Array.isArray(error) ? "array" : "object",
       ...(name ? { error_name: name } : {}),
       ...(message ? { error_message: message } : {}),
       ...(stack ? { error_stack: stack } : {}),

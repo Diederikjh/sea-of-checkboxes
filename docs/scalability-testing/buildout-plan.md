@@ -873,3 +873,31 @@ Notes:
 Next promotion:
 
 - prod step 2 is now unblocked
+
+### 2026-03-14: Prod Step 2
+
+Run:
+
+- `prod-step2-cursor-2026-03-14-b6-45s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- aggregate `setCellSent == setCellResolved` at `12/12`
+- all `6` bots saw all `5` expected peers
+- `Assessment: pass`
+
+Notes:
+
+- this production `cursor-heavy` run produced no movement warnings and no `not_subscribed` errors
+- production `hello` latency ranged from `755ms` to `1257ms`
+- `subscribeAck` stayed within `353ms` to `1029ms` across `18` subscribe samples
+- `firstRemoteCursor` stayed within `516ms` to `1305ms`
+- writer `setCellSync` stayed within `333ms` to `1120ms`
+
+Next promotion:
+
+- prod step 3 is now unblocked
