@@ -393,6 +393,7 @@ export class SwarmBotSession {
         this.#scheduleViewportMoveIn(waitMs);
         return false;
       }
+      this.#replayPendingSetCellsForTiles(this.currentSubscriptionTiles, "viewport_move_drain_elapsed");
     }
 
     this.viewportMoveDrainDeadlineMs = null;
@@ -747,6 +748,43 @@ export class SwarmBotSession {
       }
     }
     return count;
+  }
+
+  #replayPendingSetCellsForTiles(tiles, reason) {
+    if (!Array.isArray(tiles) || tiles.length === 0 || !this.socket) {
+      return 0;
+    }
+
+    const tileSet = new Set(tiles);
+    const replayed = [];
+    for (const pending of this.pendingSetCells.values()) {
+      if (!tileSet.has(pending.tile)) {
+        continue;
+      }
+      this.#send({
+        t: "setCell",
+        tile: pending.tile,
+        i: pending.index,
+        v: pending.requestedValue,
+        op: pending.op,
+      });
+      replayed.push({
+        tile: pending.tile,
+        i: pending.index,
+        op: pending.op,
+        requestedValue: pending.requestedValue,
+      });
+    }
+
+    if (replayed.length > 0) {
+      this.#log("setcell_replayed", {
+        reason,
+        count: replayed.length,
+        ops: replayed,
+      });
+    }
+
+    return replayed.length;
   }
 
   #maybeFinishStopDrain() {

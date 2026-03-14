@@ -489,6 +489,81 @@ describe("swarm bot session", () => {
     }
   });
 
+  it("replays pending writes once when viewport churn drain elapses before moving", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-churn-replay",
+        "--scenario-id",
+        "viewport-churn",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "3000",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      const initialSub = decodeClientMessageBinaryForTest(sockets[0].sent[0]);
+      sockets[0].emit("message", {
+        data: encodeSubAckMessage({
+          cid: initialSub.cid,
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(4500);
+
+      const sentBeforeDrainElapsed = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const firstSetCell = sentBeforeDrainElapsed.find((message) => message.t === "setCell");
+      expect(firstSetCell).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(2200);
+
+      const sentAfterDrainElapsed = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const replayedWrites = sentAfterDrainElapsed.filter((message) =>
+        message.t === "setCell"
+          && message.tile === firstSetCell.tile
+          && message.i === firstSetCell.i
+          && message.op === firstSetCell.op
+      );
+
+      expect(replayedWrites).toHaveLength(2);
+      expect(sentAfterDrainElapsed).toContainEqual({
+        t: "unsub",
+        cid: "bot-churn-replay-unsub-000001",
+        tiles: [worldToTileKey(config.originX, config.originY)],
+      });
+      expect(logger.log).toHaveBeenCalledWith("setcell_replayed", expect.objectContaining({
+        botId: "bot-churn-replay",
+        scenarioId: "viewport-churn",
+        reason: "viewport_move_drain_elapsed",
+        count: 1,
+      }));
+
+      await session.stop("test_complete");
+      await startPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps spread-editing writes inside the subscribed tile", async () => {
     vi.useFakeTimers();
     try {
