@@ -418,6 +418,26 @@ Measurements:
 - edit convergence latency under contention
 - watcher count inferred from server responses and errors
 
+### Scenario: Multi-Hotspot Contention
+
+Intent:
+
+- stress several tiles near capacity at the same time instead of only one hotspot
+
+Behavior:
+
+- split active bots into several hotspot groups
+- keep each group concentrated on its own tile or small tile cluster
+- keep groups spatially separated relative to the configured swarm origin
+- optionally mix in lurkers watching each hotspot without editing
+
+Measurements:
+
+- whether several hotspots can approach guardrail thresholds simultaneously
+- per-hotspot accepted vs rejected writes
+- whether pressure on one hotspot bleeds into unrelated tiles
+- cross-hotspot fairness in convergence latency and subscription behavior
+
 ### Scenario: Spread Editing
 
 Intent:
@@ -757,4 +777,3 @@ Deliverables:
 Exit criteria:
 
 - the main swarm control path is covered well enough that we trust it during live backend incidents
-

@@ -182,7 +182,36 @@ pnpm swarm:run \
   --scenario-pool hot-tile-contention,read-only-lurker
 ```
 
-### Step 7: Mixed Incident Shape
+### Step 7: Multi-Hotspot Pressure
+
+Intent:
+
+- stress several different tiles close to capacity at the same time
+- validate multi-user scalability across several active hotspots instead of one
+
+Run:
+
+- `12` bots
+- `60s`
+- planned future scenario: `multi-hotspot,read-only-lurker`
+
+Planned command once implemented:
+
+```bash
+pnpm swarm:run \
+  --run-id local-multi-hotspot-b12-60s \
+  --bot-count 12 \
+  --duration-ms 60000 \
+  --scenario-pool multi-hotspot,read-only-lurker
+```
+
+Notes:
+
+- this rung is intentionally listed in the ladder before the mixed incident shape
+- it is not implemented in the swarm runner yet
+- do not promote this rung until a dedicated `multi-hotspot` scenario exists
+
+### Step 8: Mixed Incident Shape
 
 Intent:
 
@@ -204,7 +233,7 @@ pnpm swarm:run \
   --scenario-pool hot-tile-contention,cursor-heavy,viewport-churn,reconnect-burst,read-only-lurker
 ```
 
-### Step 8: Soak
+### Step 9: Soak
 
 Intent:
 
@@ -226,7 +255,7 @@ pnpm swarm:run \
   --scenario-pool soak,read-only-lurker
 ```
 
-### Step 9: Local Stress Ceiling
+### Step 10: Local Stress Ceiling
 
 Intent:
 
@@ -295,6 +324,11 @@ Production app:
 - `6` bots
 - `30s`
 - `hot-tile-contention,read-only-lurker`
+
+### Prod Step 7: Multi-Hotspot Pressure
+
+- planned future scenario: `multi-hotspot,read-only-lurker`
+- do not promote until the local `multi-hotspot` rung is implemented and stable
 
 Do not start with the mixed incident shape in production.
 
@@ -402,3 +436,53 @@ Fix verified:
 Next promotion:
 
 - local step 3 is now unblocked
+
+### 2026-03-14: Local Step 3
+
+Run:
+
+- `local-cursor-b6-45s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- `12/12` writes resolved
+- all `6` bots saw all `5` expected peers
+- no unexpected errors
+
+Notes:
+
+- this run shifted the load toward cursor fanout as intended, with `606` cursor sends across `6` bots
+- `firstRemoteCursor` remained acceptable for promotion, though bot p50s still ranged up to `1327ms`
+- local step 4 is now unblocked
+
+### 2026-03-14: Local Step 4
+
+Run:
+
+- `local-viewport-b6-45s`
+
+Result:
+
+- not promoted yet
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- `25/27` writes resolved
+- all `6` bots saw all `5` expected peers
+- no explicit server errors were logged
+
+Failure noted:
+
+- `viewport-churn` did not satisfy the write-drain gate before shutdown
+- one active bot finished with a pending `setCell`
+- aggregate `setCellSync` max reached roughly `35.9s` on two active bots, which is too high for promotion even though the writes eventually confirmed
+
+Required follow-up before local step 5:
+
+- inspect whether `viewport-churn` is issuing writes too close to tile moves or run shutdown
+- decide whether the harness should drain pending writes before stop, reduce write cadence during viewport moves, or both
+- rerun local step 4 and require `setCellSent == setCellResolved` with sane `setCellSync` tails before moving up the ladder
