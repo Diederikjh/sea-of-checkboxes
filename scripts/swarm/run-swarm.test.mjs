@@ -11,7 +11,7 @@ import {
 } from "./lib/workerReadiness.mjs";
 
 describe("run swarm config", () => {
-  it("builds deterministic two-bot defaults with one readonly lurker", () => {
+  it("builds deterministic two-bot defaults with one spread editor and one readonly lurker", () => {
     const config = parseRunSwarmArgs([
       "--run-id",
       "run-test",
@@ -28,7 +28,7 @@ describe("run swarm config", () => {
     expect(bots[0]).toMatchObject({
       botId: "bot-001",
       readonly: false,
-      scenarioId: "phase1-active",
+      scenarioId: "spread-editing",
       originX: 100,
       originY: -200,
     });
@@ -36,8 +36,37 @@ describe("run swarm config", () => {
       botId: "bot-002",
       readonly: true,
       scenarioId: "read-only-lurker",
-      originX: 108,
+      originX: 100,
       originY: -200,
+    });
+  });
+
+  it("cycles through a custom scenario pool", () => {
+    const config = parseRunSwarmArgs([
+      "--bot-count",
+      "4",
+      "--scenario-pool",
+      "hot-tile-contention,viewport-churn",
+      "--origin-x",
+      "0",
+      "--origin-y",
+      "0",
+    ]);
+
+    const bots = buildBotLaunchConfigs(config);
+    expect(bots.map((bot) => bot.scenarioId)).toEqual([
+      "hot-tile-contention",
+      "viewport-churn",
+      "hot-tile-contention",
+      "viewport-churn",
+    ]);
+    expect(bots[2]).toMatchObject({
+      originX: 2,
+      originY: 0,
+    });
+    expect(bots[3]).toMatchObject({
+      originX: 128,
+      originY: 0,
     });
   });
 

@@ -70,6 +70,9 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
       pendingSubscribe.set(cid, sentAtMs);
       increment("subscribeSent");
     },
+    markUnsubscribeSent() {
+      increment("unsubscribeSent");
+    },
     markSubscribeAck(cid, receivedAtMs = nowMs()) {
       increment("subscribeAck");
       const sentAtMs = pendingSubscribe.get(cid);
@@ -106,6 +109,9 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
       increment("reconnects");
       latencies.reconnect.push(durationMs);
     },
+    markForcedReconnect() {
+      increment("forcedReconnects");
+    },
     markError(code) {
       increment("errors");
       errorsByCode.set(code, (errorsByCode.get(code) ?? 0) + 1);
@@ -129,6 +135,9 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
     },
     markAuthoritativeUpdate() {
       increment("authoritativeUpdates");
+    },
+    markViewportMove() {
+      increment("viewportMoves");
     },
     markStopping(startMs = nowMs()) {
       stoppingStartedAtMs = startMs;

@@ -20,6 +20,7 @@ describe("run summary", () => {
           signal: null,
           forced: false,
           summary: {
+            scenarioId: "spread-editing",
             counters: {
               cursorSent: 30,
               setCellSent: 9,
@@ -51,6 +52,7 @@ describe("run summary", () => {
           signal: null,
           forced: false,
           summary: {
+            scenarioId: "read-only-lurker",
             counters: {
               cursorSent: 29,
               authoritativeUpdates: 9,
@@ -79,6 +81,10 @@ describe("run summary", () => {
     expect(summary.roleCounts).toEqual({
       active: 1,
       readonly: 1,
+    });
+    expect(summary.scenarioCounts).toEqual({
+      "read-only-lurker": 1,
+      "spread-editing": 1,
     });
     expect(summary.counters).toMatchObject({
       cursorSent: 59,
@@ -131,6 +137,10 @@ describe("run summary", () => {
       roleCounts: {
         active: 1,
         readonly: 1,
+      },
+      scenarioCounts: {
+        "spread-editing": 1,
+        "read-only-lurker": 1,
       },
       failedBots: 0,
       forcedKillCount: 0,
@@ -225,6 +235,7 @@ describe("run summary", () => {
 
     expect(text).toContain("Run run-123");
     expect(text).toContain("Bots: 2 total | 1 active | 1 readonly | 0 failed | 0 force-killed");
+    expect(text).toContain("Scenarios: spread-editing=1 read-only-lurker=1");
     expect(text).toContain("setCellResolved=9");
     expect(text).toContain("hello: 2 samples across 2 bots");
     expect(text).toContain("Errors: none");

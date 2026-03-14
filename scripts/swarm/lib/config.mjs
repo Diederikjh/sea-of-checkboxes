@@ -1,4 +1,5 @@
 import path from "node:path";
+import { normalizeScenarioId } from "../scenarios/catalog.mjs";
 
 function timestamp() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
@@ -36,6 +37,7 @@ export function defaultSwarmBotConfig({
     clientSessionId: `swarm_${runId}_${botId}`,
     output,
     summaryOutput: resolvePath(path.dirname(output), `${botId}-summary.json`),
+    scenarioId: "spread-editing",
     durationMs: 30_000,
     originX: 900_000_000,
     originY: -900_000_000,
@@ -85,6 +87,15 @@ export function parseSwarmBotArgs(argv, options = {}) {
     }
     if (arg.startsWith("--bot-id=")) {
       config.botId = arg.slice("--bot-id=".length);
+      continue;
+    }
+    if (arg === "--scenario-id") {
+      config.scenarioId = normalizeScenarioId(argValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--scenario-id=")) {
+      config.scenarioId = normalizeScenarioId(arg.slice("--scenario-id=".length));
       continue;
     }
     if (arg === "--client-session-id") {
@@ -226,6 +237,7 @@ Options:
   --ws-url <url>                WebSocket URL (default: SOC_SWARM_WS_URL or ws://127.0.0.1:8787/ws)
   --run-id <id>                 Run identifier for logs
   --bot-id <id>                 Bot identifier for logs
+  --scenario-id <id>            Scenario id
   --client-session-id <id>      Stable session correlation id for worker logs
   --output <file>               NDJSON event log output path
   --summary-output <file>       Summary JSON output path

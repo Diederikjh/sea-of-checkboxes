@@ -166,6 +166,18 @@ function collectShards(botSummaries) {
   )].sort();
 }
 
+function collectScenarioCounts(botSummaries) {
+  const counts = {};
+  for (const bot of botSummaries) {
+    const scenarioId = bot?.summary?.scenarioId;
+    if (typeof scenarioId !== "string" || scenarioId.length === 0) {
+      continue;
+    }
+    counts[scenarioId] = (counts[scenarioId] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function loadBotRunResults(childResults) {
   return childResults.map((result) => {
     let summary = null;
@@ -207,6 +219,7 @@ export function buildRunSummary({
     forcedKillCount,
     failedBots,
     roleCounts,
+    scenarioCounts: collectScenarioCounts(botResults),
     counters,
     errorsByCode,
     shards: collectShards(botResults),
@@ -246,6 +259,7 @@ export function formatRunSummaryText(summary) {
     `Run ${summary.runId}`,
     `Status: ${summary.ok ? "ok" : "failed"}${summary.stopReason ? ` (${summary.stopReason})` : ""}`,
     `Bots: ${summary.botCount} total | ${summary.roleCounts.active} active | ${summary.roleCounts.readonly} readonly | ${summary.failedBots} failed | ${summary.forcedKillCount} force-killed`,
+    `Scenarios: ${Object.keys(summary.scenarioCounts).length === 0 ? "n/a" : Object.entries(summary.scenarioCounts).map(([scenarioId, count]) => `${scenarioId}=${count}`).join(" ")}`,
     `Duration: ${formatRange({ min: summary.durationMs.min, max: summary.durationMs.max }, "ms")} avg ${summary.durationMs.avgMs ?? "n/a"}ms`,
     `Shards: ${summary.shards.length === 0 ? "n/a" : summary.shards.join(", ")}`,
     `Counters: cursorSent=${summary.counters.cursorSent ?? 0} setCellSent=${summary.counters.setCellSent ?? 0} setCellResolved=${summary.counters.setCellResolved ?? 0} authoritativeUpdates=${summary.counters.authoritativeUpdates ?? 0} reconnects=${summary.counters.reconnects ?? 0}`,

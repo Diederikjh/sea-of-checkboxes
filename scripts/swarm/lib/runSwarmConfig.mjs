@@ -1,5 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  buildScenarioAssignments,
+  defaultScenarioPool,
+  parseScenarioPool,
+} from "../scenarios/catalog.mjs";
 
 function timestamp() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
@@ -43,6 +48,7 @@ export function defaultRunSwarmConfig({
     setCellIntervalMs: 3_000,
     reconnectDelayMs: 1_000,
     killAfterMs: 2_000,
+    scenarioPool: defaultScenarioPool(),
     help: false,
   };
 }
@@ -56,6 +62,7 @@ export function parseRunSwarmArgs(argv, options = {}) {
   let runDirProvided = false;
   let coordinatorLogProvided = false;
   let summaryProvided = false;
+  const scenarioPoolValues = [];
   const args = [...argv];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -196,6 +203,28 @@ export function parseRunSwarmArgs(argv, options = {}) {
       config.killAfterMs = parseNumber(arg.slice("--kill-after-ms=".length), "--kill-after-ms");
       continue;
     }
+    if (arg === "--scenario-pool" || arg === "--scenarios") {
+      scenarioPoolValues.push(argValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--scenario-pool=")) {
+      scenarioPoolValues.push(arg.slice("--scenario-pool=".length));
+      continue;
+    }
+    if (arg.startsWith("--scenarios=")) {
+      scenarioPoolValues.push(arg.slice("--scenarios=".length));
+      continue;
+    }
+    if (arg === "--scenario") {
+      scenarioPoolValues.push(argValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--scenario=")) {
+      scenarioPoolValues.push(arg.slice("--scenario=".length));
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -220,19 +249,29 @@ export function parseRunSwarmArgs(argv, options = {}) {
   if (!summaryProvided) {
     config.summaryOutput = resolvePath(config.runDir, "summary.json");
   }
+  config.scenarioPool = parseScenarioPool(
+    scenarioPoolValues.length > 0 ? scenarioPoolValues : config.scenarioPool
+  );
 
   return config;
 }
 
 export function buildBotLaunchConfigs(config) {
+  const scenarioAssignments = buildScenarioAssignments({
+    scenarioPool: config.scenarioPool,
+    botCount: config.botCount,
+    originX: config.originX,
+    originY: config.originY,
+  });
   const bots = [];
   for (let index = 0; index < config.botCount; index += 1) {
     const botNumber = index + 1;
     const botId = `bot-${String(botNumber).padStart(3, "0")}`;
-    const readonly = index % 2 === 1;
-    const scenarioId = readonly ? "read-only-lurker" : "phase1-active";
-    const botOriginX = config.originX + (index * 8);
-    const botOriginY = config.originY;
+    const assignment = scenarioAssignments[index];
+    const readonly = assignment.readonly;
+    const scenarioId = assignment.scenarioId;
+    const botOriginX = assignment.originX;
+    const botOriginY = assignment.originY;
     bots.push({
       botId,
       scenarioId,
@@ -249,6 +288,8 @@ export function buildBotLaunchConfigs(config) {
         config.runId,
         "--bot-id",
         botId,
+        "--scenario-id",
+        scenarioId,
         "--output",
         path.resolve(config.runDir, "bots", `${botId}.ndjson`),
         "--summary-output",
@@ -287,6 +328,7 @@ export function writeRunConfig(config, botConfigs) {
     setCellIntervalMs: config.setCellIntervalMs,
     reconnectDelayMs: config.reconnectDelayMs,
     killAfterMs: config.killAfterMs,
+    scenarioPool: config.scenarioPool,
     bots: botConfigs.map((bot) => ({
       botId: bot.botId,
       scenarioId: bot.scenarioId,
@@ -322,6 +364,8 @@ Options:
   --setcell-interval-ms <n>     setCell send interval in ms (default: 3000)
   --reconnect-delay-ms <n>      Reconnect delay in ms (default: 1000)
   --kill-after-ms <n>           Force-kill grace timeout after interrupt (default: 2000)
+  --scenario-pool <ids>         Comma-separated scenario pool
+  --scenario <id>               Append one scenario to the pool
   -h, --help                    Show this help
 `;
 }

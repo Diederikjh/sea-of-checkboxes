@@ -104,6 +104,8 @@ describe("swarm bot config", () => {
     const config = parseSwarmBotArgs([
       "--ws-url",
       "wss://example.test/ws",
+      "--scenario-id",
+      "cursor-heavy",
       "--origin-x",
       "123",
       "--origin-y",
@@ -112,6 +114,7 @@ describe("swarm bot config", () => {
     ]);
 
     expect(config.wsUrl).toBe("wss://example.test/ws");
+    expect(config.scenarioId).toBe("cursor-heavy");
     expect(config.originX).toBe(123);
     expect(config.originY).toBe(-456);
     expect(config.readonly).toBe(true);
@@ -267,6 +270,58 @@ describe("swarm bot session", () => {
       vi.useRealTimers();
     }
   });
+
+  it("viewport churn unsubscribes and subscribes to the next tile window", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-churn",
+        "--scenario-id",
+        "viewport-churn",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "0",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      const sentMessages = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      expect(sentMessages).toContainEqual({
+        t: "unsub",
+        cid: "bot-churn-unsub-000001",
+        tiles: [worldToTileKey(config.originX, config.originY)],
+      });
+      expect(sentMessages).toContainEqual({
+        t: "sub",
+        cid: "bot-churn-sub-000002",
+        tiles: [worldToTileKey(config.originX + 64, config.originY)],
+      });
+
+      await session.stop("test_complete");
+      await startPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function decodeClientMessageBinaryForTest(payload) {
@@ -295,6 +350,23 @@ function decodeClientMessageBinaryForTest(payload) {
       t: "cur",
       x: view.getFloat32(1),
       y: view.getFloat32(5),
+    };
+  }
+
+  if (tag === 2) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const tx = view.getInt32(3);
+    const ty = view.getInt32(7);
+    const stringMarker = bytes[11];
+    const length = stringMarker === 1 ? view.getUint16(12) : 0;
+    const cidStart = stringMarker === 1 ? 14 : 12;
+    const cid = stringMarker === 1
+      ? new TextDecoder().decode(bytes.slice(cidStart, cidStart + length))
+      : undefined;
+    return {
+      t: "unsub",
+      ...(cid ? { cid } : {}),
+      tiles: [`${tx}:${ty}`],
     };
   }
 
