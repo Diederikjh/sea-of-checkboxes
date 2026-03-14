@@ -760,6 +760,79 @@ describe("swarm bot session", () => {
       vi.useRealTimers();
     }
   });
+
+  it("drains pending reconnect-burst writes before final shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      let summary = null;
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-reconnect-drain",
+        "--scenario-id",
+        "reconnect-burst",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "3000",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        onSummary(value) {
+          summary = value;
+        },
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      await vi.advanceTimersByTimeAsync(3200);
+
+      const sentMessages = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const firstSetCell = sentMessages.find((message) => message.t === "setCell");
+
+      expect(firstSetCell).toBeDefined();
+
+      const stopPromise = session.stop("test_complete");
+      expect(summary).toBeNull();
+      expect(logger.log).toHaveBeenCalledWith("stop_drain_started", expect.objectContaining({
+        botId: "bot-reconnect-drain",
+        scenarioId: "reconnect-burst",
+      }));
+
+      sockets[0].emit("message", {
+        data: encodeCellUpBatchMessage({
+          tile: firstSetCell.tile,
+          toVer: 1,
+          ops: [[firstSetCell.i, firstSetCell.v]],
+        }),
+      });
+
+      await stopPromise;
+      await startPromise;
+
+      expect(summary.counters.setCellSent).toBe(1);
+      expect(summary.counters.setCellResolved).toBe(1);
+      expect(summary.pending.setCell).toBe(0);
+      expect(logger.log).toHaveBeenCalledWith("stop_drain_completed", expect.objectContaining({
+        botId: "bot-reconnect-drain",
+        scenarioId: "reconnect-burst",
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function decodeClientMessageBinaryForTest(payload) {

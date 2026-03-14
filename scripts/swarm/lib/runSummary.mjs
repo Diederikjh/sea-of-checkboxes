@@ -1,5 +1,8 @@
 import fs from "node:fs";
 
+const BEST_EFFORT_SCENARIO_IDS = new Set(["cursor-heavy", "viewport-churn"]);
+const BEST_EFFORT_MIN_RESOLUTION_RATIO = 0.95;
+
 function toNumberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -178,6 +181,109 @@ function collectScenarioCounts(botSummaries) {
   return counts;
 }
 
+function buildScenarioOutcomeTotals(botSummaries) {
+  const totals = {};
+  for (const bot of botSummaries) {
+    const scenarioId = bot?.summary?.scenarioId;
+    if (typeof scenarioId !== "string" || scenarioId.length === 0) {
+      continue;
+    }
+    const counters = bot?.summary?.counters ?? {};
+    const pending = bot?.summary?.pending ?? {};
+    const errorsByCode = bot?.summary?.errorsByCode ?? {};
+    const entry = totals[scenarioId] ?? {
+      bots: 0,
+      setCellSent: 0,
+      setCellResolved: 0,
+      setCellSuperseded: 0,
+      pendingSetCell: 0,
+      errorsByCode: {},
+    };
+    entry.bots += 1;
+    entry.setCellSent += counters.setCellSent ?? 0;
+    entry.setCellResolved += counters.setCellResolved ?? 0;
+    entry.setCellSuperseded += counters.setCellSuperseded ?? 0;
+    entry.pendingSetCell += pending.setCell ?? 0;
+    entry.errorsByCode = sumObjects([entry.errorsByCode, errorsByCode]);
+    totals[scenarioId] = entry;
+  }
+  return totals;
+}
+
+function assessRun({
+  failedBots,
+  forcedKillCount,
+  botResults,
+  scenarioOutcomes,
+}) {
+  const failures = [];
+  const warnings = [];
+
+  if (failedBots > 0) {
+    failures.push(`${failedBots} bot process failures`);
+  }
+  if (forcedKillCount > 0) {
+    failures.push(`${forcedKillCount} force-killed bots`);
+  }
+
+  for (const bot of botResults) {
+    const scenarioId = bot?.summary?.scenarioId;
+    const errorsByCode = bot?.summary?.errorsByCode ?? {};
+    const pendingSetCell = bot?.summary?.pending?.setCell ?? 0;
+    const toleratedNotSubscribed = BEST_EFFORT_SCENARIO_IDS.has(scenarioId)
+      ? (errorsByCode.not_subscribed ?? 0)
+      : 0;
+    const fatalErrors = { ...errorsByCode };
+    if (toleratedNotSubscribed > 0) {
+      delete fatalErrors.not_subscribed;
+    }
+    if (Object.keys(fatalErrors).length > 0) {
+      failures.push(`${bot.botId} reported fatal errors ${JSON.stringify(fatalErrors)}`);
+    }
+    if (!BEST_EFFORT_SCENARIO_IDS.has(scenarioId) && pendingSetCell > 0) {
+      failures.push(`${bot.botId} finished with ${pendingSetCell} pending setCell writes`);
+    }
+  }
+
+  for (const [scenarioId, outcome] of Object.entries(scenarioOutcomes)) {
+    const expectedResolutions = Math.max(0, outcome.setCellSent - outcome.setCellSuperseded);
+    const unresolvedWrites = Math.max(0, expectedResolutions - outcome.setCellResolved);
+    if (!BEST_EFFORT_SCENARIO_IDS.has(scenarioId)) {
+      if (unresolvedWrites > 0) {
+        failures.push(`${scenarioId} left ${unresolvedWrites} unresolved writes`);
+      }
+      continue;
+    }
+
+    if (expectedResolutions === 0) {
+      continue;
+    }
+
+    const resolutionRatio = outcome.setCellResolved / expectedResolutions;
+    const notSubscribed = outcome.errorsByCode.not_subscribed ?? 0;
+    const ratioText = `${(resolutionRatio * 100).toFixed(1)}%`;
+    if (resolutionRatio < BEST_EFFORT_MIN_RESOLUTION_RATIO) {
+      failures.push(
+        `${scenarioId} resolved ${outcome.setCellResolved}/${expectedResolutions} writes (${ratioText})`
+      );
+      continue;
+    }
+    if (unresolvedWrites > 0 || notSubscribed > 0 || outcome.pendingSetCell > 0) {
+      warnings.push(
+        `${scenarioId} best-effort writes: resolved ${outcome.setCellResolved}/${expectedResolutions} (${ratioText}), pending=${outcome.pendingSetCell}, not_subscribed=${notSubscribed}`
+      );
+    }
+  }
+
+  return {
+    status: failures.length === 0
+      ? (warnings.length === 0 ? "pass" : "pass_with_warnings")
+      : "fail",
+    failures,
+    warnings,
+  };
+}
+
 export function loadBotRunResults(childResults) {
   return childResults.map((result) => {
     let summary = null;
@@ -209,6 +315,13 @@ export function buildRunSummary({
   const roleCounts = buildRoleCounts(botResults);
   const counters = sumObjects(botResults.map((bot) => bot?.summary?.counters ?? null));
   const errorsByCode = sumObjects(botResults.map((bot) => bot?.summary?.errorsByCode ?? null));
+  const scenarioOutcomes = buildScenarioOutcomeTotals(botResults);
+  const assessment = assessRun({
+    failedBots,
+    forcedKillCount,
+    botResults,
+    scenarioOutcomes,
+  });
 
   return {
     ok: failedBots === 0,
@@ -220,6 +333,8 @@ export function buildRunSummary({
     failedBots,
     roleCounts,
     scenarioCounts: collectScenarioCounts(botResults),
+    scenarioOutcomes,
+    assessment,
     counters,
     errorsByCode,
     shards: collectShards(botResults),
@@ -258,6 +373,7 @@ export function formatRunSummaryText(summary) {
   const lines = [
     `Run ${summary.runId}`,
     `Status: ${summary.ok ? "ok" : "failed"}${summary.stopReason ? ` (${summary.stopReason})` : ""}`,
+    `Assessment: ${summary.assessment?.status ?? "n/a"}`,
     `Bots: ${summary.botCount} total | ${summary.roleCounts.active} active | ${summary.roleCounts.readonly} readonly | ${summary.failedBots} failed | ${summary.forcedKillCount} force-killed`,
     `Scenarios: ${Object.keys(summary.scenarioCounts).length === 0 ? "n/a" : Object.entries(summary.scenarioCounts).map(([scenarioId, count]) => `${scenarioId}=${count}`).join(" ")}`,
     `Duration: ${formatRange({ min: summary.durationMs.min, max: summary.durationMs.max }, "ms")} avg ${summary.durationMs.avgMs ?? "n/a"}ms`,
@@ -273,6 +389,13 @@ export function formatRunSummaryText(summary) {
     `  ${formatLatencyLine("stop", summary.latencyMs.stop)}`,
     `Errors: ${Object.keys(summary.errorsByCode).length === 0 ? "none" : JSON.stringify(summary.errorsByCode)}`,
   ];
+
+  for (const warning of summary.assessment?.warnings ?? []) {
+    lines.push(`Warning: ${warning}`);
+  }
+  for (const failure of summary.assessment?.failures ?? []) {
+    lines.push(`Failure: ${failure}`);
+  }
 
   if (summary.shareLink?.url) {
     lines.push(`Share link: ${summary.shareLink.url}`);

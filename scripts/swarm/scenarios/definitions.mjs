@@ -184,7 +184,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: null,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
-        shutdownDrainMs: 0,
+        shutdownDrainMs: 3_000,
         reconnectBurstDelayMs,
       };
     },

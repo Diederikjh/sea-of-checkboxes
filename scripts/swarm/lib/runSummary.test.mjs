@@ -126,6 +126,96 @@ describe("run summary", () => {
       },
     });
     expect(summary.shards).toEqual(["shard-1", "shard-2"]);
+    expect(summary.assessment).toEqual({
+      status: "fail",
+      failures: [
+        "bot-001 reported fatal errors {\"hot_tile\":1}",
+      ],
+      warnings: [],
+    });
+  });
+
+  it("treats minor cursor-heavy and viewport-churn misses as best-effort warnings", () => {
+    const summary = buildRunSummary({
+      config: {
+        runId: "run-best-effort",
+        botCount: 2,
+      },
+      stopReason: null,
+      shareLink: null,
+      botResults: [
+        {
+          botId: "bot-001",
+          code: 0,
+          signal: null,
+          forced: false,
+          summary: {
+            scenarioId: "cursor-heavy",
+            counters: {
+              setCellSent: 20,
+              setCellResolved: 19,
+              setCellSuperseded: 0,
+            },
+            pending: {
+              setCell: 1,
+            },
+            errorsByCode: {
+              not_subscribed: 3,
+            },
+            remoteCursorCountsByPeer: {},
+            latencyMs: {
+              hello: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              subscribeAck: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              setCellSync: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              reconnect: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              stop: { count: 1, minMs: 1, maxMs: 1, avgMs: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1 },
+              firstRemoteCursor: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+            },
+            readonly: false,
+            shard: "shard-1",
+            durationMs: 10_000,
+          },
+        },
+        {
+          botId: "bot-002",
+          code: 0,
+          signal: null,
+          forced: false,
+          summary: {
+            scenarioId: "viewport-churn",
+            counters: {
+              setCellSent: 20,
+              setCellResolved: 20,
+            },
+            pending: {
+              setCell: 0,
+            },
+            errorsByCode: {
+              not_subscribed: 1,
+            },
+            remoteCursorCountsByPeer: {},
+            latencyMs: {
+              hello: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              subscribeAck: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              setCellSync: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              reconnect: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+              stop: { count: 1, minMs: 1, maxMs: 1, avgMs: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1 },
+              firstRemoteCursor: { count: 0, minMs: null, maxMs: null, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null },
+            },
+            readonly: false,
+            shard: "shard-2",
+            durationMs: 10_050,
+          },
+        },
+      ],
+    });
+
+    expect(summary.assessment.status).toBe("pass_with_warnings");
+    expect(summary.assessment.failures).toEqual([]);
+    expect(summary.assessment.warnings).toEqual([
+      "cursor-heavy best-effort writes: resolved 19/20 (95.0%), pending=1, not_subscribed=3",
+      "viewport-churn best-effort writes: resolved 20/20 (100.0%), pending=0, not_subscribed=1",
+    ]);
   });
 
   it("formats a readable text summary", () => {
@@ -133,6 +223,11 @@ describe("run summary", () => {
       runId: "run-123",
       ok: true,
       stopReason: null,
+      assessment: {
+        status: "pass",
+        failures: [],
+        warnings: [],
+      },
       botCount: 2,
       roleCounts: {
         active: 1,
@@ -234,6 +329,7 @@ describe("run summary", () => {
     });
 
     expect(text).toContain("Run run-123");
+    expect(text).toContain("Assessment: pass");
     expect(text).toContain("Bots: 2 total | 1 active | 1 readonly | 0 failed | 0 force-killed");
     expect(text).toContain("Scenarios: spread-editing=1 read-only-lurker=1");
     expect(text).toContain("setCellResolved=9");
