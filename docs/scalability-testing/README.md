@@ -52,6 +52,75 @@ For dev-local swarm runs against a local worker, both sides need to run outside 
 
 This matters for local cursor investigation work in particular, because the whole point is to correlate swarm timing with captured dev-worker stdout in the same run folder.
 
+## Production Swarm Method
+
+Use this when you want to exercise the real Cloudflare deployment with the swarm bots.
+
+Current production endpoints:
+
+- app: `https://sea-of-checkboxes-web.pages.dev`
+- websocket: `wss://sea-of-checkboxes-worker.diederikjhattingh.workers.dev/ws`
+
+Recommended production run shape while investigating cursor behavior:
+
+- `4` to `8` bots
+- `30s` to `60s`
+- keep the remote origin in the isolated top-right test sector
+- do not start with large write-heavy swarms against production
+
+Example command:
+
+```bash
+pnpm swarm:run \
+  --ws-url wss://sea-of-checkboxes-worker.diederikjhattingh.workers.dev/ws \
+  --app-url https://sea-of-checkboxes-web.pages.dev \
+  --run-id cursor-probe-prod-30s-b4-sample \
+  --bot-count 4 \
+  --duration-ms 30000
+```
+
+What this produces:
+
+- `logs/swarm/<run-id>/coordinator.log`
+- `logs/swarm/<run-id>/summary.json`
+- `logs/swarm/<run-id>/bots/<bot-id>.ndjson`
+- `logs/swarm/<run-id>/bots/<bot-id>-summary.json`
+
+What it does not produce automatically:
+
+- production worker stdout capture
+
+For production, server-side analysis must come from Cloudflare worker logs queried after the fact.
+
+Practical production-debug flow:
+
+1. run the swarm with an explicit `runId`
+2. inspect `summary.json` for slow shards, missing peers, and sparse `remoteCursorCountsByPeer`
+3. take `uid`, `shard`, `clientSessionId`, `op`, and timestamps from the bot logs
+4. query worker logs for the same time window and shard/client session
+
+Examples:
+
+```bash
+pnpm logs:server:query \
+  --from 2026-03-13T20:22:50Z \
+  --to 2026-03-13T20:23:30Z \
+  --filter source.client_session_id:eq:swarm_cursor-probe-prod-30s-b4-sample_bot-004 \
+  --format ndjson
+
+pnpm logs:server:query \
+  --from 2026-03-13T20:22:50Z \
+  --to 2026-03-13T20:23:30Z \
+  --shard shard-5 \
+  --event cursor_pull_peer \
+  --format ndjson
+```
+
+Human verification:
+
+- the coordinator creates a share link at run start
+- open that link in the deployed app to confirm the bot sector and visually check that writes and cursors are appearing in the expected remote area
+
 ## Current Cursor Debug Result
 
 Recent local swarm-backed cursor probes are already useful for debugging the delayed initial cursor problem:
@@ -65,7 +134,12 @@ Current takeaway:
 - the swarm harness is now good enough to distinguish:
   - late peer discovery
   - prompt peer discovery followed by delayed first useful reverse pull
-- the remaining cursor lead is stale-side post-scope wake scheduling, suppression, or first useful pull behavior
+- the later local burstiness investigation found another scope problem:
+  - shards that already had one watched peer could fall back to `60s` watch renews too early
+  - if a second peer arrived shortly after, that peer could remain undiscovered for the rest of a `30s` run
+- current local mitigation:
+  - keep fast watch renews for a short settling window after peer scope changes
+  - this improved local `curUp` continuity materially in the latest `v13` run
 
 ## Proposed Layout
 

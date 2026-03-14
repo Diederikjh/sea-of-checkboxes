@@ -34,6 +34,7 @@ What is already true in repo:
 
 - watched-peer scoping is implemented
 - shards now renew hub watch on a short probe interval while they have clients but no watched peers, then fall back to the normal renew interval once peer scope is non-empty
+- shards also keep fast watch renews for a short settling window after peer scope changes, so newly arriving peers can still be discovered quickly during startup or churn
 - scheduled cursor pull is detached through DO alarms
 - ingress suppression and post-ingress suppression are implemented
 - client/server trace correlation exists
@@ -258,6 +259,26 @@ Recent concrete evidence:
   - but the early snapshots from those peers were empty:
     - `cursor_state_snapshot_served` from `shard-0` and `shard-6` initially returned `update_count: 0`
     - first visible remote cursor state from those peers only appeared once their local cursor state started publishing later
+- `2026-03-14T06:04Z`:
+  - this was a local `4` bot / `30s` swarm run after adding a short post-scope-change watch-settling renew window
+  - shard placement was:
+    - `bot-001` on `shard-5`
+    - `bot-002` on `shard-0`
+    - `bot-003` on `shard-2`
+    - `bot-004` on `shard-5`
+  - the important topology result was that shards discovered later-arriving peers during the same run instead of getting stuck on the first non-empty peer set:
+    - `shard-5` first entered scope with `peer_count: 1` at `2026-03-14T06:04:39.453Z`
+    - then refreshed to `peer_count: 2` at `2026-03-14T06:04:40.526Z`
+    - `shard-0` and `shard-2` also kept issuing `cursor_pull_scope_unchanged` during the settling window instead of disappearing into a `60s` renew gap
+  - client-side cursor continuity improved materially versus the previous two local runs:
+    - all bots saw all remote peers
+    - worst observed `curUp` gap dropped to about `2.4s` to `3.1s`
+    - previous local runs had worst gaps around `5.3s`, `6.4s`, `6.8s`, and `7.2s`
+  - per-bot remote cursor counts were also healthier:
+    - `bot-002`: `16-17` updates from each of `3` peers
+    - `bot-003`: `16` updates from each of `3` peers
+    - the two same-shard bots saw the other same-shard peer at `26` updates and the cross-shard peers at `13` updates each
+  - this does not fully solve steady-state cursor smoothness, but it is the strongest evidence so far that stale non-empty peer scope was a major contributor to the bursty local stream
   - this run weakens the idea that every remaining multi-second delay is stale-side scheduling:
     - some of the "slow" first-visibility cases are actually first pulls against empty peer snapshots
 - `2026-03-13T19:30Z`:
@@ -474,10 +495,11 @@ For each asymmetric run:
 
 ## Immediate Next Steps
 
-1. Treat the empty-scope probe change and the first-post-scope suppression bypass as partial fixes, not complete resolution:
+1. Treat the empty-scope probe change, the first-post-scope suppression bypass, and the post-scope-change settling renew as partial fixes, not complete resolution:
    - it removes one discovery failure mode
    - the bypass experiment improves one stale-side scheduling failure mode
-   - neither result is yet validated enough to call the problem closed
+   - the settling renew improves peer discovery during startup or churn when a shard already had one known peer
+   - none of these results is yet enough to call the problem closed
 2. Repeat the enabled-bypass local probe across a few more cross-shard runs and compare it directly with the no-bypass baseline.
 3. If the bypass keeps improving first visibility, decide whether to:
    - keep it as a narrow first-post-scope special case
@@ -485,10 +507,11 @@ For each asymmetric run:
 4. Replace the fixed `500ms` empty-scope probe with an adaptive policy, for example:
    - probe quickly for the first few seconds after connect or local cursor activity
    - then back off toward a slower cadence if peer scope stays empty
-5. Explore an event-driven alternative to repeated empty-scope polling:
-   - when the hub sees a newly active watched peer, emit a lightweight "peer appeared" nudge to existing empty-scope watchers
+5. Explore an event-driven alternative to repeated watch polling:
+   - when the hub sees a newly active watched peer, emit a lightweight "peer appeared" nudge to existing watchers
+   - apply that both to empty-scope watchers and to watchers whose current peer set is already non-empty but incomplete
    - use that nudge to force an immediate watch refresh or pull wake on the stale shard
-   - evaluate whether this can preserve fast first visibility with less idle hub traffic than continuous short probes
+   - evaluate whether this can preserve fast first visibility and fast peer-set convergence with less hub traffic than repeated polling
 6. Add the next layer of versioned cursor observability:
    - source local cursor publish log with `uid`, `seq`, `tileKey`, and shard
    - source `/cursor-state` snapshot log with included cursor `uid`s and max local seq
@@ -498,7 +521,10 @@ For each asymmetric run:
    - source cursor movement not being published
    - `/cursor-state` exposing stale or empty snapshots
    - destination discarding or not fanning newer versions
-8. If late scope delivery still happens while peer scope is already non-empty, investigate hub membership propagation beyond the empty-scope case.
+8. Now that local burstiness improved when peer-set convergence improved, inspect the remaining `2s-3s` gaps as a separate steady-state problem:
+   - measure whether they align with pull suppression
+   - measure whether they align with timer backoff
+   - confirm whether the remaining loss is per-shard cadence or per-peer snapshot freshness
 9. Now that the bypass experiment has produced one successful positive result, prioritize scheduler priority, suppression, and first useful reverse-pull behavior for fresh `watch_scope_change`.
 10. Keep validating that any latency fix preserves:
    - no client-visible pull-path internal errors
@@ -510,6 +536,7 @@ For each asymmetric run:
 - The result holds across representative watched topologies, not just one shard pair.
 - We do not need a later `local_activity` event to "kick" the stale shard into first visibility.
 - Existing shards learn about newly active watched peers promptly, rather than only on a later renew cycle.
+- In a `30s` `4` bot local probe, each bot sees all remote peers and the worst `curUp` gap stays comfortably below `10s`.
 - Cursor latency improvements do not regress storm protections or reintroduce client-visible pull failures.
 
 ## Representative Validation Cases
