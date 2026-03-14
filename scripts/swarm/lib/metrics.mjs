@@ -55,6 +55,14 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
     counters.set(name, (counters.get(name) ?? 0) + delta);
   }
 
+  function pendingSetCellCount() {
+    let count = 0;
+    for (const queue of pendingSetCell.values()) {
+      count += queue.length;
+    }
+    return count;
+  }
+
   return {
     markConnectAttempt(startMs = nowMs()) {
       connectStartedAtMs = startMs;
@@ -82,27 +90,35 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
       }
     },
     markSetCellSent(tile, index, sentAtMs = nowMs()) {
-      pendingSetCell.set(`${tile}:${index}`, sentAtMs);
+      const key = `${tile}:${index}`;
+      const queue = pendingSetCell.get(key) ?? [];
+      queue.push(sentAtMs);
+      pendingSetCell.set(key, queue);
       increment("setCellSent");
     },
     markSetCellResolved(tile, index, receivedAtMs = nowMs()) {
       const key = `${tile}:${index}`;
-      const sentAtMs = pendingSetCell.get(key);
+      const queue = pendingSetCell.get(key);
+      const sentAtMs = queue?.shift();
       if (typeof sentAtMs === "number") {
         latencies.setCellSync.push(receivedAtMs - sentAtMs);
-        pendingSetCell.delete(key);
+        if (queue.length === 0) {
+          pendingSetCell.delete(key);
+        }
         increment("setCellResolved");
       }
     },
     markTileSnapshotResolved(tile, receivedAtMs = nowMs()) {
       const prefix = `${tile}:`;
-      for (const [key, sentAtMs] of pendingSetCell.entries()) {
+      for (const [key, queue] of pendingSetCell.entries()) {
         if (!key.startsWith(prefix)) {
           continue;
         }
-        latencies.setCellSync.push(receivedAtMs - sentAtMs);
+        for (const sentAtMs of queue) {
+          latencies.setCellSync.push(receivedAtMs - sentAtMs);
+          increment("setCellResolved");
+        }
         pendingSetCell.delete(key);
-        increment("setCellResolved");
       }
     },
     markReconnect(durationMs) {
@@ -162,7 +178,7 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
         },
         pending: {
           subscribe: pendingSubscribe.size,
-          setCell: pendingSetCell.size,
+          setCell: pendingSetCellCount(),
         },
         ...extra,
       };

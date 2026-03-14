@@ -486,3 +486,38 @@ Required follow-up before local step 5:
 - inspect whether `viewport-churn` is issuing writes too close to tile moves or run shutdown
 - decide whether the harness should drain pending writes before stop, reduce write cadence during viewport moves, or both
 - rerun local step 4 and require `setCellSent == setCellResolved` with sane `setCellSync` tails before moving up the ladder
+
+### 2026-03-14: Local Step 4 Investigation And Rerun
+
+Runs:
+
+- `local-viewport-b6-45s`
+- `local-viewport-b6-45s-rerun`
+- `local-viewport-b6-45s-rerun-2`
+
+Root cause:
+
+- pending write tracking only kept one in-flight entry per `tile:index`, so repeated writes to the same cell could overwrite earlier samples
+- `viewport-churn` could also unsubscribe from a tile before an in-flight write on that tile had a chance to confirm
+
+Fix:
+
+- pending `setCell` tracking was changed to queue repeated writes per `tile:index` instead of overwriting them
+- `viewport-churn` now briefly defers a viewport move when the current tile still has pending writes, then resumes normal churn once those writes confirm
+- the swarm tests were extended to cover repeated same-cell writes and deferred viewport moves
+
+Result:
+
+- passed promotion gate on `local-viewport-b6-45s-rerun-2`
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- `27/27` writes resolved
+- all `6` bots saw all `5` expected peers
+- active viewport-churn bots each completed `8` viewport moves
+- `setCellSync` max dropped to about `2.0s`, with no remaining `35s` tail
+- no explicit server errors were logged
+
+Next promotion:
+
+- local step 5 is now unblocked

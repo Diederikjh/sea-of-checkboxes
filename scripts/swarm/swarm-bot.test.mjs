@@ -99,6 +99,64 @@ function encodeHelloMessage({
   return out;
 }
 
+function encodeSubAckMessage({
+  cid,
+  requestedCount = 1,
+  changedCount = 1,
+  subscribedCount = 1,
+}) {
+  const encoder = new TextEncoder();
+  const encodedCid = encoder.encode(cid);
+  const out = new Uint8Array(1 + 2 + encodedCid.length + 4 + 4 + 4);
+  const view = new DataView(out.buffer);
+  let offset = 0;
+  view.setUint8(offset, 106);
+  offset += 1;
+  view.setUint16(offset, encodedCid.length);
+  offset += 2;
+  out.set(encodedCid, offset);
+  offset += encodedCid.length;
+  view.setUint32(offset, requestedCount);
+  offset += 4;
+  view.setUint32(offset, changedCount);
+  offset += 4;
+  view.setUint32(offset, subscribedCount);
+  return out;
+}
+
+function encodeCellUpBatchMessage({
+  tile,
+  fromVer = 0,
+  toVer = 1,
+  ops,
+}) {
+  const [txRaw, tyRaw] = tile.split(":");
+  const tx = Number.parseInt(txRaw, 10);
+  const ty = Number.parseInt(tyRaw, 10);
+  const out = new Uint8Array(1 + 4 + 4 + 4 + 4 + 2 + (ops.length * 3));
+  const view = new DataView(out.buffer);
+  let offset = 0;
+  view.setUint8(offset, 104);
+  offset += 1;
+  view.setInt32(offset, tx);
+  offset += 4;
+  view.setInt32(offset, ty);
+  offset += 4;
+  view.setUint32(offset, fromVer);
+  offset += 4;
+  view.setUint32(offset, toVer);
+  offset += 4;
+  view.setUint16(offset, ops.length);
+  offset += 2;
+  for (const [index, value] of ops) {
+    view.setUint16(offset, index);
+    offset += 2;
+    view.setUint8(offset, value);
+    offset += 1;
+  }
+  return out;
+}
+
 describe("swarm bot config", () => {
   it("parses explicit origin and readonly options", () => {
     const config = parseSwarmBotArgs([
@@ -216,6 +274,21 @@ describe("swarm bot metrics", () => {
     expect(summary.latencyMs.setCellSync.count).toBe(2);
     expect(summary.pending.setCell).toBe(1);
   });
+
+  it("tracks repeated writes to the same cell independently", () => {
+    const metrics = createSwarmBotMetrics();
+
+    metrics.markSetCellSent("0:0", 5, 0);
+    metrics.markSetCellSent("0:0", 5, 10);
+    metrics.markSetCellResolved("0:0", 5, 40);
+    metrics.markSetCellResolved("0:0", 5, 70);
+
+    const summary = metrics.summary();
+    expect(summary.counters.setCellSent).toBe(2);
+    expect(summary.counters.setCellResolved).toBe(2);
+    expect(summary.latencyMs.setCellSync.count).toBe(2);
+    expect(summary.pending.setCell).toBe(0);
+  });
 });
 
 describe("swarm bot session", () => {
@@ -315,6 +388,95 @@ describe("swarm bot session", () => {
         cid: "bot-churn-sub-000002",
         tiles: [worldToTileKey(config.originX + 64, config.originY)],
       });
+
+      await session.stop("test_complete");
+      await startPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers viewport churn moves while the current tile has pending writes", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-churn-pending",
+        "--scenario-id",
+        "viewport-churn",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "3000",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      const initialSub = decodeClientMessageBinaryForTest(sockets[0].sent[0]);
+      sockets[0].emit("message", {
+        data: encodeSubAckMessage({
+          cid: initialSub.cid,
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(4500);
+
+      const beforeMove = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const firstSetCell = beforeMove.find((message) => message.t === "setCell");
+
+      expect(firstSetCell).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      const atMoveBoundary = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      expect(atMoveBoundary.some((message) => message.t === "unsub")).toBe(false);
+      expect(logger.log).toHaveBeenCalledWith("viewport_move_deferred", expect.objectContaining({
+        botId: "bot-churn-pending",
+        scenarioId: "viewport-churn",
+      }));
+
+      sockets[0].emit("message", {
+        data: encodeCellUpBatchMessage({
+          tile: firstSetCell.tile,
+          toVer: 1,
+          ops: [[firstSetCell.i, firstSetCell.v]],
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      const afterResolve = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      expect(afterResolve).toContainEqual({
+        t: "unsub",
+        cid: "bot-churn-pending-unsub-000001",
+        tiles: [worldToTileKey(config.originX, config.originY)],
+      });
+      expect(afterResolve).toContainEqual({
+        t: "sub",
+        cid: "bot-churn-pending-sub-000002",
+        tiles: [worldToTileKey(config.originX + 64, config.originY)],
+      });
+
+      await vi.advanceTimersByTimeAsync(5100);
+
+      const deferredLogs = logger.log.mock.calls.filter(([event]) => event === "viewport_move_deferred");
+      expect(deferredLogs.length).toBeGreaterThanOrEqual(2);
 
       await session.stop("test_complete");
       await startPromise;

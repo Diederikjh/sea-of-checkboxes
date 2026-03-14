@@ -59,6 +59,7 @@ export class SwarmBotSession {
     this.tileState = new Map();
     this.pendingSetCells = new Map();
     this.currentViewportIndex = 0;
+    this.viewportMoveDrainDeadlineMs = null;
     this.currentAnchor = {
       x: this.config.originX,
       y: this.config.originY,
@@ -303,16 +304,20 @@ export class SwarmBotSession {
   }
 
   #scheduleNextViewportMove() {
-    if (typeof this.scenario.viewportIntervalMs !== "number") {
+    this.#scheduleViewportMoveIn(this.scenario.viewportIntervalMs);
+  }
+
+  #scheduleViewportMoveIn(delayMs) {
+    if (typeof delayMs !== "number") {
       return;
     }
     this.viewportTimer = this.setTimeoutFn(() => {
       this.viewportTimer = null;
-      this.#performViewportMove();
-      if (!this.stopping && this.socket) {
+      const moved = this.#performViewportMove();
+      if (moved && !this.stopping && this.socket) {
         this.#scheduleNextViewportMove();
       }
-    }, this.scenario.viewportIntervalMs);
+    }, delayMs);
   }
 
   #scheduleReconnectBurst() {
@@ -341,6 +346,27 @@ export class SwarmBotSession {
   }
 
   #performViewportMove() {
+    const pendingSetCell = this.#pendingSetCellCountForTiles(this.currentSubscriptionTiles);
+    const drainMs = Math.max(0, this.scenario.viewportMoveDrainMs ?? 0);
+    if (pendingSetCell > 0 && drainMs > 0) {
+      if (this.viewportMoveDrainDeadlineMs === null) {
+        this.viewportMoveDrainDeadlineMs = this.nowMs() + drainMs;
+      }
+      const remainingDrainMs = this.viewportMoveDrainDeadlineMs - this.nowMs();
+      if (remainingDrainMs > 0) {
+        const waitMs = Math.min(this.scenario.viewportMoveRetryMs ?? 100, remainingDrainMs);
+        this.#log("viewport_move_deferred", {
+          pendingSetCell,
+          waitMs,
+          remainingDrainMs,
+          tiles: this.currentSubscriptionTiles,
+        });
+        this.#scheduleViewportMoveIn(waitMs);
+        return false;
+      }
+    }
+
+    this.viewportMoveDrainDeadlineMs = null;
     const previousTiles = this.currentSubscriptionTiles;
     const previousAnchor = this.currentAnchor;
     this.currentViewportIndex = (this.currentViewportIndex + 1) % this.scenario.viewportOffsets.length;
@@ -355,6 +381,7 @@ export class SwarmBotSession {
       fromTiles: previousTiles,
       toTiles: this.currentSubscriptionTiles,
     });
+    return true;
   }
 
   #anchorForViewportIndex(index) {
@@ -455,13 +482,16 @@ export class SwarmBotSession {
     const localBeforeV = this.#getLocalCellValue(tile, index);
     const value = localBeforeV === null ? ((sequence % 2 === 0) ? 1 : 0) : (localBeforeV === 1 ? 0 : 1);
     const expectChange = localBeforeV === null ? null : localBeforeV !== value;
-    this.pendingSetCells.set(`${tile}:${index}`, {
+    const key = `${tile}:${index}`;
+    const queue = this.pendingSetCells.get(key) ?? [];
+    queue.push({
       tile,
       index,
       requestedValue: value,
       localBeforeV,
       op,
     });
+    this.pendingSetCells.set(key, queue);
     this.metrics.markSetCellSent(tile, index, this.nowMs());
     this.#send({
       t: "setCell",
@@ -591,29 +621,32 @@ export class SwarmBotSession {
 
   #logResolvedPendingForTile(tile, source) {
     const prefix = `${tile}:`;
-    for (const [key, pending] of this.pendingSetCells.entries()) {
+    for (const [key, queue] of this.pendingSetCells.entries()) {
       if (!key.startsWith(prefix)) {
         continue;
       }
-      const confirmedValue = this.#getLocalCellValue(tile, pending.index);
-      this.#log("setcell_confirmed", {
-        tile,
-        i: pending.index,
-        op: pending.op,
-        requestedValue: pending.requestedValue,
-        localBeforeV: pending.localBeforeV,
-        confirmedValue,
-        source,
-        confirmedChanged: confirmedValue !== pending.localBeforeV,
-        confirmedMatchesRequest: confirmedValue === pending.requestedValue,
-      });
+      for (const pending of queue) {
+        const confirmedValue = this.#getLocalCellValue(tile, pending.index);
+        this.#log("setcell_confirmed", {
+          tile,
+          i: pending.index,
+          op: pending.op,
+          requestedValue: pending.requestedValue,
+          localBeforeV: pending.localBeforeV,
+          confirmedValue,
+          source,
+          confirmedChanged: confirmedValue !== pending.localBeforeV,
+          confirmedMatchesRequest: confirmedValue === pending.requestedValue,
+        });
+      }
       this.pendingSetCells.delete(key);
     }
   }
 
   #logResolvedPendingCell(tile, index, source, confirmedValue, ver) {
     const key = `${tile}:${index}`;
-    const pending = this.pendingSetCells.get(key);
+    const queue = this.pendingSetCells.get(key);
+    const pending = queue?.shift();
     if (!pending) {
       return;
     }
@@ -629,7 +662,26 @@ export class SwarmBotSession {
       confirmedChanged: confirmedValue !== pending.localBeforeV,
       confirmedMatchesRequest: confirmedValue === pending.requestedValue,
     });
-    this.pendingSetCells.delete(key);
+    if (queue.length === 0) {
+      this.pendingSetCells.delete(key);
+    }
+  }
+
+  #pendingSetCellCountForTiles(tiles) {
+    if (!Array.isArray(tiles) || tiles.length === 0) {
+      return 0;
+    }
+
+    let count = 0;
+    for (const tile of tiles) {
+      const prefix = `${tile}:`;
+      for (const [key, queue] of this.pendingSetCells.entries()) {
+        if (key.startsWith(prefix)) {
+          count += queue.length;
+        }
+      }
+    }
+    return count;
   }
 
   #log(event, fields = {}) {
