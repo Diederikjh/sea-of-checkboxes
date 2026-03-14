@@ -203,10 +203,6 @@ export class ConnectionShardCursorPullOrchestrator {
     }
   }
 
-  extendSuppressedUntil(untilMs: number): void {
-    this.#suppressedUntilMs = Math.max(this.#suppressedUntilMs, untilMs);
-  }
-
   flushAfterIngressExited(): void {
     this.#ingressGate.flushAfterIngressExited();
   }

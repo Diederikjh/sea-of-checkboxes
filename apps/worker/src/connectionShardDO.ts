@@ -376,11 +376,6 @@ export class ConnectionShardDO {
       } finally {
         this.#cursorStateIngressDepth = Math.max(0, this.#cursorStateIngressDepth - 1);
         this.#cursorTraceState.restoreActiveTrace(previousTrace);
-        if (isInboundCursorPull) {
-          this.#cursorPullOrchestrator.extendSuppressedUntil(
-            this.#nowMs() + CURSOR_PULL_TIMING.ingressSuppressionMs
-          );
-        }
         if (this.#cursorStateIngressDepth === 0) {
           this.#cursorPullOrchestrator.flushAfterIngressExited();
         }

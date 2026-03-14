@@ -6,7 +6,6 @@ export const CURSOR_PULL_TIMING = Object.freeze({
   intervalIdleBackoffStepMs: 300,
   idleStreakBeforeLongBackoff: 4,
   activityWindowMs: 500,
-  ingressSuppressionMs: 300,
   jitterMs: 25,
   concurrency: 2,
 });

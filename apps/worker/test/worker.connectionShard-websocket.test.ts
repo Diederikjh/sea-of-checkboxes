@@ -1344,7 +1344,7 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
-  it("suppresses immediate timer pull re-entry after inbound cursor-state pull ingress", async () => {
+  it("allows timer-driven cursor pulls to resume immediately after inbound cursor-state pull ingress", async () => {
     vi.useFakeTimers();
     try {
       const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
@@ -1374,10 +1374,7 @@ describe("ConnectionShardDO websocket handling", () => {
         "x-sea-cursor-trace-origin": "shard-1",
       });
 
-      await vi.advanceTimersByTimeAsync(299);
-      expect(countCursorStatePullRequests(harness)).toBe(baseline);
-
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(100);
       expect(countCursorStatePullRequests(harness)).toBeGreaterThan(baseline);
       randomSpy.mockRestore();
     } finally {
@@ -1721,7 +1718,7 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
-  it("bypasses suppression once for the first pull after peer scope becomes non-empty", async () => {
+  it("starts the first pull after peer scope becomes non-empty without extra cursor-state cooldown", async () => {
     vi.useFakeTimers();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
@@ -1773,10 +1770,10 @@ describe("ConnectionShardDO websocket handling", () => {
             entry.scope === "connection_shard_do"
             && entry.event === "cursor_pull_first_post_scope_decision"
             && entry.shard === "shard-0"
-            && entry.action === "started_with_suppression_bypass"
+            && entry.action === "started"
             && (entry.wake_reason === "watch_scope_change" || entry.wake_reason === "local_activity")
             && typeof entry.suppression_remaining_ms === "number"
-            && entry.suppression_remaining_ms > 0
+            && entry.suppression_remaining_ms === 0
         )
       ).toBe(true);
       expect(
@@ -1795,7 +1792,7 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
-  it("suppresses immediate local-activity pull re-entry after inbound cursor-state pull ingress", async () => {
+  it("resumes local-activity pulls immediately after inbound cursor-state pull ingress completes", async () => {
     vi.useFakeTimers();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
@@ -1815,6 +1812,9 @@ describe("ConnectionShardDO websocket handling", () => {
         shard: "shard-0",
       });
 
+      socket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+      await vi.advanceTimersByTimeAsync(0);
+
       await vi.advanceTimersByTimeAsync(0);
       const baseline = countCursorStatePullRequests(harness);
       expect(baseline).toBe(1);
@@ -1827,20 +1827,15 @@ describe("ConnectionShardDO websocket handling", () => {
       });
 
       socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 2.5, y: 1.5 }));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(countCursorStatePullRequests(harness)).toBe(baseline);
-
-      await vi.advanceTimersByTimeAsync(299);
+      await vi.advanceTimersByTimeAsync(100);
       expect(
         parseStructuredLogs(logSpy).some(
           (entry) =>
             entry.scope === "connection_shard_do"
             && entry.event === "cursor_pull_local_activity_wake"
             && entry.wake_reason === "local_activity"
-            && typeof entry.adjusted_delay_ms === "number"
-            && entry.adjusted_delay_ms >= 299
             && typeof entry.suppression_remaining_ms === "number"
-            && entry.suppression_remaining_ms >= 299
+            && entry.suppression_remaining_ms === 0
         )
       ).toBe(true);
       expect(
@@ -1848,19 +1843,10 @@ describe("ConnectionShardDO websocket handling", () => {
           (entry) =>
             entry.scope === "connection_shard_do"
             && entry.event === "cursor_pull_peer"
-            && entry.wake_reason === "local_activity"
-        )
-      ).toBe(false);
-
-      await vi.advanceTimersByTimeAsync(1);
-      expect(
-        parseStructuredLogs(logSpy).some(
-          (entry) =>
-            entry.scope === "connection_shard_do"
-            && entry.event === "cursor_pull_peer"
-            && entry.wake_reason === "local_activity"
+            && (entry.wake_reason === "local_activity" || entry.wake_reason === "timer")
         )
       ).toBe(true);
+      expect(countCursorStatePullRequests(harness)).toBeGreaterThan(baseline);
       randomSpy.mockRestore();
     } finally {
       logSpy.mockRestore();
