@@ -49,6 +49,11 @@ import {
   ConnectionShardCursorTraceState,
 } from "./connectionShardCursorTrace";
 import {
+  CURSOR_HUB_WATCH_TIMING,
+  CURSOR_PULL_TIMING,
+  defaultCursorHubSettleRenewMs,
+} from "./cursorTimingConfig";
+import {
   ConnectionShardCursorPullScheduler,
   type CursorPullScheduleDecision,
   type CursorPullWakeReason,
@@ -85,16 +90,6 @@ const TILE_PULL_INTERVAL_IDLE_BACKOFF_STEP_MS = 1_000;
 const TILE_PULL_IDLE_STREAK_BEFORE_LONG_BACKOFF = 5;
 const TILE_PULL_PAGE_LIMIT = 256;
 const TILE_PULL_MAX_PAGES_PER_TICK = 4;
-const CURSOR_PULL_INTERVAL_MIN_MS = 75;
-const CURSOR_PULL_INTERVAL_MAX_MS = 300;
-const CURSOR_PULL_INTERVAL_BACKOFF_STEP_MS = 75;
-const CURSOR_PULL_INTERVAL_IDLE_MAX_MS = 1_500;
-const CURSOR_PULL_INTERVAL_IDLE_BACKOFF_STEP_MS = 300;
-const CURSOR_PULL_IDLE_STREAK_BEFORE_LONG_BACKOFF = 4;
-const CURSOR_PULL_ACTIVITY_WINDOW_MS = 500;
-const CURSOR_PULL_INGRESS_SUPPRESSION_MS = 300;
-const CURSOR_PULL_JITTER_MS = 25;
-const CURSOR_PULL_CONCURRENCY = 2;
 const CURSOR_HUB_NAME = "global";
 const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
 const CURSOR_BATCH_TRACE_MAX_HOP = 1;
@@ -168,7 +163,7 @@ export class ConnectionShardDO {
     this.#tilePullIntervalMs = TILE_PULL_INTERVAL_MAX_MS;
     this.#tilePullQuietStreak = 0;
     this.#cursorPullInFlight = false;
-    this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
+    this.#cursorPullIntervalMs = CURSOR_PULL_TIMING.intervalMinMs;
     this.#cursorPullQuietStreak = 0;
     this.#cursorPullActiveUntilMs = 0;
     this.#cursorPullPeerScopeTracker = new ConnectionShardCursorPullPeerScopeTracker();
@@ -198,14 +193,14 @@ export class ConnectionShardDO {
       onTick: (wakeReason) => {
         this.#queueDetachedCursorPullTick(wakeReason);
       },
-      minIntervalMs: CURSOR_PULL_INTERVAL_MIN_MS,
-      jitterMs: CURSOR_PULL_JITTER_MS,
+      minIntervalMs: CURSOR_PULL_TIMING.intervalMinMs,
+      jitterMs: CURSOR_PULL_TIMING.jitterMs,
     });
     this.#cursorPullIngressGate = new ConnectionShardCursorPullIngressGate({
       deferDetachedTask: (task) => this.#deferDetachedTask(task),
       onFlush: (wakeReason) => {
         this.#scheduleCursorPullTick(
-          wakeReason === "timer" ? CURSOR_PULL_INTERVAL_MIN_MS : 0,
+          wakeReason === "timer" ? CURSOR_PULL_TIMING.intervalMinMs : 0,
           wakeReason
         );
       },
@@ -295,6 +290,10 @@ export class ConnectionShardDO {
       updateWatchedPeerShards: (peerShards) => this.#updateCursorPullPeerShards(peerShards),
       deferDetachedTask: (task) => this.#deferDetachedTask(task),
       maybeUnrefTimer: (timer) => this.#maybeUnrefTimer(timer),
+      watchRenewMs: CURSOR_HUB_WATCH_TIMING.renewMs,
+      watchProbeRenewMs: CURSOR_HUB_WATCH_TIMING.probeRenewMs,
+      watchSettleRenewMs: defaultCursorHubSettleRenewMs(),
+      watchSettleWindowMs: CURSOR_HUB_WATCH_TIMING.settleWindowMs,
     });
   }
 
@@ -411,7 +410,7 @@ export class ConnectionShardDO {
         if (isInboundCursorPull) {
           this.#cursorPullSuppressedUntilMs = Math.max(
             this.#cursorPullSuppressedUntilMs,
-            this.#nowMs() + CURSOR_PULL_INGRESS_SUPPRESSION_MS
+            this.#nowMs() + CURSOR_PULL_TIMING.ingressSuppressionMs
           );
         }
         if (this.#cursorStateIngressDepth === 0) {
@@ -1111,7 +1110,7 @@ export class ConnectionShardDO {
       this.#cursorPullIngressGate.reset();
       this.#clearDetachedCursorPullAlarm();
       this.#cursorPullInFlight = false;
-      this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
+      this.#cursorPullIntervalMs = CURSOR_PULL_TIMING.intervalMinMs;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
       this.#cursorPullPeerScopeTracker.reset();
@@ -1124,7 +1123,7 @@ export class ConnectionShardDO {
       this.#cursorPullScheduler.reset();
       this.#cursorPullIngressGate.reset();
       this.#clearDetachedCursorPullAlarm();
-      this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
+      this.#cursorPullIntervalMs = CURSOR_PULL_TIMING.intervalMinMs;
       this.#cursorPullQuietStreak = 0;
       this.#cursorPullActiveUntilMs = 0;
       this.#cursorPullPeerScopeTracker.reset();
@@ -1133,9 +1132,9 @@ export class ConnectionShardDO {
       return;
     }
 
-    this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
+    this.#cursorPullIntervalMs = CURSOR_PULL_TIMING.intervalMinMs;
     this.#cursorPullQuietStreak = 0;
-    this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_ACTIVITY_WINDOW_MS;
+    this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_TIMING.activityWindowMs;
     this.#scheduleCursorPullTick(0, "schedule_refresh");
   }
 
@@ -1354,7 +1353,7 @@ export class ConnectionShardDO {
       this.#logFirstPostScopeDecisionIfPending("delayed_for_in_flight", wakeReason, {
         suppressionRemainingMs: suppressedDelayMs,
       });
-      this.#scheduleCursorPullTick(CURSOR_PULL_INTERVAL_MIN_MS, "timer");
+      this.#scheduleCursorPullTick(CURSOR_PULL_TIMING.intervalMinMs, "timer");
       return;
     }
 
@@ -1390,28 +1389,28 @@ export class ConnectionShardDO {
 
   #updateCursorPullInterval(deltaObserved: boolean): void {
     if (deltaObserved || this.#nowMs() < this.#cursorPullActiveUntilMs) {
-      this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
+      this.#cursorPullIntervalMs = CURSOR_PULL_TIMING.intervalMinMs;
       this.#cursorPullQuietStreak = 0;
       return;
     }
 
-    if (this.#cursorPullIntervalMs < CURSOR_PULL_INTERVAL_MAX_MS) {
+    if (this.#cursorPullIntervalMs < CURSOR_PULL_TIMING.intervalMaxMs) {
       this.#cursorPullIntervalMs = Math.min(
-        CURSOR_PULL_INTERVAL_MAX_MS,
-        this.#cursorPullIntervalMs + CURSOR_PULL_INTERVAL_BACKOFF_STEP_MS
+        CURSOR_PULL_TIMING.intervalMaxMs,
+        this.#cursorPullIntervalMs + CURSOR_PULL_TIMING.intervalBackoffStepMs
       );
       this.#cursorPullQuietStreak = 0;
       return;
     }
 
     this.#cursorPullQuietStreak += 1;
-    if (this.#cursorPullQuietStreak < CURSOR_PULL_IDLE_STREAK_BEFORE_LONG_BACKOFF) {
+    if (this.#cursorPullQuietStreak < CURSOR_PULL_TIMING.idleStreakBeforeLongBackoff) {
       return;
     }
 
     this.#cursorPullIntervalMs = Math.min(
-      CURSOR_PULL_INTERVAL_IDLE_MAX_MS,
-      this.#cursorPullIntervalMs + CURSOR_PULL_INTERVAL_IDLE_BACKOFF_STEP_MS
+      CURSOR_PULL_TIMING.intervalIdleMaxMs,
+      this.#cursorPullIntervalMs + CURSOR_PULL_TIMING.intervalIdleBackoffStepMs
     );
   }
 
@@ -1424,7 +1423,7 @@ export class ConnectionShardDO {
       return;
     }
 
-    this.#cursorPullIntervalMs = CURSOR_PULL_INTERVAL_MIN_MS;
+    this.#cursorPullIntervalMs = CURSOR_PULL_TIMING.intervalMinMs;
     this.#cursorPullQuietStreak = 0;
 
     if (!this.#cursorPullInFlight) {
@@ -1495,7 +1494,7 @@ export class ConnectionShardDO {
       };
     }
 
-    this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_ACTIVITY_WINDOW_MS;
+    this.#cursorPullActiveUntilMs = this.#nowMs() + CURSOR_PULL_TIMING.activityWindowMs;
     if (!this.#cursorPullInFlight) {
       this.#clearCursorPullTimer();
       this.#scheduleCursorPullTick(0, "watch_scope_change");
@@ -1663,8 +1662,8 @@ export class ConnectionShardDO {
     }
 
     let deltaObserved = false;
-    for (let index = 0; index < peers.length; index += CURSOR_PULL_CONCURRENCY) {
-      const peerChunk = peers.slice(index, index + CURSOR_PULL_CONCURRENCY);
+    for (let index = 0; index < peers.length; index += CURSOR_PULL_TIMING.concurrency) {
+      const peerChunk = peers.slice(index, index + CURSOR_PULL_TIMING.concurrency);
       const chunkDeltaObserved = (
         await Promise.all(peerChunk.map((peerShard) => this.#pollPeerCursorState(peerShard, wakeReason)))
       ).some(Boolean);
@@ -1675,7 +1674,7 @@ export class ConnectionShardDO {
       wake_reason: wakeReason,
       peer_count: peers.length,
       delta_observed: deltaObserved,
-      concurrency: CURSOR_PULL_CONCURRENCY,
+      concurrency: CURSOR_PULL_TIMING.concurrency,
       duration_ms: elapsedMs(startMs),
     });
     return deltaObserved;

@@ -1,5 +1,9 @@
 import type { CursorRelayBatch } from "./cursorRelay";
 import type { CursorHubWatchResponse } from "./cursorHubGateway";
+import {
+  CURSOR_HUB_WATCH_TIMING,
+  defaultCursorHubSettleRenewMs,
+} from "./cursorTimingConfig";
 
 export interface ConnectionShardCursorHubGatewayLike {
   watchShard(shard: string, action: "sub" | "unsub"): Promise<CursorHubWatchResponse | null>;
@@ -48,10 +52,10 @@ export class ConnectionShardCursorHubController {
     this.#updateWatchedPeerShards = options.updateWatchedPeerShards;
     this.#deferDetachedTask = options.deferDetachedTask;
     this.#maybeUnrefTimer = options.maybeUnrefTimer;
-    this.#watchRenewMs = options.watchRenewMs ?? 60_000;
-    this.#watchProbeRenewMs = options.watchProbeRenewMs ?? 500;
-    this.#watchSettleRenewMs = options.watchSettleRenewMs ?? this.#watchProbeRenewMs;
-    this.#watchSettleWindowMs = options.watchSettleWindowMs ?? 5_000;
+    this.#watchRenewMs = options.watchRenewMs ?? CURSOR_HUB_WATCH_TIMING.renewMs;
+    this.#watchProbeRenewMs = options.watchProbeRenewMs ?? CURSOR_HUB_WATCH_TIMING.probeRenewMs;
+    this.#watchSettleRenewMs = options.watchSettleRenewMs ?? defaultCursorHubSettleRenewMs();
+    this.#watchSettleWindowMs = options.watchSettleWindowMs ?? CURSOR_HUB_WATCH_TIMING.settleWindowMs;
 
     this.#subscribed = false;
     this.#watchInFlight = false;
