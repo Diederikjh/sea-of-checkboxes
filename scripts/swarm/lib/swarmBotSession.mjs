@@ -13,7 +13,7 @@ import {
   worldToTileKey,
 } from "./protocol.mjs";
 import { createSwarmBotMetrics } from "./metrics.mjs";
-import { applyTileOffset, buildScenarioRuntime } from "../scenarios/catalog.mjs";
+import { applyTileOffset, buildScenarioRuntime } from "../scenarios/runtime.mjs";
 
 function defaultWebSocketFactory(url) {
   return new WebSocket(url);

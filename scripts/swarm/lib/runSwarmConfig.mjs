@@ -1,10 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-  buildScenarioAssignments,
-  defaultScenarioPool,
-  parseScenarioPool,
-} from "../scenarios/catalog.mjs";
+import { buildScenarioAssignments } from "../scenarios/assignment.mjs";
+import { defaultScenarioPool, parseScenarioPool } from "../scenarios/pool.mjs";
 
 function timestamp() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");

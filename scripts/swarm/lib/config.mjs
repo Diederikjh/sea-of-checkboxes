@@ -1,5 +1,5 @@
 import path from "node:path";
-import { normalizeScenarioId } from "../scenarios/catalog.mjs";
+import { normalizeScenarioId } from "../scenarios/pool.mjs";
 
 function timestamp() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
