@@ -278,7 +278,7 @@ describe("swarm bot metrics", () => {
     expect(summary.pending.setCell).toBe(1);
   });
 
-  it("tracks repeated writes to the same cell independently", () => {
+  it("collapses repeated writes to the same cell to the latest pending intent", () => {
     const metrics = createSwarmBotMetrics();
 
     metrics.markSetCellSent("0:0", 5, 0);
@@ -288,8 +288,9 @@ describe("swarm bot metrics", () => {
 
     const summary = metrics.summary();
     expect(summary.counters.setCellSent).toBe(2);
-    expect(summary.counters.setCellResolved).toBe(2);
-    expect(summary.latencyMs.setCellSync.count).toBe(2);
+    expect(summary.counters.setCellResolved).toBe(1);
+    expect(summary.counters.setCellSuperseded).toBe(1);
+    expect(summary.latencyMs.setCellSync.count).toBe(1);
     expect(summary.pending.setCell).toBe(0);
   });
 });
@@ -607,6 +608,79 @@ describe("swarm bot session", () => {
       expect(summary.counters.helloCount).toBe(2);
       expect(summary.counters.forcedReconnects).toBe(1);
       expect(summary.latencyMs.reconnect.count).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drains pending hotspot writes before final shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      let summary = null;
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-hot-drain",
+        "--scenario-id",
+        "hot-tile-contention",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "3000",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        onSummary(value) {
+          summary = value;
+        },
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      await vi.advanceTimersByTimeAsync(1300);
+
+      const sentMessages = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const firstSetCell = sentMessages.find((message) => message.t === "setCell");
+
+      expect(firstSetCell).toBeDefined();
+
+      const stopPromise = session.stop("test_complete");
+      expect(summary).toBeNull();
+      expect(logger.log).toHaveBeenCalledWith("stop_drain_started", expect.objectContaining({
+        botId: "bot-hot-drain",
+        scenarioId: "hot-tile-contention",
+      }));
+
+      sockets[0].emit("message", {
+        data: encodeCellUpBatchMessage({
+          tile: firstSetCell.tile,
+          toVer: 1,
+          ops: [[firstSetCell.i, firstSetCell.v]],
+        }),
+      });
+
+      await stopPromise;
+      await startPromise;
+
+      expect(summary.counters.setCellSent).toBe(1);
+      expect(summary.counters.setCellResolved).toBe(1);
+      expect(summary.pending.setCell).toBe(0);
+      expect(logger.log).toHaveBeenCalledWith("stop_drain_completed", expect.objectContaining({
+        botId: "bot-hot-drain",
+        scenarioId: "hot-tile-contention",
+      }));
     } finally {
       vi.useRealTimers();
     }

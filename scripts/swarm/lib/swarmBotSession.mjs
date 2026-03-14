@@ -37,11 +37,14 @@ export class SwarmBotSession {
     this.currentToken = "";
     this.identity = null;
     this.startedAtMs = null;
+    this.stopRequested = false;
+    this.stopReason = null;
     this.stopping = false;
     this.stopped = false;
     this.stoppedPromise = null;
     this.resolveStopped = null;
     this.durationTimer = null;
+    this.stopDrainTimer = null;
     this.reconnectTimer = null;
     this.reconnectBurstTimer = null;
     this.reconnectBurstDeadlineMs = null;
@@ -96,10 +99,11 @@ export class SwarmBotSession {
   }
 
   async stop(reason = "manual_stop") {
-    if (this.stopping) {
+    if (this.stopRequested || this.stopping) {
       return this.stoppedPromise ?? Promise.resolve();
     }
-    this.stopping = true;
+    this.stopRequested = true;
+    this.stopReason = reason;
     this.metrics.markStopping(this.nowMs());
     this.#log("bot_stopping", {
       reason,
@@ -110,15 +114,28 @@ export class SwarmBotSession {
       this.clearTimeoutFn(this.durationTimer);
       this.durationTimer = null;
     }
-    if (this.socket) {
-      try {
-        this.socket.close();
-      } catch {
-        // Ignore close failures during forced stop.
-      }
-      this.socket = null;
+
+    const shutdownDrainMs = Math.max(0, this.scenario.shutdownDrainMs ?? 0);
+    const pendingSetCell = this.#pendingSetCellCount();
+    if (this.socket && pendingSetCell > 0 && shutdownDrainMs > 0) {
+      this.#log("stop_drain_started", {
+        reason,
+        pendingSetCell,
+        shutdownDrainMs,
+      });
+      this.stopDrainTimer = this.setTimeoutFn(() => {
+        this.stopDrainTimer = null;
+        this.#log("stop_drain_elapsed", {
+          reason,
+          pendingSetCell: this.#pendingSetCellCount(),
+          shutdownDrainMs,
+        });
+        this.#beginShutdown(this.stopReason ?? reason);
+      }, shutdownDrainMs);
+      return this.stoppedPromise ?? Promise.resolve();
     }
-    this.#finish(reason);
+
+    this.#beginShutdown(reason);
     return this.stoppedPromise ?? Promise.resolve();
   }
 
@@ -164,10 +181,10 @@ export class SwarmBotSession {
       this.socket = null;
       this.metrics.markClose();
       this.#log("ws_close", {
-        stopping: this.stopping,
+        stopping: this.stopping || this.stopRequested,
       });
       this.#clearActionTimers();
-      if (this.stopping) {
+      if (this.stopRequested || this.stopping) {
         this.#finish("socket_closed");
         return;
       }
@@ -265,16 +282,16 @@ export class SwarmBotSession {
   #startActionLoops() {
     this.#clearActionTimers();
     this.#sendCursor();
-    if (!this.stopping && this.socket && this.scenario.cursorIntervalMs > 0) {
+    if (!this.stopRequested && !this.stopping && this.socket && this.scenario.cursorIntervalMs > 0) {
       this.#scheduleNextCursor();
     }
-    if (!this.stopping && this.socket && !this.scenario.readonly && this.scenario.setCellIntervalMs > 0) {
+    if (!this.stopRequested && !this.stopping && this.socket && !this.scenario.readonly && this.scenario.setCellIntervalMs > 0) {
       this.#scheduleNextSetCell();
     }
-    if (!this.stopping && this.socket && this.scenario.viewportOffsets?.length > 1) {
+    if (!this.stopRequested && !this.stopping && this.socket && this.scenario.viewportOffsets?.length > 1) {
       this.#scheduleNextViewportMove();
     }
-    if (!this.stopping && this.socket) {
+    if (!this.stopRequested && !this.stopping && this.socket) {
       this.#scheduleReconnectBurst();
     }
   }
@@ -283,7 +300,7 @@ export class SwarmBotSession {
     this.cursorTimer = this.setTimeoutFn(() => {
       this.cursorTimer = null;
       this.#sendCursor();
-      if (!this.stopping && this.socket) {
+      if (!this.stopRequested && !this.stopping && this.socket) {
         this.#scheduleNextCursor();
       }
     }, this.scenario.cursorIntervalMs);
@@ -293,7 +310,7 @@ export class SwarmBotSession {
     this.setCellTimer = this.setTimeoutFn(() => {
       this.setCellTimer = null;
       this.#sendSetCell();
-      if (!this.stopping && this.socket) {
+      if (!this.stopRequested && !this.stopping && this.socket) {
         this.#scheduleNextSetCell();
       }
     }, this.scenario.setCellIntervalMs);
@@ -310,7 +327,7 @@ export class SwarmBotSession {
     this.viewportTimer = this.setTimeoutFn(() => {
       this.viewportTimer = null;
       const moved = this.#performViewportMove();
-      if (moved && !this.stopping && this.socket) {
+      if (moved && !this.stopRequested && !this.stopping && this.socket) {
         this.#scheduleNextViewportMove();
       }
     }, delayMs);
@@ -328,7 +345,7 @@ export class SwarmBotSession {
   }
 
   #triggerReconnectBurst() {
-    if (this.reconnectBurstTriggered || this.stopping || !this.socket) {
+    if (this.reconnectBurstTriggered || this.stopRequested || this.stopping || !this.socket) {
       return;
     }
     this.reconnectBurstTriggered = true;
@@ -346,7 +363,7 @@ export class SwarmBotSession {
   }
 
   #scheduleReconnect(reconnectStartedAt) {
-    if (this.stopping || this.reconnectTimer !== null) {
+    if (this.stopRequested || this.stopping || this.reconnectTimer !== null) {
       return;
     }
 
@@ -495,15 +512,15 @@ export class SwarmBotSession {
     const value = localBeforeV === null ? ((sequence % 2 === 0) ? 1 : 0) : (localBeforeV === 1 ? 0 : 1);
     const expectChange = localBeforeV === null ? null : localBeforeV !== value;
     const key = `${tile}:${index}`;
-    const queue = this.pendingSetCells.get(key) ?? [];
-    queue.push({
+    const previousPending = this.pendingSetCells.get(key) ?? null;
+    const nextPending = {
       tile,
       index,
       requestedValue: value,
       localBeforeV,
       op,
-    });
-    this.pendingSetCells.set(key, queue);
+    };
+    this.pendingSetCells.set(key, nextPending);
     this.metrics.markSetCellSent(tile, index, this.nowMs());
     this.#send({
       t: "setCell",
@@ -520,6 +537,16 @@ export class SwarmBotSession {
       localBeforeV,
       expectChange,
     });
+    if (previousPending) {
+      this.#log("setcell_pending_replaced", {
+        tile,
+        i: index,
+        previousOp: previousPending.op,
+        nextOp: op,
+        previousRequestedValue: previousPending.requestedValue,
+        nextRequestedValue: value,
+      });
+    }
   }
 
   #send(message) {
@@ -559,6 +586,31 @@ export class SwarmBotSession {
       this.clearTimeoutFn(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  #clearStopDrainTimer() {
+    if (this.stopDrainTimer !== null) {
+      this.clearTimeoutFn(this.stopDrainTimer);
+      this.stopDrainTimer = null;
+    }
+  }
+
+  #beginShutdown(reason) {
+    if (this.stopping) {
+      return;
+    }
+    this.stopping = true;
+    this.#clearStopDrainTimer();
+    if (this.socket) {
+      const socket = this.socket;
+      this.socket = null;
+      try {
+        socket.close();
+      } catch {
+        // Ignore close failures during forced stop.
+      }
+    }
+    this.#finish(reason);
   }
 
   #finish(reason) {
@@ -633,32 +685,30 @@ export class SwarmBotSession {
 
   #logResolvedPendingForTile(tile, source) {
     const prefix = `${tile}:`;
-    for (const [key, queue] of this.pendingSetCells.entries()) {
+    for (const [key, pending] of this.pendingSetCells.entries()) {
       if (!key.startsWith(prefix)) {
         continue;
       }
-      for (const pending of queue) {
-        const confirmedValue = this.#getLocalCellValue(tile, pending.index);
-        this.#log("setcell_confirmed", {
-          tile,
-          i: pending.index,
-          op: pending.op,
-          requestedValue: pending.requestedValue,
-          localBeforeV: pending.localBeforeV,
-          confirmedValue,
-          source,
-          confirmedChanged: confirmedValue !== pending.localBeforeV,
-          confirmedMatchesRequest: confirmedValue === pending.requestedValue,
-        });
-      }
+      const confirmedValue = this.#getLocalCellValue(tile, pending.index);
+      this.#log("setcell_confirmed", {
+        tile,
+        i: pending.index,
+        op: pending.op,
+        requestedValue: pending.requestedValue,
+        localBeforeV: pending.localBeforeV,
+        confirmedValue,
+        source,
+        confirmedChanged: confirmedValue !== pending.localBeforeV,
+        confirmedMatchesRequest: confirmedValue === pending.requestedValue,
+      });
       this.pendingSetCells.delete(key);
     }
+    this.#maybeFinishStopDrain();
   }
 
   #logResolvedPendingCell(tile, index, source, confirmedValue, ver) {
     const key = `${tile}:${index}`;
-    const queue = this.pendingSetCells.get(key);
-    const pending = queue?.shift();
+    const pending = this.pendingSetCells.get(key);
     if (!pending) {
       return;
     }
@@ -674,9 +724,12 @@ export class SwarmBotSession {
       confirmedChanged: confirmedValue !== pending.localBeforeV,
       confirmedMatchesRequest: confirmedValue === pending.requestedValue,
     });
-    if (queue.length === 0) {
-      this.pendingSetCells.delete(key);
-    }
+    this.pendingSetCells.delete(key);
+    this.#maybeFinishStopDrain();
+  }
+
+  #pendingSetCellCount() {
+    return this.pendingSetCells.size;
   }
 
   #pendingSetCellCountForTiles(tiles) {
@@ -687,13 +740,26 @@ export class SwarmBotSession {
     let count = 0;
     for (const tile of tiles) {
       const prefix = `${tile}:`;
-      for (const [key, queue] of this.pendingSetCells.entries()) {
+      for (const key of this.pendingSetCells.keys()) {
         if (key.startsWith(prefix)) {
-          count += queue.length;
+          count += 1;
         }
       }
     }
     return count;
+  }
+
+  #maybeFinishStopDrain() {
+    if (!this.stopRequested || this.stopping) {
+      return;
+    }
+    if (this.#pendingSetCellCount() > 0) {
+      return;
+    }
+    this.#log("stop_drain_completed", {
+      reason: this.stopReason,
+    });
+    this.#beginShutdown(this.stopReason ?? "manual_stop");
   }
 
   #log(event, fields = {}) {

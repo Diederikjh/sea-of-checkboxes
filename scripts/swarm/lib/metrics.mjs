@@ -56,11 +56,7 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
   }
 
   function pendingSetCellCount() {
-    let count = 0;
-    for (const queue of pendingSetCell.values()) {
-      count += queue.length;
-    }
-    return count;
+    return pendingSetCell.size;
   }
 
   return {
@@ -91,33 +87,29 @@ export function createSwarmBotMetrics({ nowMs = () => Date.now() } = {}) {
     },
     markSetCellSent(tile, index, sentAtMs = nowMs()) {
       const key = `${tile}:${index}`;
-      const queue = pendingSetCell.get(key) ?? [];
-      queue.push(sentAtMs);
-      pendingSetCell.set(key, queue);
+      if (pendingSetCell.has(key)) {
+        increment("setCellSuperseded");
+      }
+      pendingSetCell.set(key, sentAtMs);
       increment("setCellSent");
     },
     markSetCellResolved(tile, index, receivedAtMs = nowMs()) {
       const key = `${tile}:${index}`;
-      const queue = pendingSetCell.get(key);
-      const sentAtMs = queue?.shift();
+      const sentAtMs = pendingSetCell.get(key);
       if (typeof sentAtMs === "number") {
         latencies.setCellSync.push(receivedAtMs - sentAtMs);
-        if (queue.length === 0) {
-          pendingSetCell.delete(key);
-        }
+        pendingSetCell.delete(key);
         increment("setCellResolved");
       }
     },
     markTileSnapshotResolved(tile, receivedAtMs = nowMs()) {
       const prefix = `${tile}:`;
-      for (const [key, queue] of pendingSetCell.entries()) {
+      for (const [key, sentAtMs] of pendingSetCell.entries()) {
         if (!key.startsWith(prefix)) {
           continue;
         }
-        for (const sentAtMs of queue) {
-          latencies.setCellSync.push(receivedAtMs - sentAtMs);
-          increment("setCellResolved");
-        }
+        latencies.setCellSync.push(receivedAtMs - sentAtMs);
+        increment("setCellResolved");
         pendingSetCell.delete(key);
       }
     },

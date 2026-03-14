@@ -583,3 +583,64 @@ Result:
 Next promotion:
 
 - local step 6 is now unblocked
+
+### 2026-03-14: Local Step 6
+
+Run:
+
+- `local-hot-tile-b10-45s`
+
+Result:
+
+- not promoted yet
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- `181/184` writes resolved
+- all `10` bots saw all `9` expected peers
+- no explicit server errors were logged
+
+Failure noted:
+
+- `3` hotspot writers finished with `pending.setCell: 1`
+- the unresolved writes were sent in the final second of the run and were still in flight at shutdown
+- hotspot contention also produced some snapshot-based confirmations where the final cell value did not match the writer's requested value, which is expected to happen under contention and should be tracked separately from transport failure
+
+Required follow-up before local step 7:
+
+- add a short end-of-run write drain for hotspot-heavy scenarios, or delay the final stop until pending writes settle
+- consider surfacing contention overwrites as a separate summary signal so they do not get confused with missing confirmations
+- rerun local step 6 and require `setCellSent == setCellResolved` before moving up the ladder
+
+### 2026-03-14: Local Step 6 Investigation And Rerun
+
+Runs:
+
+- `local-hot-tile-b10-45s`
+- `local-hot-tile-b10-45s-rerun`
+
+Root cause:
+
+- hotspot writers could still have one final in-flight write when the run hit `duration_elapsed`
+- the harness stopped immediately instead of allowing a short shutdown drain for pending hotspot writes
+
+Fix:
+
+- added a scenario-level shutdown drain for `hot-tile-contention`
+- stop now pauses briefly for pending `setCell` confirmations before final shutdown, then completes immediately once those writes settle
+- added regression coverage for draining a pending hotspot write before stop
+
+Result:
+
+- passed promotion gate on `local-hot-tile-b10-45s-rerun`
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- aggregate `setCellSent == setCellResolved` at `185/185`
+- all `10` bots saw all `9` expected peers
+- active hotspot bots all finished with `pending.setCell: 0`
+- no explicit server errors were logged
+
+Next promotion:
+
+- local step 7 is now unblocked

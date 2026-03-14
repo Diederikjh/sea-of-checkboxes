@@ -237,6 +237,7 @@ describe("run summary", () => {
     expect(text).toContain("Bots: 2 total | 1 active | 1 readonly | 0 failed | 0 force-killed");
     expect(text).toContain("Scenarios: spread-editing=1 read-only-lurker=1");
     expect(text).toContain("setCellResolved=9");
+    expect(text).toContain("setCellSuperseded=0");
     expect(text).toContain("hello: 2 samples across 2 bots");
     expect(text).toContain("Errors: none");
     expect(text).toContain("Share link: https://example.test/?share=abc");

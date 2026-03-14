@@ -32,6 +32,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: null,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
+        shutdownDrainMs: 1_500,
         reconnectBurstDelayMs: null,
       };
     },
@@ -58,6 +59,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: null,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
+        shutdownDrainMs: 0,
         reconnectBurstDelayMs: null,
       };
     },
@@ -84,6 +86,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: null,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
+        shutdownDrainMs: 0,
         reconnectBurstDelayMs: null,
       };
     },
@@ -115,6 +118,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: 10_000,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
+        shutdownDrainMs: 0,
         reconnectBurstDelayMs: null,
       };
     },
@@ -150,6 +154,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: 5_000,
         viewportMoveDrainMs: 1_500,
         viewportMoveRetryMs: 100,
+        shutdownDrainMs: 0,
         reconnectBurstDelayMs: null,
       };
     },
@@ -179,6 +184,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: null,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
+        shutdownDrainMs: 0,
         reconnectBurstDelayMs,
       };
     },
@@ -213,6 +219,7 @@ const SCENARIO_DEFINITIONS = Object.freeze({
         viewportIntervalMs: 15_000,
         viewportMoveDrainMs: 0,
         viewportMoveRetryMs: 100,
+        shutdownDrainMs: 0,
         reconnectBurstDelayMs,
       };
     },

@@ -262,7 +262,7 @@ export function formatRunSummaryText(summary) {
     `Scenarios: ${Object.keys(summary.scenarioCounts).length === 0 ? "n/a" : Object.entries(summary.scenarioCounts).map(([scenarioId, count]) => `${scenarioId}=${count}`).join(" ")}`,
     `Duration: ${formatRange({ min: summary.durationMs.min, max: summary.durationMs.max }, "ms")} avg ${summary.durationMs.avgMs ?? "n/a"}ms`,
     `Shards: ${summary.shards.length === 0 ? "n/a" : summary.shards.join(", ")}`,
-    `Counters: cursorSent=${summary.counters.cursorSent ?? 0} setCellSent=${summary.counters.setCellSent ?? 0} setCellResolved=${summary.counters.setCellResolved ?? 0} authoritativeUpdates=${summary.counters.authoritativeUpdates ?? 0} reconnects=${summary.counters.reconnects ?? 0}`,
+    `Counters: cursorSent=${summary.counters.cursorSent ?? 0} setCellSent=${summary.counters.setCellSent ?? 0} setCellResolved=${summary.counters.setCellResolved ?? 0} setCellSuperseded=${summary.counters.setCellSuperseded ?? 0} authoritativeUpdates=${summary.counters.authoritativeUpdates ?? 0} reconnects=${summary.counters.reconnects ?? 0}`,
     `Remote cursors: ${summary.remoteCursorVisibility.botsWithAnyRemoteCursor}/${summary.botCount} bots saw peers | peers per bot ${formatRange(summary.remoteCursorVisibility.peersSeenPerBot)} | unique peer uids ${summary.remoteCursorVisibility.uniquePeerUidCount}`,
     "Latency:",
     `  ${formatLatencyLine("hello", summary.latencyMs.hello)}`,
