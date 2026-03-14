@@ -438,6 +438,18 @@ Measurements:
 - whether pressure on one hotspot bleeds into unrelated tiles
 - cross-hotspot fairness in convergence latency and subscription behavior
 
+### Local Wildcard Mix
+
+Intent:
+
+- shake out noisy local combinations before formal ladder runs
+
+Behavior:
+
+- use `--scenario-pool wildcard-local --duration-ms 60000`
+- this expands to `read-only-lurker` plus a randomized subset of active local scenarios for that run
+- the exact mix is written into `run-config.json`, so any interesting failure is reproducible from the recorded scenario pool
+
 ### Scenario: Spread Editing
 
 Intent:

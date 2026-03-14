@@ -52,6 +52,7 @@ export function defaultRunSwarmConfig({
 
 export function parseRunSwarmArgs(argv, options = {}) {
   const resolvePath = options.resolvePath ?? path.resolve;
+  const random = options.random ?? Math.random;
   const config = defaultRunSwarmConfig({
     ...options,
     resolvePath,
@@ -247,7 +248,8 @@ export function parseRunSwarmArgs(argv, options = {}) {
     config.summaryOutput = resolvePath(config.runDir, "summary.json");
   }
   config.scenarioPool = parseScenarioPool(
-    scenarioPoolValues.length > 0 ? scenarioPoolValues : config.scenarioPool
+    scenarioPoolValues.length > 0 ? scenarioPoolValues : config.scenarioPool,
+    { random }
   );
 
   return config;
@@ -361,7 +363,7 @@ Options:
   --setcell-interval-ms <n>     setCell send interval in ms (default: 3000)
   --reconnect-delay-ms <n>      Reconnect delay in ms (default: 1000)
   --kill-after-ms <n>           Force-kill grace timeout after interrupt (default: 2000)
-  --scenario-pool <ids>         Comma-separated scenario pool
+  --scenario-pool <ids>         Comma-separated scenario pool (wildcard-local expands to a random local mix)
   --scenario <id>               Append one scenario to the pool
   -h, --help                    Show this help
 `;

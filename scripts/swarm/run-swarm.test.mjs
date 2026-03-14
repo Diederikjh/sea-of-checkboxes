@@ -70,6 +70,40 @@ describe("run swarm config", () => {
     });
   });
 
+  it("expands wildcard-local into a randomized local scenario pool", () => {
+    const values = [0.9, 0.1, 0.6, 0.2];
+    let index = 0;
+    const config = parseRunSwarmArgs([
+      "--bot-count",
+      "4",
+      "--duration-ms",
+      "60000",
+      "--scenario-pool",
+      "wildcard-local",
+    ], {
+      random: () => {
+        const value = values[index] ?? 0;
+        index += 1;
+        return value;
+      },
+    });
+
+    expect(config.scenarioPool).toEqual([
+      "read-only-lurker",
+      "cursor-heavy",
+      "viewport-churn",
+      "hot-tile-contention",
+    ]);
+
+    const bots = buildBotLaunchConfigs(config);
+    expect(bots.map((bot) => bot.scenarioId)).toEqual([
+      "read-only-lurker",
+      "cursor-heavy",
+      "viewport-churn",
+      "hot-tile-contention",
+    ]);
+  });
+
   it("allows negative coordinates and custom duration", () => {
     const config = parseRunSwarmArgs([
       "--duration-ms",

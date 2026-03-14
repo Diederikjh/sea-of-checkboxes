@@ -51,6 +51,11 @@ Local setup:
 2. run the swarm against `ws://127.0.0.1:8787/ws`
 3. inspect the swarm logs after each rung
 
+Local wildcard run:
+
+- use `--scenario-pool wildcard-local --duration-ms 60000` to expand a random local mix for noisy exploratory runs
+- `wildcard-local` always includes `read-only-lurker` plus a randomized subset of active scenarios from the current catalog
+
 ### Step 1: Smoke
 
 Intent:
