@@ -1254,6 +1254,57 @@ describe("ConnectionShardDO websocket handling", () => {
     }
   });
 
+  it("keeps a tighter quiet-poll cadence when only one remote peer is connected", async () => {
+    vi.useFakeTimers();
+    try {
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+      const singlePeerHarness = createRelayHarness();
+      setCursorHubWatchResponse(singlePeerHarness, {
+        peerShards: ["shard-1"],
+      });
+      singlePeerHarness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
+
+      const multiPeerHarness = createRelayHarness();
+      setCursorHubWatchResponse(multiPeerHarness, {
+        peerShards: ["shard-1", "shard-2"],
+      });
+      multiPeerHarness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
+      multiPeerHarness.connectionShards.getByName("shard-2").setJsonPathResponse("/cursor-state", {
+        from: "shard-2",
+        updates: [],
+      });
+
+      await connectClient(singlePeerHarness.shard, singlePeerHarness.socketPairFactory, {
+        uid: "u_single",
+        name: "Single",
+        shard: "shard-0",
+      });
+      await connectClient(multiPeerHarness.shard, multiPeerHarness.socketPairFactory, {
+        uid: "u_multi",
+        name: "Multi",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(countCursorStatePullRequestsForShard(singlePeerHarness, "shard-1")).toBe(12);
+      expect(countCursorStatePullRequestsForShard(multiPeerHarness, "shard-1")).toBe(10);
+      expect(countCursorStatePullRequestsForShard(multiPeerHarness, "shard-2")).toBe(10);
+      expect(countCursorStatePullRequestsForShard(singlePeerHarness, "shard-1")).toBeGreaterThan(
+        countCursorStatePullRequestsForShard(multiPeerHarness, "shard-1")
+      );
+      randomSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("wakes cursor-state polling back up when local cursor activity resumes", async () => {
     vi.useFakeTimers();
     try {
@@ -1331,13 +1382,13 @@ describe("ConnectionShardDO websocket handling", () => {
       socket.emitMessage(encodeClientMessageBinary({ t: "cur", x: 3.0, y: 2.0 }));
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
 
       await vi.advanceTimersByTimeAsync(149);
-      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 2);
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 1);
+      expect(countCursorStatePullRequests(harness)).toBe(beforeReheat + 2);
       randomSpy.mockRestore();
     } finally {
       vi.useRealTimers();

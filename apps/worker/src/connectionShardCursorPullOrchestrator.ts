@@ -5,7 +5,10 @@ import {
 } from "./connectionShardCursorPullScheduler";
 import { ConnectionShardCursorPullIngressGate } from "./connectionShardCursorPullIngressGate";
 import { ConnectionShardCursorPullPeerScopeTracker } from "./connectionShardCursorPullPeerScopeTracker";
-import { CURSOR_PULL_TIMING } from "./cursorTimingConfig";
+import {
+  CURSOR_PULL_TIMING,
+  cursorPullBackoffProfileForPeerCount,
+} from "./cursorTimingConfig";
 
 interface CursorPullFirstPostScopeState {
   observedAtMs: number;
@@ -442,10 +445,14 @@ export class ConnectionShardCursorPullOrchestrator {
       return;
     }
 
-    if (this.#intervalMs < CURSOR_PULL_TIMING.intervalMaxMs) {
+    const activeBackoffProfile = cursorPullBackoffProfileForPeerCount(
+      this.#peerScopeTracker.peerShards.length
+    );
+
+    if (this.#intervalMs < activeBackoffProfile.intervalMaxMs) {
       this.#intervalMs = Math.min(
-        CURSOR_PULL_TIMING.intervalMaxMs,
-        this.#intervalMs + CURSOR_PULL_TIMING.intervalBackoffStepMs
+        activeBackoffProfile.intervalMaxMs,
+        this.#intervalMs + activeBackoffProfile.intervalBackoffStepMs
       );
       this.#quietStreak = 0;
       return;
