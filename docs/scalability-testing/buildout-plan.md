@@ -845,3 +845,31 @@ Notes:
 
 - wildcard runs should stay outside the main promotion ladder because their scenario mix changes run to run
 - they are still useful as a fast noisy regression pass before production work
+
+### 2026-03-14: Prod Step 1
+
+Run:
+
+- `prod-step1-baseline-2026-03-14-b4-30s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- aggregate `setCellSent == setCellResolved` at `18/18`
+- all `4` bots saw all `3` expected peers
+- `Assessment: pass`
+
+Notes:
+
+- production `hello` latency landed in a tight `1324ms` to `1350ms` band
+- production `subscribeAck` ranged from `976ms` to `1513ms`
+- `firstRemoteCursor` remained healthy for this shape at `514ms` to `1007ms`
+- writer `setCellSync` stayed within `324ms` to `1009ms`
+- no errors or warnings were recorded
+
+Next promotion:
+
+- prod step 2 is now unblocked
