@@ -15,6 +15,8 @@ interface ConnectionShardCursorHubControllerOptions {
   maybeUnrefTimer: (timer: ReturnType<typeof setTimeout>) => void;
   watchRenewMs?: number;
   watchProbeRenewMs?: number;
+  watchSettleRenewMs?: number;
+  watchSettleWindowMs?: number;
 }
 
 export class ConnectionShardCursorHubController {
@@ -27,12 +29,16 @@ export class ConnectionShardCursorHubController {
   #maybeUnrefTimer: (timer: ReturnType<typeof setTimeout>) => void;
   #watchRenewMs: number;
   #watchProbeRenewMs: number;
+  #watchSettleRenewMs: number;
+  #watchSettleWindowMs: number;
 
   #subscribed: boolean;
   #watchInFlight: boolean;
   #desiredWatchAction: "sub" | "unsub" | null;
   #watchRenewTimer: ReturnType<typeof setTimeout> | null;
   #watchedPeerCount: number;
+  #watchedPeerShards: string[];
+  #watchSettleUntilMs: number;
 
   constructor(options: ConnectionShardCursorHubControllerOptions) {
     this.#gateway = options.gateway;
@@ -44,12 +50,16 @@ export class ConnectionShardCursorHubController {
     this.#maybeUnrefTimer = options.maybeUnrefTimer;
     this.#watchRenewMs = options.watchRenewMs ?? 60_000;
     this.#watchProbeRenewMs = options.watchProbeRenewMs ?? 500;
+    this.#watchSettleRenewMs = options.watchSettleRenewMs ?? this.#watchProbeRenewMs;
+    this.#watchSettleWindowMs = options.watchSettleWindowMs ?? 5_000;
 
     this.#subscribed = false;
     this.#watchInFlight = false;
     this.#desiredWatchAction = null;
     this.#watchRenewTimer = null;
     this.#watchedPeerCount = 0;
+    this.#watchedPeerShards = [];
+    this.#watchSettleUntilMs = 0;
   }
 
   isEnabled(): boolean {
@@ -118,7 +128,14 @@ export class ConnectionShardCursorHubController {
 
   #applyWatchState(watchState: CursorHubWatchResponse | null): void {
     const peerShards = watchState?.peerShards ?? [];
+    const peerScopeChanged = !this.#samePeerShards(this.#watchedPeerShards, peerShards);
+    this.#watchedPeerShards = [...peerShards];
     this.#watchedPeerCount = peerShards.length;
+    if (peerScopeChanged && peerShards.length > 0) {
+      this.#watchSettleUntilMs = Date.now() + this.#watchSettleWindowMs;
+    } else if (peerShards.length === 0) {
+      this.#watchSettleUntilMs = 0;
+    }
     this.#clearWatchRenewTimer();
     this.#scheduleWatchRenew(this.#currentRenewDelayMs());
     this.#updateWatchedPeerShards(peerShards);
@@ -130,10 +147,15 @@ export class ConnectionShardCursorHubController {
   #resetPeerScopeState(): void {
     this.#clearWatchRenewTimer();
     this.#watchedPeerCount = 0;
+    this.#watchedPeerShards = [];
+    this.#watchSettleUntilMs = 0;
     this.#updateWatchedPeerShards([]);
   }
 
   #currentRenewDelayMs(): number {
+    if (this.#watchedPeerCount > 0 && Date.now() < this.#watchSettleUntilMs) {
+      return this.#watchSettleRenewMs;
+    }
     return this.#watchedPeerCount > 0 ? this.#watchRenewMs : this.#watchProbeRenewMs;
   }
 
@@ -161,5 +183,9 @@ export class ConnectionShardCursorHubController {
     }
     clearTimeout(this.#watchRenewTimer);
     this.#watchRenewTimer = null;
+  }
+
+  #samePeerShards(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((peerShard, index) => peerShard === right[index]);
   }
 }
