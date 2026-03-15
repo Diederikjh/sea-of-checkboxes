@@ -1088,3 +1088,41 @@ Notes:
 Next promotion:
 
 - the conservative production ladder is complete through step 5
+
+### 2026-03-15: Prod Step 6 Limited Hotspot
+
+Run:
+
+- `prod-step6-hotspot-2026-03-15-b6-30s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `71/71`
+- all `6` bots saw all `5` expected peers
+- `Assessment: pass`
+
+Hotspot findings:
+
+- no hotspot-specific client errors were recorded
+- no `tile_readonly_hot`, `tile_sub_denied`, or `not_subscribed` errors appeared in the bot logs
+- all `3` hotspot writers finished with `pending.setCell = 0`
+
+Latency notes:
+
+- hotspot writer `setCellSync` stayed healthy at `324ms` to `1014ms`, with per-bot p50 between `336ms` and `505ms`
+- the main thing that stretched on this rung was readonly `subscribeAck`, which reached `2176ms` to `2359ms`
+- `firstRemoteCursor` was also a bit spikier on readonly bots, peaking at `1643ms`
+
+Server log check:
+
+- queried the exact run window from `2026-03-15T16:14:38.441Z` to `2026-03-15T16:15:09.109Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Notes:
+
+- this rung stayed clean on both client and worker sides even under concentrated tile pressure
+- the remaining future production step is the planned `multi-hotspot` scenario, which is still doc-only and should not be promoted until the scenario is implemented locally first
