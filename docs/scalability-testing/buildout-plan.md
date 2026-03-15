@@ -1047,3 +1047,44 @@ Notes:
 Next promotion:
 
 - prod step 5 is now unblocked
+
+### 2026-03-15: Prod Step 5 Soak
+
+Run:
+
+- `prod-step5-soak-2026-03-15-b8-120s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `72/72`
+- all `8` bots saw all `7` expected peers
+- `Assessment: pass`
+
+Soak findings:
+
+- all `4` active `soak` bots completed one reconnect cycle and recovered cleanly
+- aggregate reconnect samples were `4`, with observed reconnect latency between `1001ms` and `1002ms`
+- soak bots also completed `28` viewport moves in aggregate with `0` pending writes at shutdown
+
+Latency notes:
+
+- soak `setCellSync` stayed fully resolved but was slower than the shorter production rungs, with observed samples from `323ms` to `1459ms`
+- per-bot `setCellSync` p50 for the soak writers landed between `905ms` and `922ms`
+
+Server log check:
+
+- queried the exact run window from `2026-03-15T07:54:02.991Z` to `2026-03-15T07:56:03.218Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Notes:
+
+- this rung remained clean on both client and worker sides under a longer run duration
+- the higher soak write latency is worth tracking, but it did not produce misses, reconnect failures, or shutdown tail issues
+
+Next promotion:
+
+- the conservative production ladder is complete through step 5
