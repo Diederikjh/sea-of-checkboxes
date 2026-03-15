@@ -502,6 +502,8 @@ export class CursorHubDO {
     logStructuredEvent("cursor_hub_do", event, {
       do_id: this.#doId,
       ...fields,
+    }, {
+      mode: this.#env.WORKER_LOG_MODE,
     });
   }
 

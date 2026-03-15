@@ -96,10 +96,12 @@ function isValidLastEditRecord(value: unknown): value is CellLastEditRecord {
 export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersistence {
   #state: DurableObjectStateLike;
   #doId: string;
+  #logMode: string | undefined;
 
-  constructor(state: DurableObjectStateLike) {
+  constructor(state: DurableObjectStateLike, options: { logMode?: string } = {}) {
     this.#state = state;
     this.#doId = state.id.toString();
+    this.#logMode = options.logMode;
   }
 
   async load(tileKey: string): Promise<TileOwnerPersistedState> {
@@ -122,6 +124,8 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
           found: Boolean(snapshot),
           subscriber_count: subscribers.length,
           duration_ms: elapsedMs(startMs),
+        }, {
+          mode: this.#logMode,
         });
       }
     } catch (error) {
@@ -133,6 +137,8 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
         error: true,
         error_message: error instanceof Error ? error.message : "unknown_error",
         duration_ms: elapsedMs(startMs),
+      }, {
+        mode: this.#logMode,
       });
       throw error;
     }
@@ -156,6 +162,8 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
         tile: tileKey,
         source: "do_storage",
         duration_ms: elapsedMs(startMs),
+      }, {
+        mode: this.#logMode,
       });
     } catch (error) {
       logStructuredEvent("tile_owner_persistence", "snapshot_write", {
@@ -165,6 +173,8 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
         error: true,
         error_message: error instanceof Error ? error.message : "unknown_error",
         duration_ms: elapsedMs(startMs),
+      }, {
+        mode: this.#logMode,
       });
       throw error;
     }
@@ -180,18 +190,23 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
   #bucket: R2BucketLike;
   #dualWriteLegacy: boolean;
   #doId: string;
+  #logMode: string | undefined;
 
   constructor(
     state: DurableObjectStateLike,
     bucket: R2BucketLike,
     options: {
       dualWriteLegacy?: boolean;
+      logMode?: string;
     } = {}
   ) {
-    this.#legacy = new DurableObjectStorageTileOwnerPersistence(state);
+    this.#legacy = new DurableObjectStorageTileOwnerPersistence(state, {
+      ...(options.logMode ? { logMode: options.logMode } : {}),
+    });
     this.#bucket = bucket;
     this.#dualWriteLegacy = options.dualWriteLegacy ?? true;
     this.#doId = state.id.toString();
+    this.#logMode = options.logMode;
   }
 
   async load(tileKey: string): Promise<TileOwnerPersistedState> {
@@ -247,6 +262,8 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
       r2_error_message: r2Error instanceof Error ? r2Error.message : undefined,
       legacy_error_message: legacyError instanceof Error ? legacyError.message : undefined,
       mode: "normal",
+    }, {
+      mode: this.#logMode,
     });
   }
 
@@ -269,6 +286,8 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
             found: false,
             key,
             duration_ms: elapsedMs(startMs),
+          }, {
+            mode: this.#logMode,
           });
         }
         return null;
@@ -286,6 +305,8 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
           key,
           bytes: payloadText.length,
           duration_ms: elapsedMs(startMs),
+        }, {
+          mode: this.#logMode,
         });
       }
       return snapshot;
@@ -299,6 +320,8 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
         error: true,
         error_message: error instanceof Error ? error.message : "unknown_error",
         duration_ms: elapsedMs(startMs),
+      }, {
+        mode: this.#logMode,
       });
       return null;
     }
@@ -326,6 +349,8 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
           bytes: payload.length,
           attempt,
           duration_ms: elapsedMs(startMs),
+        }, {
+          mode: this.#logMode,
         });
         return;
       } catch (error) {
@@ -342,6 +367,8 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
           final_attempt: finalAttempt,
           error_message: error instanceof Error ? error.message : "unknown_error",
           duration_ms: elapsedMs(startMs),
+        }, {
+          mode: this.#logMode,
         });
 
         if (finalAttempt) {

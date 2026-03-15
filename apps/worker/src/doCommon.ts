@@ -58,6 +58,7 @@ export interface Env {
   FIREBASE_PROJECT_ID?: string;
   AUTH_MODE?: string;
   WS_DISABLED?: string;
+  WORKER_LOG_MODE?: string;
   EXTERNAL_IDENTITY_VERIFIER?: ExternalIdentityVerifier;
 }
 

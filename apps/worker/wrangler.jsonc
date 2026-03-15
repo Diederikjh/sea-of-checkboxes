@@ -63,6 +63,7 @@
 	],
 	"vars": {
 		"AUTH_MODE": "hybrid",
-		"WS_DISABLED": "0"
+		"WS_DISABLED": "0",
+		"WORKER_LOG_MODE": "reduced"
 	}
 }

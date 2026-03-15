@@ -37,6 +37,7 @@ const TILE_OPS_SINCE_DEFAULT_LIMIT = 256;
 const TILE_OPS_SINCE_MAX_LIMIT = 1_024;
 
 export class TileOwnerDO {
+  #env: Env;
   #doId: string;
   #tileOwner: TileOwner;
   #tileKey: string | null;
@@ -60,6 +61,7 @@ export class TileOwnerDO {
       opHistoryLimit?: number;
     } = {}
   ) {
+    this.#env = env;
     this.#doId = state.id.toString();
     this.#tileOwner = new TileOwner("0:0");
     this.#tileKey = null;
@@ -76,8 +78,12 @@ export class TileOwnerDO {
     this.#persistence =
       options.persistence ??
       (env.TILE_SNAPSHOTS
-        ? new LazyMigratingR2TileOwnerPersistence(state, env.TILE_SNAPSHOTS)
-        : new DurableObjectStorageTileOwnerPersistence(state));
+        ? new LazyMigratingR2TileOwnerPersistence(state, env.TILE_SNAPSHOTS, {
+            ...(env.WORKER_LOG_MODE ? { logMode: env.WORKER_LOG_MODE } : {}),
+          })
+        : new DurableObjectStorageTileOwnerPersistence(state, {
+            ...(env.WORKER_LOG_MODE ? { logMode: env.WORKER_LOG_MODE } : {}),
+          }));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -503,6 +509,8 @@ export class TileOwnerDO {
       do_id: this.#doId,
       tile: this.#tileKey ?? undefined,
       ...fields,
+    }, {
+      mode: this.#env.WORKER_LOG_MODE,
     });
   }
 }

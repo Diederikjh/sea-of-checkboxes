@@ -1077,6 +1077,8 @@ export class ConnectionShardDO {
     logStructuredEvent("connection_shard_do", event, {
       shard: this.#currentShardName(),
       ...fields,
+    }, {
+      mode: this.#env.WORKER_LOG_MODE,
     });
   }
 
