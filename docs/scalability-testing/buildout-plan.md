@@ -874,6 +874,33 @@ Next promotion:
 
 - prod step 2 is now unblocked
 
+### 2026-03-14: Prod Step 1 Rerun And Server Log Check
+
+Run:
+
+- `prod-step1-baseline-2026-03-14-b4-30s-rerun-after-alarm-logging`
+
+Result:
+
+- passed promotion gate again
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `18/18`
+- all `4` bots saw all `3` expected peers
+- `Assessment: pass`
+
+Server log check:
+
+- queried the exact run window from `2026-03-14T21:53:40.190Z` to `2026-03-14T21:54:10.367Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Notes:
+
+- this rerun did not reproduce the earlier intermittent `ConnectionShardDO` alarm exception
+- the earlier alarm issue should still be treated as unresolved until a deployed build emits structured `cursor_pull_alarm_failed` details
+- client and server were both clean for this rerun
+
 ### 2026-03-14: Prod Step 2
 
 Run:
@@ -897,6 +924,34 @@ Notes:
 - `subscribeAck` stayed within `353ms` to `1029ms` across `18` subscribe samples
 - `firstRemoteCursor` stayed within `516ms` to `1305ms`
 - writer `setCellSync` stayed within `333ms` to `1120ms`
+
+### 2026-03-15: Prod Step 2 Rerun After Deploy
+
+Run:
+
+- `prod-step2-cursor-2026-03-15-b6-45s-rerun-after-deploy`
+
+Result:
+
+- passed promotion gate again
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- aggregate `setCellSent == setCellResolved` at `12/12`
+- all `6` bots saw all `5` expected peers
+- `Assessment: pass`
+
+Server log check:
+
+- queried the exact run window from `2026-03-15T07:13:35.638Z` to `2026-03-15T07:14:20.797Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Notes:
+
+- this rerun was specifically intended to verify whether the earlier alarm exception shape would recur after deploy
+- no worker-side exception was observed in the exact run window
+- readonly `subscribeAck` was slower on this run, reaching `2651ms` to `2709ms`, but it did not produce client or server errors
 
 Next promotion:
 
