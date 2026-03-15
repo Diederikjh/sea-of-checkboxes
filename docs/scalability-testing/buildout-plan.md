@@ -1011,3 +1011,39 @@ Notes:
 Next promotion:
 
 - prod step 4 is now unblocked
+
+### 2026-03-15: Prod Step 4 Reconnect Recovery
+
+Run:
+
+- `prod-step4-reconnect-2026-03-15-b8-60s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `148/148`
+- all `8` bots saw all `7` expected peers
+- `Assessment: pass`
+
+Reconnect findings:
+
+- all `4` `reconnect-burst` bots triggered and completed exactly one reconnect
+- aggregate reconnect samples were `4`, with observed reconnect latency between `1000ms` and `1001ms`
+- each reconnect bot finished with `connectAttempts = 2`, `helloCount = 2`, `subscribeSent = 2`, and `pending.setCell = 0`
+
+Server log check:
+
+- queried the exact run window from `2026-03-15T07:50:23.506Z` to `2026-03-15T07:51:23.812Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Notes:
+
+- this rung was clean on both client and worker sides
+- reconnect recovery remained stable with normal write pressure and no shutdown tail issues
+
+Next promotion:
+
+- prod step 5 is now unblocked
