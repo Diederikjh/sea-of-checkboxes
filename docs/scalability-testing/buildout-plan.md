@@ -1126,3 +1126,41 @@ Notes:
 
 - this rung stayed clean on both client and worker sides even under concentrated tile pressure
 - the remaining future production step is the planned `multi-hotspot` scenario, which is still doc-only and should not be promoted until the scenario is implemented locally first
+
+### 2026-03-15: Prod Wildcard Exploratory Run
+
+Run:
+
+- `prod-wildcard-b8-60s-2026-03-15`
+
+Chosen scenario pool:
+
+- `read-only-lurker`
+- `reconnect-burst`
+- `spread-editing`
+- `cursor-heavy`
+
+Result:
+
+- exploratory run passed cleanly
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `86/86`
+- all `8` bots saw all `7` expected peers
+- `Assessment: pass`
+
+Notes:
+
+- both `reconnect-burst` bots completed one reconnect cleanly
+- both `cursor-heavy` bots completed their viewport movement without warnings
+- no client-side errors were recorded
+
+Server log check:
+
+- queried the exact run window from `2026-03-15T16:30:44.073Z` to `2026-03-15T16:31:44.293Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Interpretation:
+
+- this is a useful prod-side noisy regression pass, but it should stay outside the formal promotion ladder because the scenario mix changes from run to run
