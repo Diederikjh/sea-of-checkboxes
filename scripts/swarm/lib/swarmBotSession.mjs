@@ -196,6 +196,9 @@ export class SwarmBotSession {
       this.#scheduleReconnect(this.nowMs());
     });
     socket.addEventListener("error", () => {
+      if (this.socket !== socket || this.stopping || this.stopRequested) {
+        return;
+      }
       this.#log("ws_error");
     });
 

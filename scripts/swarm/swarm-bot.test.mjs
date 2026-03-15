@@ -781,6 +781,47 @@ describe("swarm bot session", () => {
     }
   });
 
+  it("ignores stale socket error events after shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-stale-error",
+        "--duration-ms",
+        "10000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "0",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      await session.stop("test_complete");
+      await startPromise;
+
+      sockets[0].emit("error", {});
+
+      expect(logger.log).not.toHaveBeenCalledWith("ws_error", expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drains pending hotspot writes before final shutdown", async () => {
     vi.useFakeTimers();
     try {

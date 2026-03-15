@@ -651,6 +651,45 @@ Next promotion:
 
 - local step 7 is now unblocked
 
+### 2026-03-15: Local Step 7
+
+Runs:
+
+- `local-multi-hotspot-b12-60s`
+- `local-multi-hotspot-b12-60s-rerun-8788`
+
+Failure noted:
+
+- the first attempt did not produce a valid scenario result
+- all `12` bots failed before handshake because the swarm NDJSON logger was closed before late socket events finished flushing, which triggered `ERR_STREAM_WRITE_AFTER_END`
+- the local `127.0.0.1:8787` worker slot was also stale, so the clean rerun was moved to `127.0.0.1:8788`
+
+Fix:
+
+- made the NDJSON logger ignore late writes after shutdown and made `close()` idempotent
+- stopped logging stale websocket `error` events after a bot has already shut down or moved off that socket
+- added regression coverage for both the logger late-write path and the stale socket error path
+
+Result:
+
+- passed promotion gate on `local-multi-hotspot-b12-60s-rerun-8788`
+- `0` failed bots
+- `0` force kills
+- `0` reconnects
+- aggregate `setCellSent == setCellResolved` at `228/228`
+- all `12` bots saw peers, with `10-11` peers per bot and `12` unique peer UIDs overall
+- no bot or server protocol errors were logged
+- hotspot groups stayed clean across several separated tiles, with no pending writes at shutdown
+
+Notes:
+
+- local worker readiness on `127.0.0.1:8787` should be treated as an environment issue, not a `multi-hotspot` scenario issue, if that stale port recurs
+- `multi-hotspot` is now promoted from doc-only to a verified local rung
+
+Next promotion:
+
+- local step 8 remains the next mixed-shape rung
+
 ### 2026-03-14: Local Step 8
 
 Run:
