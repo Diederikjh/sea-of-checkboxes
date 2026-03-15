@@ -956,3 +956,58 @@ Notes:
 Next promotion:
 
 - prod step 3 is now unblocked
+
+### 2026-03-15: Prod Step 3 Investigation And Rerun
+
+Runs:
+
+- `prod-step3-viewport-2026-03-15-b8-60s`
+- `prod-step3-viewport-2026-03-15-b8-60s-rerun-after-stop-drain`
+
+Initial result:
+
+- the first prod step 3 run failed promotion
+- `viewport-churn` resolved only `36/39` writes and ended with `3` pending writes at shutdown
+- `spread-editing` and `read-only-lurker` were otherwise clean
+
+Server-side findings on the failed run:
+
+- a downloaded worker log export showed two real `ConnectionShardDO` alarm exceptions during the run window
+- one exception hit `shard-7`, which overlapped a failing `viewport-churn` bot
+- the other exception hit `shard-0`, which did not line up with one of the three unresolved churn writes
+- the three final unresolved `viewport-churn` writes were still accepted server-side later in the run, so the alarm exceptions did not fully explain the client-side failure
+
+Root cause:
+
+- `viewport-churn` still had `shutdownDrainMs = 0`
+- when the run hit `duration_elapsed`, the churn bots could stop before the final accepted `setCell` confirmation arrived
+- this was a harness drain issue at stop time, not a clear server rejection path
+
+Fix:
+
+- added a `3000ms` shutdown drain to `viewport-churn`
+- extended swarm coverage so viewport-churn stop behavior is explicitly tested
+
+Rerun result:
+
+- `prod-step3-viewport-2026-03-15-b8-60s-rerun-after-stop-drain` passed promotion
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `96/96`
+- all `8` bots saw all `7` expected peers
+- `Assessment: pass`
+
+Server log check on the rerun:
+
+- queried the exact run window from `2026-03-15T07:46:44.838Z` to `2026-03-15T07:47:45.704Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Notes:
+
+- the new stop drain was exercised by the `viewport-churn` bots and cleared their final pending writes before shutdown
+- the rerun does not explain the earlier opaque alarm exceptions, but it does show prod step 3 can complete cleanly once the churn bots are given a short stop drain
+
+Next promotion:
+
+- prod step 4 is now unblocked

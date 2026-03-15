@@ -482,6 +482,18 @@ describe("swarm bot session", () => {
       const deferredLogs = logger.log.mock.calls.filter(([event]) => event === "viewport_move_deferred");
       expect(deferredLogs.length).toBeGreaterThanOrEqual(2);
 
+      const finalMessages = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const finalSetCell = [...finalMessages].reverse().find((message) => message.t === "setCell");
+      if (finalSetCell) {
+        sockets[0].emit("message", {
+          data: encodeCellUpBatchMessage({
+            tile: finalSetCell.tile,
+            toVer: 2,
+            ops: [[finalSetCell.i, finalSetCell.v]],
+          }),
+        });
+      }
+
       await session.stop("test_complete");
       await startPromise;
     } finally {
@@ -557,8 +569,89 @@ describe("swarm bot session", () => {
         count: 1,
       }));
 
+      sockets[0].emit("message", {
+        data: encodeCellUpBatchMessage({
+          tile: firstSetCell.tile,
+          toVer: 1,
+          ops: [[firstSetCell.i, firstSetCell.v]],
+        }),
+      });
+
       await session.stop("test_complete");
       await startPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drains pending viewport churn writes before final shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      let summary = null;
+      const config = parseSwarmBotArgs([
+        "--bot-id",
+        "bot-churn-stop-drain",
+        "--scenario-id",
+        "viewport-churn",
+        "--duration-ms",
+        "20000",
+        "--cursor-interval-ms",
+        "5000",
+        "--setcell-interval-ms",
+        "3000",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        onSummary(value) {
+          summary = value;
+        },
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      sockets[0].emit("open", {});
+      sockets[0].emit("message", {
+        data: encodeHelloMessage(),
+      });
+
+      await vi.advanceTimersByTimeAsync(4500);
+
+      const sentMessages = sockets[0].sent.map((payload) => decodeClientMessageBinaryForTest(payload));
+      const firstSetCell = sentMessages.find((message) => message.t === "setCell");
+
+      expect(firstSetCell).toBeDefined();
+
+      const stopPromise = session.stop("test_complete");
+      expect(summary).toBeNull();
+      expect(logger.log).toHaveBeenCalledWith("stop_drain_started", expect.objectContaining({
+        botId: "bot-churn-stop-drain",
+        scenarioId: "viewport-churn",
+      }));
+
+      sockets[0].emit("message", {
+        data: encodeCellUpBatchMessage({
+          tile: firstSetCell.tile,
+          toVer: 1,
+          ops: [[firstSetCell.i, firstSetCell.v]],
+        }),
+      });
+
+      await stopPromise;
+      await startPromise;
+
+      expect(summary.counters.setCellSent).toBe(1);
+      expect(summary.counters.setCellResolved).toBe(1);
+      expect(summary.pending.setCell).toBe(0);
+      expect(logger.log).toHaveBeenCalledWith("stop_drain_completed", expect.objectContaining({
+        botId: "bot-churn-stop-drain",
+        scenarioId: "viewport-churn",
+      }));
     } finally {
       vi.useRealTimers();
     }
