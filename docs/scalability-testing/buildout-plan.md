@@ -333,8 +333,23 @@ Production app:
 
 ### Prod Step 7: Multi-Hotspot Pressure
 
-- planned future scenario: `multi-hotspot,read-only-lurker`
-- do not promote until the local `multi-hotspot` rung is implemented and stable
+- `12` bots
+- `60s`
+- `multi-hotspot,read-only-lurker`
+
+Command:
+
+```bash
+pnpm swarm:run \
+  --ws-url wss://sea-of-checkboxes-worker.diederikjhattingh.workers.dev/ws \
+  --app-url https://sea-of-checkboxes-web.pages.dev \
+  --run-id prod-step7-multi-hotspot-2026-03-15-b12-60s \
+  --bot-count 12 \
+  --duration-ms 60000 \
+  --scenario-pool multi-hotspot,read-only-lurker
+```
+
+Only promote after the local `multi-hotspot` rung is implemented and stable.
 
 Do not start with the mixed incident shape in production.
 
@@ -1164,7 +1179,7 @@ Server log check:
 Notes:
 
 - this rung stayed clean on both client and worker sides even under concentrated tile pressure
-- the remaining future production step is the planned `multi-hotspot` scenario, which is still doc-only and should not be promoted until the scenario is implemented locally first
+- `multi-hotspot` is the next production rung after this one
 
 ### 2026-03-15: Prod Wildcard Exploratory Run
 
@@ -1203,3 +1218,41 @@ Server log check:
 Interpretation:
 
 - this is a useful prod-side noisy regression pass, but it should stay outside the formal promotion ladder because the scenario mix changes from run to run
+
+### 2026-03-15: Prod Step 7 Multi-Hotspot Pressure
+
+Run:
+
+- `prod-step7-multi-hotspot-2026-03-15-b12-60s`
+
+Result:
+
+- passed promotion gate
+- `0` failed bots
+- `0` force kills
+- aggregate `setCellSent == setCellResolved` at `234/234`
+- all `12` bots saw peers, with `10-11` peers per bot and `12` unique peer UIDs overall
+- `Assessment: pass`
+
+Multi-hotspot findings:
+
+- all `6` active `multi-hotspot` bots finished with `pending.setCell = 0`
+- no `tile_readonly_hot`, `tile_sub_denied`, `not_subscribed`, or reconnect errors appeared
+- the scenario stayed distributed across `6` shards rather than collapsing onto a single hotspot owner path
+
+Latency notes:
+
+- `setCellSync` stayed strong despite simultaneous separated hotspots, with observed samples from `323ms` to `758ms`
+- per-bot writer `setCellSync` p50 stayed narrow at `354ms` to `385ms`
+- `subscribeAck` was the slowest phase, ranging from `902ms` to `2118ms`
+
+Server log check:
+
+- queried the exact run window from `2026-03-15T18:57:54.778Z` to `2026-03-15T18:58:55.255Z`
+- found no `outcome=exception` rows
+- found no `$metadata.level=error` rows
+
+Notes:
+
+- this rung stayed clean on both client and worker sides under multiple simultaneous hotspot groups
+- production `multi-hotspot` is now verified, not just planned
