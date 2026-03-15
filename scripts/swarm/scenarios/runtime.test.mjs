@@ -16,6 +16,19 @@ describe("scenario runtime", () => {
     });
 
     expect(buildScenarioRuntime({
+      scenarioId: "multi-hotspot",
+      cursorIntervalMs: 1_000,
+      setCellIntervalMs: 3_000,
+      durationMs: 60_000,
+      readonly: false,
+    })).toMatchObject({
+      id: "multi-hotspot",
+      cursorIntervalMs: 500,
+      setCellIntervalMs: 1_500,
+      shutdownDrainMs: 5_000,
+    });
+
+    expect(buildScenarioRuntime({
       scenarioId: "cursor-heavy",
       cursorIntervalMs: 1_000,
       setCellIntervalMs: 3_000,

@@ -199,9 +199,9 @@ Run:
 
 - `12` bots
 - `60s`
-- planned future scenario: `multi-hotspot,read-only-lurker`
+- `multi-hotspot,read-only-lurker`
 
-Planned command once implemented:
+Command:
 
 ```bash
 pnpm swarm:run \
@@ -214,8 +214,8 @@ pnpm swarm:run \
 Notes:
 
 - this rung is intentionally listed in the ladder before the mixed incident shape
-- it is not implemented in the swarm runner yet
-- do not promote this rung until a dedicated `multi-hotspot` scenario exists
+- now implemented in the swarm runner
+- do not promote this rung until the local `multi-hotspot` run is clean
 
 ### Step 8: Mixed Incident Shape
 

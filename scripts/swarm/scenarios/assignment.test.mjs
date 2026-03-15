@@ -79,4 +79,52 @@ describe("scenario assignment", () => {
       "read-only-lurker",
     ]);
   });
+
+  it("clusters multi-hotspot assignments into several separated hotspot groups", () => {
+    const assignments = buildScenarioAssignments({
+      scenarioPool: ["multi-hotspot"],
+      botCount: 6,
+      originX: 100,
+      originY: 200,
+    });
+
+    expect(assignments).toEqual([
+      {
+        scenarioId: "multi-hotspot",
+        readonly: false,
+        originX: 100,
+        originY: 200,
+      },
+      {
+        scenarioId: "multi-hotspot",
+        readonly: false,
+        originX: 228,
+        originY: 200,
+      },
+      {
+        scenarioId: "multi-hotspot",
+        readonly: false,
+        originX: 100,
+        originY: 328,
+      },
+      {
+        scenarioId: "multi-hotspot",
+        readonly: false,
+        originX: 228,
+        originY: 328,
+      },
+      {
+        scenarioId: "multi-hotspot",
+        readonly: false,
+        originX: 102,
+        originY: 202,
+      },
+      {
+        scenarioId: "multi-hotspot",
+        readonly: false,
+        originX: 230,
+        originY: 202,
+      },
+    ]);
+  });
 });

@@ -13,6 +13,7 @@ describe("scenario pool", () => {
       "spread-editing",
       "read-only-lurker",
     ]);
+    expect(listScenarioIds()).toContain("multi-hotspot");
     expect(listScenarioIds()).toContain("viewport-churn");
     expect(listScenarioIds({ includeLegacy: true })).toContain("phase1-active");
   });

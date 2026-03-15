@@ -37,6 +37,47 @@ const SCENARIO_DEFINITIONS = Object.freeze({
       };
     },
   },
+  "multi-hotspot": {
+    id: "multi-hotspot",
+    readonly: false,
+    originOffset(slot) {
+      const hotspotGroups = [
+        { x: 0, y: 0 },
+        { x: 128, y: 0 },
+        { x: 0, y: 128 },
+        { x: 128, y: 128 },
+      ];
+      const intraTileOffsets = [
+        { x: 0, y: 0 },
+        { x: 2, y: 2 },
+        { x: 4, y: 1 },
+        { x: 1, y: 4 },
+      ];
+      const group = hotspotGroups[slot % hotspotGroups.length];
+      const intraTile = intraTileOffsets[Math.floor(slot / hotspotGroups.length) % intraTileOffsets.length];
+      return {
+        x: group.x + intraTile.x,
+        y: group.y + intraTile.y,
+      };
+    },
+    runtime(config) {
+      return {
+        id: "multi-hotspot",
+        readonly: Boolean(config.readonly),
+        cursorIntervalMs: clampMs(Math.floor(config.cursorIntervalMs * 0.5), 250),
+        setCellIntervalMs: config.readonly ? 0 : deriveSetCellInterval(config.setCellIntervalMs, 0.5, 900),
+        cursorPattern: "tight-orbit",
+        setCellPattern: "hotspot",
+        subscribeOffsets: [{ dx: 0, dy: 0 }],
+        viewportOffsets: null,
+        viewportIntervalMs: null,
+        viewportMoveDrainMs: 0,
+        viewportMoveRetryMs: 100,
+        shutdownDrainMs: 5_000,
+        reconnectBurstDelayMs: null,
+      };
+    },
+  },
   "spread-editing": {
     id: "spread-editing",
     readonly: false,
