@@ -37,14 +37,37 @@ import type { ConnectionShardCursorHubGateway } from "./cursorHubGateway";
 const CURSOR_BATCH_TRACE_MAX_HOP = 1;
 const CURSOR_BATCH_HUB_PUBLISH_SUPPRESSION_MS = 300;
 
+function looksLikeIsoDatetime(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(trimmed)) {
+    return false;
+  }
+  return Number.isFinite(Date.parse(trimmed));
+}
+
+function prefixedFields(prefix: string, fields: Record<string, unknown>): Record<string, unknown> {
+  const prefixed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    prefixed[`${prefix}${key}`] = value;
+  }
+  return prefixed;
+}
+
 function errorFields(
   error: unknown,
   options: { includeStack?: boolean } = {}
-): { error_name?: string; error_message?: string; error_stack?: string; error_type?: string } {
+): {
+    error_name?: string;
+    error_message?: string;
+    error_stack?: string;
+    error_type?: string;
+    error_datetime_like?: boolean;
+  } {
   if (typeof error === "string") {
     return {
       error_type: "string",
       error_message: error.slice(0, 240),
+      ...(looksLikeIsoDatetime(error) ? { error_datetime_like: true } : {}),
     };
   }
 
@@ -83,6 +106,7 @@ function errorFields(
     error_type: Array.isArray(error) ? "array" : "object",
     ...(name ? { error_name: name } : {}),
     ...(message ? { error_message: message } : {}),
+    ...(message && looksLikeIsoDatetime(message) ? { error_datetime_like: true } : {}),
     ...(stack ? { error_stack: stack } : {}),
   };
 }
@@ -410,6 +434,7 @@ export class ConnectionShardCursorRuntime {
   async alarm(): Promise<void> {
     let wake: CursorPullAlarmWake | null = null;
     let failureStage = "consume_wake";
+    const alarmStateBeforeConsume = this.#cursorPullOrchestrator.alarmStateFields();
     try {
       wake = this.#cursorPullOrchestrator.consumeAlarmWake();
       if (!wake) {
@@ -435,6 +460,7 @@ export class ConnectionShardCursorRuntime {
           wake_reason: wake?.wakeReason ?? undefined,
           scheduled_at_ms: wake?.scheduledAtMs ?? undefined,
         }),
+        ...prefixedFields("pre_", alarmStateBeforeConsume),
         failure_stage: failureStage,
         ...errorFields(error, { includeStack: true }),
       });

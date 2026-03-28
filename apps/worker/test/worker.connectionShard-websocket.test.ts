@@ -1587,6 +1587,7 @@ describe("ConnectionShardDO websocket handling", () => {
   });
 
   it("logs primitive detached alarm failures before runTick begins", async () => {
+    vi.useFakeTimers();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const consumeAlarmWakeSpy = vi
       .spyOn(ConnectionShardCursorPullOrchestrator.prototype, "consumeAlarmWake")
@@ -1595,8 +1596,24 @@ describe("ConnectionShardDO websocket handling", () => {
       });
     try {
       const harness = createRelayHarness({ alarmMode: "manual" });
+      setCursorHubWatchResponse(harness, {
+        peerShards: ["shard-1"],
+      });
+      harness.connectionShards.getByName("shard-1").setJsonPathResponse("/cursor-state", {
+        from: "shard-1",
+        updates: [],
+      });
 
-      await expect(harness.shard.alarm()).rejects.toBe("2026-03-14T21:34:37.497Z");
+      await connectClient(harness.shard, harness.socketPairFactory, {
+        uid: "u_a",
+        name: "Alice",
+        shard: "shard-0",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.hasPendingAlarm()).toBe(true);
+
+      await expect(harness.fireAlarm()).rejects.toBe("2026-03-14T21:34:37.497Z");
 
       const events = parseStructuredLogs(logSpy);
       expect(
@@ -1607,11 +1624,16 @@ describe("ConnectionShardDO websocket handling", () => {
             && entry.failure_stage === "consume_wake"
             && entry.error_type === "string"
             && entry.error_message === "2026-03-14T21:34:37.497Z"
+            && entry.error_datetime_like === true
+            && entry.pre_alarm_armed === true
+            && entry.pre_pending_wake_reason === "watch_scope_change"
+            && typeof entry.pre_scheduled_at_ms === "number"
         )
       ).toBe(true);
     } finally {
       consumeAlarmWakeSpy.mockRestore();
       logSpy.mockRestore();
+      vi.useRealTimers();
     }
   });
 
