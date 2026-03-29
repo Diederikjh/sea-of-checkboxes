@@ -125,6 +125,26 @@ describe("run swarm config", () => {
     expect(config.killAfterMs).toBe(500);
   });
 
+  it("assigns repeated bot tokens in launch order", () => {
+    const config = parseRunSwarmArgs([
+      "--run-id",
+      "run-token-test",
+      "--bot-count",
+      "2",
+      "--bot-token",
+      "tok-alpha",
+      "--bot-token",
+      "tok-bravo",
+    ]);
+
+    const bots = buildBotLaunchConfigs(config);
+    expect(bots).toHaveLength(2);
+    expect(bots[0].args).toContain("tok-alpha");
+    expect(bots[1].args).toContain("tok-bravo");
+    expect(bots[0].hasProvidedToken).toBe(true);
+    expect(bots[1].hasProvidedToken).toBe(true);
+  });
+
   it("builds a local worker health URL from the websocket endpoint", () => {
     expect(buildWorkerHealthUrl("ws://127.0.0.1:8787/ws")).toBe("http://127.0.0.1:8787/health");
     expect(buildWorkerHealthUrl("wss://worker.example.com/ws")).toBe("https://worker.example.com/health");

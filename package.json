@@ -11,6 +11,7 @@
     "logs:client:capture": "node scripts/capture-client-console.mjs",
     "swarm:bot": "node scripts/swarm/swarm-bot.mjs",
     "swarm:run": "node scripts/swarm/run-swarm.mjs",
+    "swarm:flags": "node scripts/swarm/run-flag-matrix.mjs",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"

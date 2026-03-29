@@ -32,6 +32,7 @@ export function defaultSwarmBotConfig({
 
   return {
     wsUrl: env.SOC_SWARM_WS_URL ?? env.SOC_TEST_WS_URL ?? "ws://127.0.0.1:8787/ws",
+    token: env.SOC_SWARM_TOKEN ?? "",
     runId,
     botId,
     clientSessionId: `swarm_${runId}_${botId}`,
@@ -69,6 +70,15 @@ export function parseSwarmBotArgs(argv, options = {}) {
     }
     if (arg.startsWith("--ws-url=")) {
       config.wsUrl = arg.slice("--ws-url=".length);
+      continue;
+    }
+    if (arg === "--token") {
+      config.token = argValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--token=")) {
+      config.token = arg.slice("--token=".length);
       continue;
     }
     if (arg === "--run-id") {
@@ -235,6 +245,7 @@ Usage:
 
 Options:
   --ws-url <url>                WebSocket URL (default: SOC_SWARM_WS_URL or ws://127.0.0.1:8787/ws)
+  --token <token>               Initial identity token to reuse instead of anonymous bootstrap
   --run-id <id>                 Run identifier for logs
   --bot-id <id>                 Bot identifier for logs
   --scenario-id <id>            Scenario id

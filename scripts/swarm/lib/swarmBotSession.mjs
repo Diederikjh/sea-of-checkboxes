@@ -34,7 +34,7 @@ export class SwarmBotSession {
     this.scenario = buildScenarioRuntime(config);
 
     this.socket = null;
-    this.currentToken = "";
+    this.currentToken = typeof config.token === "string" ? config.token : "";
     this.identity = null;
     this.startedAtMs = null;
     this.stopRequested = false;

@@ -26,6 +26,7 @@ For dev-local swarm runs against a local worker, both sides need to run outside 
 
 - `pnpm dev:worker` may need unsandboxed execution because `pnpm dlx wrangler` resolves tooling over the network
 - `pnpm swarm:run` may need unsandboxed execution because local HTTP and websocket traffic to the dev worker can be blocked in the sandbox
+- `pnpm swarm:flags` may need unsandboxed execution because it repeatedly starts local Wrangler and then drives local HTTP/websocket traffic for each runtime-flag permutation
 - if either side is sandboxed, the run can fail before useful protocol activity begins:
   - share-link creation can fail
   - bots may never reach `hello`

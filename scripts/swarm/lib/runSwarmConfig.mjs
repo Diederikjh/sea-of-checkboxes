@@ -46,6 +46,7 @@ export function defaultRunSwarmConfig({
     reconnectDelayMs: 1_000,
     killAfterMs: 2_000,
     scenarioPool: defaultScenarioPool(),
+    botTokens: [],
     help: false,
   };
 }
@@ -61,6 +62,7 @@ export function parseRunSwarmArgs(argv, options = {}) {
   let coordinatorLogProvided = false;
   let summaryProvided = false;
   const scenarioPoolValues = [];
+  const botTokens = [];
   const args = [...argv];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -85,6 +87,15 @@ export function parseRunSwarmArgs(argv, options = {}) {
     }
     if (arg.startsWith("--app-url=")) {
       config.appUrl = arg.slice("--app-url=".length);
+      continue;
+    }
+    if (arg === "--bot-token") {
+      botTokens.push(argValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--bot-token=")) {
+      botTokens.push(arg.slice("--bot-token=".length));
       continue;
     }
     if (arg === "--run-id") {
@@ -251,6 +262,7 @@ export function parseRunSwarmArgs(argv, options = {}) {
     scenarioPoolValues.length > 0 ? scenarioPoolValues : config.scenarioPool,
     { random }
   );
+  config.botTokens = botTokens;
 
   return config;
 }
@@ -271,18 +283,21 @@ export function buildBotLaunchConfigs(config) {
     const scenarioId = assignment.scenarioId;
     const botOriginX = assignment.originX;
     const botOriginY = assignment.originY;
+    const botToken = config.botTokens[index] ?? "";
     bots.push({
       botId,
       scenarioId,
       readonly,
       originX: botOriginX,
       originY: botOriginY,
+      hasProvidedToken: botToken.length > 0,
       output: path.resolve(config.runDir, "bots", `${botId}.ndjson`),
       summaryOutput: path.resolve(config.runDir, "bots", `${botId}-summary.json`),
       args: [
         "scripts/swarm/swarm-bot.mjs",
         "--ws-url",
         config.wsUrl,
+        ...(botToken.length > 0 ? ["--token", botToken] : []),
         "--run-id",
         config.runId,
         "--bot-id",
@@ -332,6 +347,7 @@ export function writeRunConfig(config, botConfigs) {
       botId: bot.botId,
       scenarioId: bot.scenarioId,
       readonly: bot.readonly,
+      hasProvidedToken: bot.hasProvidedToken,
       originX: bot.originX,
       originY: bot.originY,
       output: bot.output,
@@ -351,6 +367,7 @@ Usage:
 Options:
   --ws-url <url>                WebSocket URL (default: SOC_SWARM_WS_URL or ws://127.0.0.1:8787/ws)
   --app-url <url>               Human-facing web app URL used to build the share link
+  --bot-token <token>           Provide an initial identity token for one bot (repeat in bot order)
   --run-id <id>                 Run identifier
   --run-dir <dir>               Run output directory
   --coordinator-log <file>      Coordinator log file

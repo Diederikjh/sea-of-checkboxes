@@ -181,6 +181,15 @@ describe("swarm bot config", () => {
     expect(config.readonly).toBe(true);
   });
 
+  it("accepts an explicit initial token for reconnect-safe authenticated runs", () => {
+    const config = parseSwarmBotArgs([
+      "--token",
+      "tok-seeded",
+    ]);
+
+    expect(config.token).toBe("tok-seeded");
+  });
+
   it("derives a stable client session id from run and bot ids", () => {
     const config = parseSwarmBotArgs([
       "--run-id",
@@ -343,6 +352,39 @@ describe("swarm bot session", () => {
       await session.stop("test_complete");
       await startPromise;
       expect(sockets[0].closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses the configured initial token on the first websocket connect", async () => {
+    vi.useFakeTimers();
+    try {
+      const logger = { log: vi.fn() };
+      const sockets = [];
+      const config = parseSwarmBotArgs([
+        "--token",
+        "tok-seeded",
+        "--duration-ms",
+        "10000",
+        "--setcell-interval-ms",
+        "0",
+      ]);
+      const session = new SwarmBotSession(config, {
+        logger,
+        wsFactory: (url) => {
+          const socket = new FakeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      const startPromise = session.start();
+      expect(sockets).toHaveLength(1);
+      expect(sockets[0].url).toContain("token=tok-seeded");
+
+      await session.stop("test_complete");
+      await startPromise;
     } finally {
       vi.useRealTimers();
     }
