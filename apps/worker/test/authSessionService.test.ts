@@ -122,6 +122,31 @@ describe("DefaultAuthSessionService", () => {
     expect(session.token).toMatch(/^v2\./);
   });
 
+  it("keeps existing anonymous identities working when anonymous bootstrap is disabled", async () => {
+    const links = new InMemoryLinkRepository();
+    links.byProvider.set("firebase:f_u1", {
+      identity: { uid: "u_saved123", name: "BriskOtter123", token: "" },
+      linkedAtMs: 10,
+      createdAtMs: 10,
+    });
+
+    const service = new DefaultAuthSessionService({
+      verifier: new StaticVerifier({ provider: "firebase", providerUserId: "f_u1", isAnonymous: true }),
+      links,
+      signingSecret: "test-secret",
+      allowAnonymousBootstrap: false,
+    });
+
+    const session = await service.createOrResumeSession({
+      assertion: { provider: "firebase", idToken: "id-token" },
+      nowMs: 100,
+    });
+
+    expect(session.uid).toBe("u_saved123");
+    expect(session.name).toBe("BriskOtter123");
+    expect(session.migration).toBe("none");
+  });
+
   it("links valid legacy token to first-time firebase user", async () => {
     const links = new InMemoryLinkRepository();
     const legacyToken = await createIdentityToken("u_legacy1", "MintFox001", "test-secret", 1_700_000_000_000);
@@ -161,6 +186,27 @@ describe("DefaultAuthSessionService", () => {
     expect(session.uid).toMatch(/^u_[0-9a-f]{8}$/);
     expect(session.name).toMatch(/^[A-Za-z]+\d{3}$/);
     expect(session.migration).toBe("provisioned");
+  });
+
+  it("rejects new anonymous bootstrap when anonymous access is disabled", async () => {
+    const links = new InMemoryLinkRepository();
+
+    const service = new DefaultAuthSessionService({
+      verifier: new StaticVerifier({ provider: "firebase", providerUserId: "f_new", isAnonymous: true }),
+      links,
+      signingSecret: "test-secret",
+      allowAnonymousBootstrap: false,
+    });
+
+    await expect(
+      service.createOrResumeSession({
+        assertion: { provider: "firebase", idToken: "id-token" },
+        nowMs: 1_700_000_001_000,
+      })
+    ).rejects.toMatchObject({
+      status: 403,
+      code: "anonymous_disabled",
+    });
   });
 
   it("falls back to provisioned identity when legacy app uid is already mapped to another provider user", async () => {

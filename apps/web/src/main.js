@@ -1,4 +1,9 @@
 import "./style.css";
-import { startApp } from "./app";
+import { bootstrapFrontend } from "./frontendBootstrap";
 
-startApp();
+void bootstrapFrontend().catch((error) => {
+  console.error(
+    "frontend_bootstrap_failed",
+    error instanceof Error ? error.message : String(error)
+  );
+});

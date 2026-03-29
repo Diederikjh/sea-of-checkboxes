@@ -35,6 +35,7 @@ export interface ConnectedClient {
 export interface ConnectionShardDOOperationsContext {
   clients: Map<string, ConnectedClient>;
   tileToClients: Map<string, Set<string>>;
+  readOnlyMode?: boolean;
   shardName(): string;
   sendServerMessage(client: ConnectedClient, message: ServerMessage): void;
   sendError(client: ConnectedClient, code: string, msg: string, fields?: Record<string, unknown>): void;
@@ -294,6 +295,16 @@ export async function handleSetCellMessage(
   if (!isValidTileKey(message.tile)) {
     context.sendBadTile(client, message.tile);
     return { accepted: false, changed: false, reason: "bad_tile" };
+  }
+
+  if (context.readOnlyMode === true) {
+    context.sendError(client, "app_readonly", "Writes are temporarily disabled", {
+      tile: message.tile,
+      i: message.i,
+      v: message.v,
+      op: message.op,
+    });
+    return { accepted: false, changed: false, reason: "app_readonly" };
   }
 
   if (!client.subscribed.has(message.tile)) {

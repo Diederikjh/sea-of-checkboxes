@@ -148,6 +148,11 @@ export function createHarness(options: { alarmMode?: AlarmMode; envOverrides?: P
     CONNECTION_SHARD: tileOwners,
     TILE_OWNER: tileOwners,
     CURSOR_HUB: cursorHub,
+    IDENTITY_SIGNING_SECRET: "test-shard-secret",
+    APP_DISABLED: "0",
+    READONLY_MODE: "0",
+    ANON_AUTH_ENABLED: "1",
+    SHARE_LINKS_ENABLED: "1",
     ...(options.envOverrides ?? {}),
   };
 
@@ -190,6 +195,11 @@ export function createRelayHarness(options: { alarmMode?: AlarmMode; envOverride
     CONNECTION_SHARD: connectionShards,
     TILE_OWNER: tileOwners,
     CURSOR_HUB: cursorHub,
+    IDENTITY_SIGNING_SECRET: "test-shard-secret",
+    APP_DISABLED: "0",
+    READONLY_MODE: "0",
+    ANON_AUTH_ENABLED: "1",
+    SHARE_LINKS_ENABLED: "1",
     ...(options.envOverrides ?? {}),
   };
 

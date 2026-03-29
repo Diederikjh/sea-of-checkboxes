@@ -20,11 +20,11 @@ import { FirebaseIdTokenVerifier } from "./auth/firebaseIdTokenVerifier";
 import { parseAuthSessionRequest } from "./auth/requestParsing";
 import {
   createIdentityToken,
-  resolveIdentitySigningSecret,
   verifyIdentityToken,
 } from "./identityToken";
 import { generateName, generateUid } from "./identityGenerator";
 import { shardNameForUid } from "./sharding";
+import { resolveWorkerRuntimeControls } from "./runtimeControls";
 const CELL_LAST_EDIT_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, OPTIONS",
@@ -83,13 +83,73 @@ function resolveClientSessionId(url: URL): string | undefined {
   return CLIENT_SESSION_ID_PATTERN.test(raw) ? raw : undefined;
 }
 
-async function resolveIdentity(url: URL, env: Env): Promise<ConnectionIdentity | null> {
+function serviceUnavailableResponse(reason: string): Response {
+  let message = "Service unavailable";
+  if (reason === "app_disabled") {
+    message = "Sea of Checkboxes is unavailable for now";
+  } else if (reason === "share_links_disabled") {
+    message = "Share links are disabled";
+  } else if (reason === "missing_identity_signing_secret") {
+    message = "Identity signing secret is missing";
+  }
+  return jsonResponse(
+    {
+      code: reason,
+      msg: message,
+    },
+    { status: 503 }
+  );
+}
+
+function healthResponse(reason: string | null): Response {
+  if (!reason) {
+    return jsonResponse({
+      ok: true,
+      ws: "/ws",
+    });
+  }
+
+  return jsonResponse(
+    {
+      ok: false,
+      available: false,
+      ws: "/ws",
+      reason,
+    },
+    { status: 503 }
+  );
+}
+
+function unavailableResponseForPath(pathname: string, reason: string): Response {
+  if (pathname === "/share-links" || pathname.startsWith("/share-links/")) {
+    return withShareLinkCors(serviceUnavailableResponse(reason));
+  }
+
+  if (pathname === "/auth/session") {
+    return withAuthSessionCors(serviceUnavailableResponse(reason));
+  }
+
+  if (pathname === "/cell-last-edit") {
+    return withCellLastEditCors(serviceUnavailableResponse(reason));
+  }
+
+  return serviceUnavailableResponse(reason);
+}
+
+async function resolveIdentity(
+  url: URL,
+  env: Env,
+  runtime: ReturnType<typeof resolveWorkerRuntimeControls>
+): Promise<ConnectionIdentity | null> {
   const requestedToken = url.searchParams.get("token")?.trim() ?? "";
   const clientSessionId = resolveClientSessionId(url);
-  const signingSecret = resolveIdentitySigningSecret(env);
+  const signingSecret = runtime.identitySigningSecret;
   const authMode = resolveAuthMode(env);
 
   if (requestedToken.length > 0) {
+    if (!signingSecret) {
+      return null;
+    }
     const verifiedIdentity = await verifyIdentityToken({
       token: requestedToken,
       secret: signingSecret,
@@ -105,7 +165,11 @@ async function resolveIdentity(url: URL, env: Env): Promise<ConnectionIdentity |
     }
   }
 
-  if (authMode === "firebase_only") {
+  if (authMode === "firebase_only" || !runtime.anonAuthEnabled) {
+    return null;
+  }
+
+  if (!signingSecret) {
     return null;
   }
 
@@ -255,15 +319,22 @@ function readBearerToken(request: Request): string {
   return authHeader.slice("bearer ".length).trim();
 }
 
-async function resolveShareCreatorUid(request: Request, env: Env): Promise<string | null> {
+async function resolveShareCreatorUid(
+  request: Request,
+  runtime: ReturnType<typeof resolveWorkerRuntimeControls>
+): Promise<string | null> {
   const token = readBearerToken(request);
   if (token.length === 0) {
     return null;
   }
 
+  if (!runtime.identitySigningSecret) {
+    return null;
+  }
+
   const claims = await verifyIdentityToken({
     token,
-    secret: resolveIdentitySigningSecret(env),
+    secret: runtime.identitySigningSecret,
   });
   return claims?.uid ?? null;
 }
@@ -288,7 +359,15 @@ function extractShareLinkId(pathname: string): string | null {
   return SHARE_LINK_UUID_PATTERN.test(decodedId) ? decodedId.toLowerCase() : null;
 }
 
-async function handleCreateShareLinkRequest(request: Request, env: Env): Promise<Response> {
+async function handleCreateShareLinkRequest(
+  request: Request,
+  env: Env,
+  runtime: ReturnType<typeof resolveWorkerRuntimeControls>
+): Promise<Response> {
+  if (!runtime.shareLinksEnabled) {
+    return withShareLinkCors(serviceUnavailableResponse("share_links_disabled"));
+  }
+
   const store = env.SHARE_LINKS;
   if (!store) {
     return withShareLinkCors(
@@ -316,7 +395,7 @@ async function handleCreateShareLinkRequest(request: Request, env: Env): Promise
     );
   }
 
-  const creatorUid = await resolveShareCreatorUid(request, env);
+  const creatorUid = await resolveShareCreatorUid(request, runtime);
   const id = crypto.randomUUID().toLowerCase();
   const nowMs = Date.now();
   const record: ShareLinkRecord = {
@@ -339,7 +418,15 @@ async function handleCreateShareLinkRequest(request: Request, env: Env): Promise
   );
 }
 
-async function handleGetShareLinkRequest(shareId: string, env: Env): Promise<Response> {
+async function handleGetShareLinkRequest(
+  shareId: string,
+  env: Env,
+  runtime: ReturnType<typeof resolveWorkerRuntimeControls>
+): Promise<Response> {
+  if (!runtime.shareLinksEnabled) {
+    return withShareLinkCors(serviceUnavailableResponse("share_links_disabled"));
+  }
+
   const store = env.SHARE_LINKS;
   if (!store) {
     return withShareLinkCors(
@@ -384,7 +471,11 @@ async function handleGetShareLinkRequest(shareId: string, env: Env): Promise<Res
   );
 }
 
-async function handleAuthSessionRequest(request: Request, env: Env): Promise<Response> {
+async function handleAuthSessionRequest(
+  request: Request,
+  env: Env,
+  runtime: ReturnType<typeof resolveWorkerRuntimeControls>
+): Promise<Response> {
   if (resolveAuthMode(env) === "legacy") {
     return withAuthSessionCors(new Response("Not found", { status: 404 }));
   }
@@ -450,7 +541,8 @@ async function handleAuthSessionRequest(request: Request, env: Env): Promise<Res
   const service = new DefaultAuthSessionService({
     verifier,
     links,
-    signingSecret: resolveIdentitySigningSecret(env),
+    signingSecret: runtime.identitySigningSecret ?? "",
+    allowAnonymousBootstrap: runtime.anonAuthEnabled,
   });
 
   try {
@@ -488,12 +580,14 @@ async function handleAuthSessionRequest(request: Request, env: Env): Promise<Res
 
 export async function handleWorkerFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const runtime = resolveWorkerRuntimeControls(env);
 
   if (url.pathname === "/health") {
-    return jsonResponse({
-      ok: true,
-      ws: "/ws",
-    });
+    return healthResponse(runtime.unavailableReason);
+  }
+
+  if (runtime.unavailableReason) {
+    return unavailableResponseForPath(url.pathname, runtime.unavailableReason);
   }
 
   if (url.pathname === "/cell-last-edit" && request.method === "GET") {
@@ -519,11 +613,13 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
   }
 
   if (url.pathname === "/share-links" && request.method === "POST") {
-    return handleCreateShareLinkRequest(request, env);
+    return handleCreateShareLinkRequest(request, env, runtime);
   }
 
   if (url.pathname === "/share-links" && request.method === "OPTIONS") {
-    return shareLinkCorsPreflightResponse();
+    return runtime.shareLinksEnabled
+      ? shareLinkCorsPreflightResponse()
+      : withShareLinkCors(serviceUnavailableResponse("share_links_disabled"));
   }
 
   if (url.pathname.startsWith("/share-links/") && request.method === "GET") {
@@ -539,15 +635,17 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
         )
       );
     }
-    return handleGetShareLinkRequest(shareId, env);
+    return handleGetShareLinkRequest(shareId, env, runtime);
   }
 
   if (url.pathname.startsWith("/share-links/") && request.method === "OPTIONS") {
-    return shareLinkCorsPreflightResponse();
+    return runtime.shareLinksEnabled
+      ? shareLinkCorsPreflightResponse()
+      : withShareLinkCors(serviceUnavailableResponse("share_links_disabled"));
   }
 
   if (url.pathname === "/auth/session" && request.method === "POST") {
-    return handleAuthSessionRequest(request, env);
+    return handleAuthSessionRequest(request, env, runtime);
   }
 
   if (url.pathname === "/auth/session" && request.method === "OPTIONS") {
@@ -572,7 +670,7 @@ export async function handleWorkerFetch(request: Request, env: Env): Promise<Res
     return new Response("Expected websocket upgrade", { status: 426 });
   }
 
-  const identity = await resolveIdentity(url, env);
+  const identity = await resolveIdentity(url, env, runtime);
   if (!identity) {
     return new Response("Missing valid auth token", { status: 401 });
   }

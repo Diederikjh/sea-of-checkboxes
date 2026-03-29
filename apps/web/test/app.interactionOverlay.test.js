@@ -15,6 +15,12 @@ const mocks = vi.hoisted(() => ({
   forceSubscriptionRebuild: vi.fn(),
   markTransportReconnected: vi.fn(),
   rebuildCounter: 0,
+  resolveFirebaseConfigFromEnv: vi.fn(() => null),
+  createFirebaseAuthIdentityProvider: vi.fn(),
+  createAuthSessionExchangeClient: vi.fn(),
+  readShareIdFromLocation: vi.fn(() => null),
+  resolveSharedCamera: vi.fn(),
+  createShareLink: vi.fn(),
 }));
 
 vi.mock("pixi.js", () => ({
@@ -152,8 +158,18 @@ vi.mock("../src/transportConfig", () => ({
 }));
 
 vi.mock("../src/auth/firebaseAuthProvider", () => ({
-  resolveFirebaseConfigFromEnv: () => null,
-  createFirebaseAuthIdentityProvider: vi.fn(),
+  resolveFirebaseConfigFromEnv: mocks.resolveFirebaseConfigFromEnv,
+  createFirebaseAuthIdentityProvider: mocks.createFirebaseAuthIdentityProvider,
+}));
+
+vi.mock("../src/auth/sessionExchangeClient", () => ({
+  createAuthSessionExchangeClient: mocks.createAuthSessionExchangeClient,
+}));
+
+vi.mock("../src/shareLinks", () => ({
+  createShareLink: mocks.createShareLink,
+  readShareIdFromLocation: mocks.readShareIdFromLocation,
+  resolveSharedCamera: mocks.resolveSharedCamera,
 }));
 
 vi.mock("../src/wireTransport", () => ({
@@ -192,6 +208,24 @@ function createRequiredElements() {
     inspectLabelEl: { textContent: "" },
     editInfoPopupEl: {},
     offlineBannerEl: { hidden: true, textContent: "" },
+    shareButtonEl: {
+      hidden: false,
+      disabled: false,
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    authGoogleSignInButtonEl: {
+      hidden: false,
+      disabled: false,
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    authGoogleLogoutButtonEl: {
+      hidden: false,
+      disabled: false,
+      addEventListener() {},
+      removeEventListener() {},
+    },
   };
 }
 
@@ -210,6 +244,14 @@ describe("app interaction overlays", () => {
     mocks.rebuildCounter = 0;
     mocks.markTransportReconnected.mockReset();
     mocks.forceSubscriptionRebuild.mockReset();
+    mocks.resolveFirebaseConfigFromEnv.mockReset();
+    mocks.resolveFirebaseConfigFromEnv.mockReturnValue(null);
+    mocks.createFirebaseAuthIdentityProvider.mockReset();
+    mocks.createAuthSessionExchangeClient.mockReset();
+    mocks.readShareIdFromLocation.mockReset();
+    mocks.resolveSharedCamera.mockReset();
+    mocks.createShareLink.mockReset();
+    mocks.readShareIdFromLocation.mockReturnValue(null);
     mocks.windowAddEventListener.mockClear();
     mocks.windowRemoveEventListener.mockClear();
     mocks.documentAddEventListener.mockClear();
@@ -520,6 +562,61 @@ describe("app interaction overlays", () => {
 
     vi.advanceTimersByTime(1);
     expect(offlineBannerEl.hidden).toBe(false);
+
+    teardown();
+  });
+
+  it("skips auth bootstrap and share resolution when disabled flags are set", async () => {
+    mocks.readShareIdFromLocation.mockReturnValue("f7d8a15e-14f6-4b3b-8d4a-ff8e51d4e425");
+
+    const teardown = await startApp({
+      runtimeFlags: {
+        appDisabled: false,
+        shareLinksEnabled: false,
+        anonAuthEnabled: false,
+      },
+    });
+
+    expect(mocks.createFirebaseAuthIdentityProvider).not.toHaveBeenCalled();
+    expect(mocks.createAuthSessionExchangeClient).not.toHaveBeenCalled();
+    expect(mocks.resolveSharedCamera).not.toHaveBeenCalled();
+    expect(mocks.requiredElements.shareButtonEl.hidden).toBe(true);
+    expect(mocks.requiredElements.shareButtonEl.disabled).toBe(true);
+    expect(mocks.requiredElements.statusEl.textContent).toBe("Share links are disabled right now.");
+
+    teardown();
+  });
+
+  it("keeps Google sign-in available when anonymous bootstrap is disabled", async () => {
+    mocks.resolveFirebaseConfigFromEnv.mockReturnValue({
+      apiKey: "key",
+      authDomain: "example.firebaseapp.com",
+      projectId: "project",
+      appId: "app",
+    });
+    mocks.createFirebaseAuthIdentityProvider.mockReturnValue({
+      initAnonymousSession: vi.fn(),
+      getAssertionToken: vi.fn(),
+      linkGoogle: vi.fn(),
+      unlinkGoogle: vi.fn(),
+      signOut: vi.fn(),
+    });
+    mocks.createAuthSessionExchangeClient.mockReturnValue({
+      exchange: vi.fn(),
+    });
+
+    const teardown = await startApp({
+      runtimeFlags: {
+        appDisabled: false,
+        shareLinksEnabled: true,
+        anonAuthEnabled: false,
+      },
+    });
+
+    expect(mocks.createFirebaseAuthIdentityProvider).toHaveBeenCalledTimes(1);
+    expect(mocks.createAuthSessionExchangeClient).toHaveBeenCalledTimes(1);
+    expect(mocks.requiredElements.authGoogleSignInButtonEl.hidden).toBe(false);
+    expect(mocks.requiredElements.authGoogleLogoutButtonEl.hidden).toBe(true);
 
     teardown();
   });

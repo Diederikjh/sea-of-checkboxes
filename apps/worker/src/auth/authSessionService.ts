@@ -23,15 +23,18 @@ export class DefaultAuthSessionService implements AuthSessionService {
   #verifier: ExternalIdentityVerifier;
   #links: AccountLinkRepository;
   #signingSecret: string;
+  #allowAnonymousBootstrap: boolean;
 
   constructor(options: {
     verifier: ExternalIdentityVerifier;
     links: AccountLinkRepository;
     signingSecret: string;
+    allowAnonymousBootstrap?: boolean;
   }) {
     this.#verifier = options.verifier;
     this.#links = options.links;
     this.#signingSecret = options.signingSecret;
+    this.#allowAnonymousBootstrap = options.allowAnonymousBootstrap ?? true;
   }
 
   async createOrResumeSession(params: {
@@ -89,6 +92,9 @@ export class DefaultAuthSessionService implements AuthSessionService {
     }
 
     const legacyIdentity = await this.#resolveLegacyIdentity(params.legacyToken, nowMs);
+    if (verified.isAnonymous && !this.#allowAnonymousBootstrap && !legacyIdentity) {
+      throw new AuthSessionServiceError(403, "anonymous_disabled", "Anonymous access is disabled");
+    }
     const identity: ConnectionIdentity = legacyIdentity ?? {
       uid: generateUid(),
       name: generateName(),

@@ -75,6 +75,10 @@ function createEnv() {
     TILE_OWNER: tileOwner,
     SHARE_LINKS: shareLinks,
     IDENTITY_SIGNING_SECRET: identitySigningSecret,
+    APP_DISABLED: "0",
+    READONLY_MODE: "0",
+    ANON_AUTH_ENABLED: "1",
+    SHARE_LINKS_ENABLED: "1",
   };
   return {
     env,
@@ -96,6 +100,56 @@ describe("top-level worker fetch routing", () => {
       ok: true,
       ws: "/ws",
     });
+  });
+
+  it("reports unavailable health and blocks public routes when app disabled", async () => {
+    const { env, connectionShard } = createEnv();
+    env.APP_DISABLED = "1";
+
+    const health = await handleWorkerFetch(workerRequest("/health"), env);
+    expect(health.status).toBe(503);
+    await expect(health.json()).resolves.toEqual({
+      ok: false,
+      available: false,
+      ws: "/ws",
+      reason: "app_disabled",
+    });
+
+    const websocket = await handleWorkerFetch(
+      workerRequest("/ws", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+    expect(websocket.status).toBe(503);
+    expect(connectionShard.requestedNames.length).toBe(0);
+  });
+
+  it("reports unavailable health and blocks traffic when the identity secret is missing", async () => {
+    const { env, connectionShard } = createEnv();
+    delete env.IDENTITY_SIGNING_SECRET;
+
+    const health = await handleWorkerFetch(workerRequest("/health"), env);
+    expect(health.status).toBe(503);
+    await expect(health.json()).resolves.toEqual({
+      ok: false,
+      available: false,
+      ws: "/ws",
+      reason: "missing_identity_signing_secret",
+    });
+
+    const websocket = await handleWorkerFetch(
+      workerRequest("/ws", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+    expect(websocket.status).toBe(503);
+    expect(connectionShard.requestedNames.length).toBe(0);
   });
 
   it("returns 404 for unknown paths", async () => {
@@ -322,6 +376,35 @@ describe("top-level worker fetch routing", () => {
     expect(missing.headers.get("access-control-allow-origin")).toBe("*");
   });
 
+  it("returns 503 for share-link routes when share links are disabled", async () => {
+    const { env } = createEnv();
+    env.SHARE_LINKS_ENABLED = "0";
+
+    const createResponse = await handleWorkerFetch(
+      workerRequest("/share-links", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          x: 1,
+          y: 2,
+          zoom: 3,
+        }),
+      }),
+      env
+    );
+    expect(createResponse.status).toBe(503);
+    expect(createResponse.headers.get("access-control-allow-origin")).toBe("*");
+
+    const readResponse = await handleWorkerFetch(
+      workerRequest("/share-links/00000000-0000-4000-8000-000000000000"),
+      env
+    );
+    expect(readResponse.status).toBe(503);
+    expect(readResponse.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
   it("rejects /ws when upgrade header is missing", async () => {
     const { env } = createEnv();
     const response = await handleWorkerFetch(workerRequest("/ws"), env);
@@ -407,6 +490,40 @@ describe("top-level worker fetch routing", () => {
 
     const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
     expect(forwardedUrl.searchParams.get("clientSessionId")).toBe("web_session_1");
+  });
+
+  it("rejects websocket bootstrap without anonymous minting when anon auth is disabled", async () => {
+    const { env, connectionShard } = createEnv();
+    env.ANON_AUTH_ENABLED = "0";
+
+    const response = await handleWorkerFetch(
+      workerRequest("/ws", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(401);
+    expect(connectionShard.requestedNames.length).toBe(0);
+  });
+
+  it("preserves firebase_only mode by rejecting websocket bootstrap without a valid token", async () => {
+    const { env, connectionShard } = createEnv();
+    env.AUTH_MODE = "firebase_only";
+
+    const response = await handleWorkerFetch(
+      workerRequest("/ws", {
+        headers: {
+          upgrade: "websocket",
+        },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(401);
+    expect(connectionShard.requestedNames.length).toBe(0);
   });
 
   it("reuses identity from a valid signed token", async () => {

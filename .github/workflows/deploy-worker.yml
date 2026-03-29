@@ -27,6 +27,10 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      APP_DISABLED: ${{ vars.APP_DISABLED || '0' }}
+      READONLY_MODE: ${{ vars.READONLY_MODE || '0' }}
+      ANON_AUTH_ENABLED: ${{ vars.ANON_AUTH_ENABLED || '1' }}
+      SHARE_LINKS_ENABLED: ${{ vars.SHARE_LINKS_ENABLED || '1' }}
 
     steps:
       - name: Checkout
@@ -57,5 +61,42 @@ jobs:
             exit 1
           fi
 
+      - name: Validate worker feature flags
+        run: |
+          case "${APP_DISABLED}" in
+            0|1) ;;
+            *)
+              echo "Invalid repo variable: APP_DISABLED (expected 0 or 1)"
+              exit 1
+              ;;
+          esac
+          case "${READONLY_MODE}" in
+            0|1) ;;
+            *)
+              echo "Invalid repo variable: READONLY_MODE (expected 0 or 1)"
+              exit 1
+              ;;
+          esac
+          case "${ANON_AUTH_ENABLED}" in
+            0|1) ;;
+            *)
+              echo "Invalid repo variable: ANON_AUTH_ENABLED (expected 0 or 1)"
+              exit 1
+              ;;
+          esac
+          case "${SHARE_LINKS_ENABLED}" in
+            0|1) ;;
+            *)
+              echo "Invalid repo variable: SHARE_LINKS_ENABLED (expected 0 or 1)"
+              exit 1
+              ;;
+          esac
+
       - name: Deploy worker
-        run: pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc --var FIREBASE_PROJECT_ID:${FIREBASE_PROJECT_ID}
+        run: >
+          pnpm dlx wrangler deploy --config apps/worker/wrangler.jsonc
+          --var FIREBASE_PROJECT_ID:${FIREBASE_PROJECT_ID}
+          --var APP_DISABLED:${APP_DISABLED}
+          --var READONLY_MODE:${READONLY_MODE}
+          --var ANON_AUTH_ENABLED:${ANON_AUTH_ENABLED}
+          --var SHARE_LINKS_ENABLED:${SHARE_LINKS_ENABLED}

@@ -4,8 +4,6 @@ import type { Env } from "./doCommon";
 const TOKEN_VERSION = "v2";
 const TOKEN_SEPARATOR = ".";
 const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
-// Development fallback only. Production must provide IDENTITY_SIGNING_SECRET.
-const DEV_IDENTITY_SIGNING_SECRET = "dev-sea-identity-signing-secret-change-before-prod";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -110,6 +108,10 @@ function parseToken(token: string): TokenParts | null {
 }
 
 async function importHmacKey(secret: string, usages: KeyUsage[]): Promise<CryptoKey> {
+  if (secret.trim().length === 0) {
+    throw new Error("Missing identity signing secret");
+  }
+
   return crypto.subtle.importKey(
     "raw",
     textEncoder.encode(secret),
@@ -145,7 +147,7 @@ function buildPayload(uid: string, name: string, exp: number): string {
 
 export function resolveIdentitySigningSecret(env: Env): string {
   const secret = typeof env.IDENTITY_SIGNING_SECRET === "string" ? env.IDENTITY_SIGNING_SECRET.trim() : "";
-  return secret.length > 0 ? secret : DEV_IDENTITY_SIGNING_SECRET;
+  return secret.length > 0 ? secret : "";
 }
 
 export async function createIdentityToken(
@@ -172,6 +174,10 @@ export async function verifyIdentityToken(params: {
 
   const payloadBytes = fromBase64Url(parsed.payload);
   if (!payloadBytes) {
+    return null;
+  }
+
+  if (params.secret.trim().length === 0) {
     return null;
   }
 

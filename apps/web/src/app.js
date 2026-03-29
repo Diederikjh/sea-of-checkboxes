@@ -50,6 +50,7 @@ import { TileStore } from "./tileStore";
 import { resolveApiBaseUrl } from "./transportConfig";
 import { createWireTransport } from "./wireTransport";
 import { CURSOR_TTL_MS } from "./cursorRenderConfig";
+import { resolveFrontendRuntimeFlags } from "./runtimeFlags";
 import {
   cursorWorldPosition,
   isScreenPointInViewport,
@@ -185,7 +186,13 @@ function deriveBoardCoordFromSetCell(tileKey, index) {
   }
 }
 
-export async function startApp() {
+export async function startApp({
+  runtimeFlags = resolveFrontendRuntimeFlags(),
+} = {}) {
+  if (runtimeFlags.appDisabled) {
+    return () => {};
+  }
+
   const {
     canvas,
     identityEl,
@@ -218,6 +225,8 @@ export async function startApp() {
   const nextClientMessageId = createClientMessageIdFactory();
   const clientSessionId = resolveClientSessionId();
   logOther("client_session", { clientSessionId });
+  const shareLinksEnabled = runtimeFlags.shareLinksEnabled;
+  const anonAuthEnabled = runtimeFlags.anonAuthEnabled;
 
   const app = new Application({
     view: canvas,
@@ -236,7 +245,9 @@ export async function startApp() {
   const heatStore = new HeatStore();
   const apiBaseUrl = resolveApiBaseUrl();
   const shareId = readShareIdFromLocation();
-  const sharedCamera = shareId
+  const shareLinksDisabledMessage =
+    shareId && !shareLinksEnabled ? "Share links are disabled right now." : null;
+  const sharedCamera = shareLinksEnabled && shareId
     ? await resolveSharedCamera({
         apiBaseUrl,
         shareId,
@@ -266,7 +277,7 @@ export async function startApp() {
     : null;
   let authPrincipal = null;
 
-  if (authIdentityProvider && authSessionExchangeClient) {
+  if (authIdentityProvider && authSessionExchangeClient && anonAuthEnabled) {
     setStatus("Signing in...");
     try {
       const bootstrap = await bootstrapAuthSession({
@@ -296,19 +307,33 @@ export async function startApp() {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  } else if (!anonAuthEnabled) {
+    const storedIdentity = readStoredIdentity();
+    if (!storedIdentity && !shareId) {
+      setStatus("Anonymous access is disabled right now.");
+    }
+  }
+
+  if (shareLinksDisabledMessage) {
+    setStatus(shareLinksDisabledMessage);
   }
 
   if (authGoogleSignInButtonEl) {
     authGoogleSignInButtonEl.hidden =
       !authIdentityProvider ||
       !authSessionExchangeClient ||
-      (authPrincipal ? authPrincipal.isAnonymous === false : true);
+      (anonAuthEnabled ? (authPrincipal ? authPrincipal.isAnonymous === false : true) : false);
   }
   if (authGoogleLogoutButtonEl) {
     authGoogleLogoutButtonEl.hidden =
       !authIdentityProvider ||
       !authSessionExchangeClient ||
+      !anonAuthEnabled ||
       (authPrincipal ? authPrincipal.isAnonymous === true : true);
+  }
+  if (shareButtonEl) {
+    shareButtonEl.hidden = !shareLinksEnabled;
+    shareButtonEl.disabled = !shareLinksEnabled;
   }
   const perfProbe = createPerfProbe({
     enabled: isPerfProbeEnabled(),
@@ -751,6 +776,10 @@ export async function startApp() {
     }
   };
   const onShareButtonClick = async () => {
+    if (!shareLinksEnabled) {
+      setStatus("Share links are disabled right now.");
+      return;
+    }
     if (shareCreateInFlight) {
       return;
     }

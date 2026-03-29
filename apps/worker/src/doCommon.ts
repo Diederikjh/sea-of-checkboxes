@@ -57,6 +57,10 @@ export interface Env {
   IDENTITY_SIGNING_SECRET?: string;
   FIREBASE_PROJECT_ID?: string;
   AUTH_MODE?: string;
+  APP_DISABLED?: string;
+  READONLY_MODE?: string;
+  ANON_AUTH_ENABLED?: string;
+  SHARE_LINKS_ENABLED?: string;
   WS_DISABLED?: string;
   WORKER_LOG_MODE?: string;
   EXTERNAL_IDENTITY_VERIFIER?: ExternalIdentityVerifier;

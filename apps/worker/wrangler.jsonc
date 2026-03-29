@@ -62,6 +62,10 @@
 		}
 	],
 	"vars": {
+		"APP_DISABLED": "0",
+		"READONLY_MODE": "0",
+		"ANON_AUTH_ENABLED": "1",
+		"SHARE_LINKS_ENABLED": "1",
 		"AUTH_MODE": "hybrid",
 		"WS_DISABLED": "0",
 		"WORKER_LOG_MODE": "reduced"

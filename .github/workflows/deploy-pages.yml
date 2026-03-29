@@ -30,6 +30,9 @@ jobs:
       VITE_WS_URL: ${{ vars.VITE_WS_URL }}
       VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
       VITE_USE_MOCK: ${{ vars.VITE_USE_MOCK }}
+      VITE_APP_DISABLED: ${{ vars.VITE_APP_DISABLED || '0' }}
+      VITE_SHARE_LINKS_ENABLED: ${{ vars.VITE_SHARE_LINKS_ENABLED || '1' }}
+      VITE_ANON_AUTH_ENABLED: ${{ vars.VITE_ANON_AUTH_ENABLED || '1' }}
       VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
       VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
       VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
@@ -77,9 +80,35 @@ jobs:
             echo "Missing repo variable: VITE_FIREBASE_APP_ID"
             exit 1
           fi
+          case "${VITE_APP_DISABLED}" in
+            0|1) ;;
+            *)
+              echo "Invalid repo variable: VITE_APP_DISABLED (expected 0 or 1)"
+              exit 1
+              ;;
+          esac
+          case "${VITE_SHARE_LINKS_ENABLED}" in
+            0|1) ;;
+            *)
+              echo "Invalid repo variable: VITE_SHARE_LINKS_ENABLED (expected 0 or 1)"
+              exit 1
+              ;;
+          esac
+          case "${VITE_ANON_AUTH_ENABLED}" in
+            0|1) ;;
+            *)
+              echo "Invalid repo variable: VITE_ANON_AUTH_ENABLED (expected 0 or 1)"
+              exit 1
+              ;;
+          esac
 
       - name: Build web app
-        run: VITE_USE_MOCK="${VITE_USE_MOCK:-0}" pnpm --filter sea-of-checkboxes build
+        run: >
+          VITE_USE_MOCK="${VITE_USE_MOCK:-0}"
+          VITE_APP_DISABLED="${VITE_APP_DISABLED}"
+          VITE_SHARE_LINKS_ENABLED="${VITE_SHARE_LINKS_ENABLED}"
+          VITE_ANON_AUTH_ENABLED="${VITE_ANON_AUTH_ENABLED}"
+          pnpm --filter sea-of-checkboxes build
 
       - name: Deploy Pages
         run: |

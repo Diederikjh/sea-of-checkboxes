@@ -163,6 +163,43 @@ describe("ConnectionShardDO websocket handling", () => {
     expect(tileStub.setCellRequests.length).toBe(0);
   });
 
+  it("rejects setCell with app_readonly when read-only mode is enabled", async () => {
+    const harness = createHarness({
+      envOverrides: {
+        READONLY_MODE: "1",
+      },
+    });
+    const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    serverSocket.emitMessage(encodeClientMessageBinary({ t: "sub", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const tileStub = harness.tileOwners.getByName("0:0");
+      expect(tileStub.watchRequests.length).toBe(1);
+    });
+
+    serverSocket.emitMessage(
+      encodeClientMessageBinary({
+        t: "setCell",
+        tile: "0:0",
+        i: 22,
+        v: 1,
+        op: "op_readonly",
+      })
+    );
+
+    await waitFor(() => {
+      const messages = decodeMessages(serverSocket);
+      expect(messages.some((message) => message.t === "err" && message.code === "app_readonly")).toBe(true);
+    });
+
+    const tileStub = harness.tileOwners.getByName("0:0");
+    expect(tileStub.setCellRequests.length).toBe(0);
+  });
+
   it("publishes accepted edit activity to cursor hub for spawn sampling", async () => {
     const harness = createHarness();
     const serverSocket = await connectClient(harness.shard, harness.socketPairFactory, {

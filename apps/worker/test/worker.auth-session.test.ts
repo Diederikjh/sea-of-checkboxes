@@ -47,6 +47,14 @@ class AccountLinkDurableObjectStub {
     this.#uidToProvider = new Map();
   }
 
+  seedProviderRecord(
+    providerUserId: string,
+    record: { uid: string; name: string; linkedAtMs: number; createdAtMs: number }
+  ): void {
+    this.#providerToRecord.set(`firebase:${providerUserId}`, record);
+    this.#uidToProvider.set(record.uid, providerUserId);
+  }
+
   async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
     const request = typeof input === "string" ? new Request(input, init) : input;
     const body = await request.text();
@@ -203,10 +211,15 @@ function createEnv() {
       TILE_OWNER: tileOwner,
       ACCOUNT_LINK: accountLink,
       IDENTITY_SIGNING_SECRET: identitySigningSecret,
+      APP_DISABLED: "0",
+      READONLY_MODE: "0",
+      ANON_AUTH_ENABLED: "1",
+      SHARE_LINKS_ENABLED: "1",
       AUTH_MODE: "hybrid",
       EXTERNAL_IDENTITY_VERIFIER: new StaticFirebaseVerifier(),
     },
     connectionShard,
+    accountLink,
     identitySigningSecret,
   };
 }
@@ -239,6 +252,67 @@ describe("worker auth session endpoint", () => {
       uid: "u_saved123",
       name: "BriskOtter481",
       migration: "linked_legacy",
+    });
+  });
+
+  it("keeps existing anonymous identities working when anonymous bootstrap is disabled", async () => {
+    const { env, accountLink } = createEnv();
+    env.ANON_AUTH_ENABLED = "0";
+    const stub = accountLink.getByName("global") as AccountLinkDurableObjectStub;
+    stub.seedProviderRecord("firebase-existing", {
+      uid: "u_existing123",
+      name: "BriskOtter123",
+      linkedAtMs: 10,
+      createdAtMs: 10,
+    });
+
+    const response = await handleWorkerFetch(
+      workerRequest("/auth/session", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          assertion: {
+            provider: "firebase",
+            idToken: "token-existing",
+          },
+        }),
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      uid: "u_existing123",
+      name: "BriskOtter123",
+      migration: "none",
+    });
+  });
+
+  it("rejects brand new anonymous bootstrap when anonymous access is disabled", async () => {
+    const { env } = createEnv();
+    env.ANON_AUTH_ENABLED = "0";
+
+    const response = await handleWorkerFetch(
+      workerRequest("/auth/session", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          assertion: {
+            provider: "firebase",
+            idToken: "token-new",
+          },
+        }),
+      }),
+      env
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "anonymous_disabled",
     });
   });
 

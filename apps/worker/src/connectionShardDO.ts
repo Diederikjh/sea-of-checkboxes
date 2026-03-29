@@ -30,6 +30,7 @@ import {
   type WebSocketUpgradeResponseFactory,
 } from "./socketPair";
 import { elapsedMs, logStructuredEvent } from "./observability";
+import { resolveWorkerRuntimeControls } from "./runtimeControls";
 
 const CURSOR_HUB_NAME = "global";
 
@@ -146,6 +147,11 @@ export class ConnectionShardDO {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const runtime = resolveWorkerRuntimeControls(this.#env);
+
+    if (runtime.unavailableReason) {
+      return new Response("Service unavailable", { status: 503 });
+    }
 
     if (url.pathname === "/ws") {
       return this.#sessionHost.handleWebSocketConnect(request, url, (shardName) => {
@@ -334,9 +340,11 @@ export class ConnectionShardDO {
   }
 
   #operationsContext(): ConnectionShardDOOperationsContext {
+    const runtime = resolveWorkerRuntimeControls(this.#env);
     return {
       clients: this.#clients,
       tileToClients: this.#tileToClients,
+      ...(runtime.readOnlyMode ? { readOnlyMode: true } : {}),
       shardName: () => this.#currentShardName(),
       sendServerMessage: (client, message) => {
         this.#sendServerMessage(client, message);
