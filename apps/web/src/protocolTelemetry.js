@@ -63,10 +63,11 @@ export function summarizeMessage(message) {
   switch (message.t) {
     case "sub":
     case "unsub":
-      return { t: message.t, tiles: message.tiles.length };
+      return { t: message.t, cid: message.cid ?? null, tiles: message.tiles.length };
     case "setCell":
       return {
         t: message.t,
+        cid: message.cid ?? null,
         tile: message.tile,
         i: message.i,
         v: message.v,
@@ -74,7 +75,7 @@ export function summarizeMessage(message) {
         ...deriveBoardCoordFromSetCell(message.tile, message.i),
       };
     case "resyncTile":
-      return { t: message.t, tile: message.tile, haveVer: message.haveVer };
+      return { t: message.t, cid: message.cid ?? null, tile: message.tile, haveVer: message.haveVer };
     case "cur":
       return summarizeCursor(message);
     case "hello":
@@ -96,10 +97,19 @@ export function summarizeMessage(message) {
       return {
         uid: message.uid,
         name: message.name,
+        ver: message.ver,
         ...summarizeCursor(message),
       };
     case "err":
       return { t: message.t, code: message.code };
+    case "subAck":
+      return {
+        t: message.t,
+        cid: message.cid,
+        requestedCount: message.requestedCount,
+        changedCount: message.changedCount,
+        subscribedCount: message.subscribedCount,
+      };
     default:
       return { t: message.t };
   }

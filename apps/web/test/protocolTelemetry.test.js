@@ -17,6 +17,7 @@ describe("protocolTelemetry", () => {
   it("summarizes setCell with derived board coordinates for valid tile/index", () => {
     const summary = summarizeMessage({
       t: "setCell",
+      cid: "c_123",
       tile: "2:3",
       i: 65,
       v: 1,
@@ -25,6 +26,7 @@ describe("protocolTelemetry", () => {
 
     expect(summary).toMatchObject({
       t: "setCell",
+      cid: "c_123",
       tile: "2:3",
       i: 65,
       v: 1,
@@ -39,6 +41,7 @@ describe("protocolTelemetry", () => {
   it("summarizes setCell without board coordinates when tile key is invalid", () => {
     const summary = summarizeMessage({
       t: "setCell",
+      cid: "c_bad",
       tile: "bad_tile",
       i: 0,
       v: 1,
@@ -47,6 +50,7 @@ describe("protocolTelemetry", () => {
 
     expect(summary).toEqual({
       t: "setCell",
+      cid: "c_bad",
       tile: "bad_tile",
       i: 0,
       v: 1,
@@ -78,6 +82,7 @@ describe("protocolTelemetry", () => {
       t: "curUp",
       uid: "u_1",
       name: "BlueOtter001",
+      ver: 7,
       x: 1.234,
       y: 9.876,
     });
@@ -85,11 +90,52 @@ describe("protocolTelemetry", () => {
     expect(summary).toEqual({
       uid: "u_1",
       name: "BlueOtter001",
+      ver: 7,
       t: "curUp",
       x: 1.23,
       y: 9.88,
       boardX: 1.23,
       boardY: 9.88,
+    });
+  });
+
+  it("summarizes subscription messages with client ids", () => {
+    expect(summarizeMessage({
+      t: "sub",
+      cid: "c_sub",
+      tiles: ["0:0", "1:0"],
+    })).toEqual({
+      t: "sub",
+      cid: "c_sub",
+      tiles: 2,
+    });
+
+    expect(summarizeMessage({
+      t: "resyncTile",
+      cid: "c_resync",
+      tile: "0:0",
+      haveVer: 12,
+    })).toEqual({
+      t: "resyncTile",
+      cid: "c_resync",
+      tile: "0:0",
+      haveVer: 12,
+    });
+  });
+
+  it("summarizes subAck details for subscription rebuild tracing", () => {
+    expect(summarizeMessage({
+      t: "subAck",
+      cid: "c_ack",
+      requestedCount: 8,
+      changedCount: 3,
+      subscribedCount: 10,
+    })).toEqual({
+      t: "subAck",
+      cid: "c_ack",
+      requestedCount: 8,
+      changedCount: 3,
+      subscribedCount: 10,
     });
   });
 });
