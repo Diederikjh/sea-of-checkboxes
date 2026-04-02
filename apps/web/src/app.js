@@ -3,10 +3,6 @@ import {
   Graphics,
 } from "pixi.js";
 import {
-  parseTileKeyStrict,
-  worldFromTileCell,
-} from "@sea/domain";
-import {
   decodeServerMessageBinary,
   encodeClientMessageBinary,
 } from "@sea/protocol";
@@ -20,11 +16,16 @@ import { readStoredIdentity, writeStoredIdentity } from "./identityStore";
 import { logger } from "./logger";
 import { PERF_COUNTER, PERF_TIMING } from "./perfMetricKeys";
 import { createPerfProbe, isPerfProbeEnabled } from "./perfProbe";
+import { createEnvironmentObservers } from "./environmentObservers";
 import { createServerMessageHandler } from "./serverMessages";
 import { createSetCellOutboxSync } from "./setCellOutboxSync";
+import { createRecoveryRuntime } from "./recoveryRuntime";
 import { createRenderLoop } from "./renderLoop";
 import { TileStore } from "./tileStore";
+import { describePayload, summarizeMessage } from "./protocolTelemetry";
+import { createTransportRuntime } from "./transportRuntime";
 import { resolveApiBaseUrl } from "./transportConfig";
+import { createUiRuntime } from "./uiRuntime";
 import { createWireTransport } from "./wireTransport";
 import { CURSOR_TTL_MS } from "./cursorRenderConfig";
 import {
@@ -34,108 +35,6 @@ import {
 } from "./cursorGeometry";
 
 const CURSOR_VIEWPORT_MARGIN_PX = 24;
-
-function formatByteCount(bytes) {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  return `${(bytes / 1024).toFixed(2)} KiB`;
-}
-
-function payloadHeadHex(payload, maxBytes = 8) {
-  const head = Array.from(payload.slice(0, maxBytes));
-  return head.map((value) => value.toString(16).padStart(2, "0")).join(" ");
-}
-
-function describePayload(payload) {
-  return {
-    bytes: payload.length,
-    size: formatByteCount(payload.length),
-    tag: payload[0] ?? null,
-    headHex: payloadHeadHex(payload),
-  };
-}
-
-function round2(value) {
-  return Number(value.toFixed(2));
-}
-
-function summarizeCursor(message) {
-  const x = round2(message.x);
-  const y = round2(message.y);
-  return {
-    t: message.t,
-    x,
-    y,
-    boardX: x,
-    boardY: y,
-  };
-}
-
-function summarizeMessage(message) {
-  switch (message.t) {
-    case "sub":
-    case "unsub":
-      return { t: message.t, tiles: message.tiles.length };
-    case "setCell":
-      return {
-        t: message.t,
-        tile: message.tile,
-        i: message.i,
-        v: message.v,
-        op: message.op,
-        ...deriveBoardCoordFromSetCell(message.tile, message.i),
-      };
-    case "resyncTile":
-      return { t: message.t, tile: message.tile, haveVer: message.haveVer };
-    case "cur":
-      return summarizeCursor(message);
-    case "hello":
-      return { t: message.t, uid: message.uid, name: message.name };
-    case "tileSnap":
-      return { t: message.t, tile: message.tile, ver: message.ver };
-    case "cellUp":
-      return { t: message.t, tile: message.tile, i: message.i, v: message.v, ver: message.ver };
-    case "cellUpBatch":
-      return {
-        t: message.t,
-        tile: message.tile,
-        fromVer: message.fromVer,
-        toVer: message.toVer,
-        ops: message.ops.length,
-        opsPreview: message.ops.slice(0, 4),
-      };
-    case "curUp":
-      return {
-        uid: message.uid,
-        name: message.name,
-        ...summarizeCursor(message),
-      };
-    case "err":
-      return { t: message.t, code: message.code };
-    default:
-      return { t: message.t };
-  }
-}
-
-function deriveBoardCoordFromSetCell(tileKey, index) {
-  const tile = parseTileKeyStrict(tileKey);
-  if (!tile) {
-    return {};
-  }
-
-  try {
-    const world = worldFromTileCell(tile.tx, tile.ty, index);
-    return {
-      worldX: world.x,
-      worldY: world.y,
-      boardX: Number((world.x + 0.5).toFixed(2)),
-      boardY: Number((world.y + 0.5).toFixed(2)),
-    };
-  } catch {
-    return {};
-  }
-}
 
 export async function startApp() {
   const {
@@ -189,146 +88,28 @@ export async function startApp() {
   const wireTransport = createWireTransport({
     identityProvider: readStoredIdentity,
   });
-  let transportOnline = false;
-  let wsSessionId = 0;
-  let wsSessionOpenedAtMs = null;
-  let wsFirstSubLogged = false;
-  let wsFirstSetCellLogged = false;
-  const isTransportOnline = () => transportOnline;
-  const logOther = (...args) => {
-    if (typeof logger.other === "function") {
-      logger.other(...args);
-    }
-  };
-
-  const beginWsSession = (reconnected) => {
-    wsSessionId += 1;
-    wsSessionOpenedAtMs = Date.now();
-    wsFirstSubLogged = false;
-    wsFirstSetCellLogged = false;
-    logOther("ws session_open", {
-      sessionId: wsSessionId,
-      reconnected,
-    });
-  };
-
-  const endWsSession = ({ disposed }) => {
-    if (wsSessionOpenedAtMs === null) {
-      return;
-    }
-    logOther("ws session_close", {
-      sessionId: wsSessionId,
-      disposed,
-      uptimeMs: Math.max(0, Date.now() - wsSessionOpenedAtMs),
-    });
-    wsSessionOpenedAtMs = null;
-  };
-
-  const maybeLogFirstClientMessageAfterOpen = (message) => {
-    if (!transportOnline || wsSessionOpenedAtMs === null) {
-      return;
-    }
-
-    const elapsedMs = Math.max(0, Date.now() - wsSessionOpenedAtMs);
-    if (message.t === "sub" && !wsFirstSubLogged) {
-      wsFirstSubLogged = true;
-      logOther("ws first_sub_after_open", {
-        sessionId: wsSessionId,
-        elapsedMs,
-        tileCount: message.tiles.length,
-      });
-      return;
-    }
-
-    if (message.t === "setCell" && !wsFirstSetCellLogged) {
-      wsFirstSetCellLogged = true;
-      logOther("ws first_setcell_after_open", {
-        sessionId: wsSessionId,
-        elapsedMs,
-        tile: message.tile,
-        i: message.i,
-        op: message.op,
-      });
-    }
-  };
-
-  const sendToWireTransport = (message) => {
-    const payload = perfProbe.measure(PERF_TIMING.PROTOCOL_ENCODE_MS, () =>
-      encodeClientMessageBinary(message)
-    );
-    perfProbe.increment(PERF_COUNTER.WS_TX_COUNT);
-    perfProbe.increment(PERF_COUNTER.WS_TX_BYTES, payload.length);
-    if (protocolLogsEnabled) {
-      logger.protocol("tx", {
-        ...describePayload(payload),
-        ...summarizeMessage(message),
-      });
-    }
-    wireTransport.send(payload);
-  };
   const setCellOutboxSync = createSetCellOutboxSync({
     offlineBannerEl,
-    sendToWireTransport,
-    isTransportOnline,
+    sendToWireTransport: (message) => {
+      transport.send(message, { trackSetCell: false });
+    },
+    isTransportOnline: () => transport.isOnline(),
     setTimeoutFn: window.setTimeout.bind(window),
     clearTimeoutFn: window.clearTimeout.bind(window),
   });
-
-  const sendMessage = (message, options = {}) => {
-    const trackSetCell = options.trackSetCell ?? true;
-    if (message.t === "cur" && !transportOnline) {
-      return;
-    }
-    maybeLogFirstClientMessageAfterOpen(message);
-    if (trackSetCell) {
-      setCellOutboxSync.trackOutgoingClientMessage(message);
-    }
-    sendToWireTransport(message);
-  };
-
-  const transport = {
-    connect(onServerMessage, lifecycleHandlers) {
-      const onOpen =
-        typeof lifecycleHandlers?.onOpen === "function" ? lifecycleHandlers.onOpen : () => {};
-      const onClose =
-        typeof lifecycleHandlers?.onClose === "function" ? lifecycleHandlers.onClose : () => {};
-
-      wireTransport.connect((payload) => {
-        perfProbe.increment(PERF_COUNTER.WS_RX_COUNT);
-        perfProbe.increment(PERF_COUNTER.WS_RX_BYTES, payload.length);
-        const message = perfProbe.measure(PERF_TIMING.PROTOCOL_DECODE_MS, () =>
-          decodeServerMessageBinary(payload)
-        );
-        if (protocolLogsEnabled) {
-          const payloadInfo = describePayload(payload);
-          logger.protocol("rx", {
-            ...payloadInfo,
-            ...summarizeMessage(message),
-          });
-        }
-        setCellOutboxSync.handleServerMessage(message);
-        onServerMessage(message);
-      }, {
-        onOpen(info) {
-          transportOnline = true;
-          beginWsSession(info.reconnected);
-          setCellOutboxSync.handleConnectionOpen();
-          onOpen(info);
-        },
-        onClose(info) {
-          transportOnline = false;
-          endWsSession(info);
-          onClose(info);
-        },
-      });
-    },
-    send(message) {
-      sendMessage(message);
-    },
-    dispose() {
-      wireTransport.dispose();
-    },
-  };
+  const transport = createTransportRuntime({
+    wireTransport,
+    perfProbe,
+    perfCounter: PERF_COUNTER,
+    perfTiming: PERF_TIMING,
+    encodeClientMessage: encodeClientMessageBinary,
+    decodeServerMessage: decodeServerMessageBinary,
+    protocolLogsEnabled,
+    logger,
+    describePayload,
+    summarizeMessage,
+    setCellOutboxSync,
+  });
   const cursors = new Map();
   const selfIdentity = { uid: null };
   const getActiveVisibleRemoteCursorCount = () => {
@@ -360,37 +141,14 @@ export async function startApp() {
     return count;
   };
 
-  const setStatus = (value) => {
-    statusEl.textContent = value;
-  };
-
-  const handleConnectionLost = () => {
-    transportOnline = false;
-    setCellOutboxSync.handleConnectionLost();
-    setStatus("Connection lost; retrying...");
-  };
-
-  let interactionTimerId = null;
-  const clearInteractionTimer = () => {
-    if (interactionTimerId !== null) {
-      window.clearTimeout(interactionTimerId);
-      interactionTimerId = null;
-    }
-  };
-
-  const setInteractionRestriction = (state, message) => {
-    interactionOverlayEl.dataset.state = state;
-    interactionOverlayTextEl.textContent = message;
-    interactionOverlayEl.hidden = false;
-
-    clearInteractionTimer();
-    interactionTimerId = window.setTimeout(() => {
-      interactionOverlayEl.hidden = true;
-      delete interactionOverlayEl.dataset.state;
-      interactionOverlayTextEl.textContent = "";
-      interactionTimerId = null;
-    }, 3000);
-  };
+  const uiRuntime = createUiRuntime({
+    statusEl,
+    interactionOverlayEl,
+    interactionOverlayTextEl,
+    setTimeoutFn: window.setTimeout.bind(window),
+    clearTimeoutFn: window.clearTimeout.bind(window),
+  });
+  const { setStatus } = uiRuntime;
 
   const renderLoop = createRenderLoop({
     app,
@@ -407,6 +165,13 @@ export async function startApp() {
 
   updateZoomReadout(camera, zoomEl);
 
+  const recoveryRuntime = createRecoveryRuntime({
+    transport,
+    setCellOutboxSync,
+    renderLoop,
+    setStatus,
+  });
+
   transport.connect(
     createServerMessageHandler({
       identityEl,
@@ -418,29 +183,14 @@ export async function startApp() {
       selfIdentity,
       onVisualStateChanged: renderLoop.markVisualDirty,
       onTileCellsChanged: renderLoop.markTileCellsDirty,
-      setInteractionRestriction,
+      setInteractionRestriction: uiRuntime.setInteractionRestriction,
       onIdentityReceived: ({ uid, name, token }) => {
         writeStoredIdentity({ uid, name, token });
       },
-      getPendingSetCellOpsForTile: setCellOutboxSync.getPendingSetCellOpsForTile,
-      dropPendingSetCellOpsForTile: setCellOutboxSync.dropPendingSetCellOpsForTile,
+      getPendingSetCellOpsForTile: recoveryRuntime.getPendingSetCellOpsForTile,
+      dropPendingSetCellOpsForTile: recoveryRuntime.dropPendingSetCellOpsForTile,
     }),
-    {
-      onOpen: ({ reconnected }) => {
-        if (!reconnected) {
-          return;
-        }
-        renderLoop.markTransportReconnected();
-        setStatus("Connection restored; resyncing visible tiles...");
-        setCellOutboxSync.scheduleReplay(1_000);
-      },
-      onClose: ({ disposed }) => {
-        if (disposed) {
-          return;
-        }
-        handleConnectionLost();
-      },
-    }
+    recoveryRuntime.lifecycleHandlers
   );
 
   const teardownInputHandlers = setupInputHandlers({
@@ -464,16 +214,18 @@ export async function startApp() {
     getActiveVisibleRemoteCursorCount,
   });
 
-  const onResize = () => {
-    renderLoop.handleResize();
-  };
   const isDocumentVisible = () =>
     typeof document === "undefined" || document.visibilityState === "visible";
+  const logOther = (...args) => {
+    if (typeof logger.other === "function") {
+      logger.other(...args);
+    }
+  };
   const forceSubscriptionRebuild = (reason) => {
     renderLoop.forceSubscriptionRebuild();
     logOther("ws subscription_rebuild", {
       reason,
-      transportOnline,
+      transportOnline: transport.isOnline(),
       visibilityState:
         typeof document !== "undefined" && typeof document.visibilityState === "string"
           ? document.visibilityState
@@ -499,31 +251,24 @@ export async function startApp() {
     forceSubscriptionRebuild("visibilitychange");
   };
   const onBrowserOffline = () => {
-    handleConnectionLost();
+    recoveryRuntime.onBrowserOffline();
   };
   const onBrowserOnline = () => {
-    if (!transportOnline) {
-      setStatus("Network restored; reconnecting...");
-    }
+    recoveryRuntime.onBrowserOnline();
   };
-  window.addEventListener("resize", onResize);
-  window.addEventListener("focus", onWindowFocus);
-  window.addEventListener("pageshow", onPageShow);
-  window.addEventListener("offline", onBrowserOffline);
-  window.addEventListener("online", onBrowserOnline);
-  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
-    document.addEventListener("visibilitychange", onDocumentVisibilityChange);
-  }
+  const environmentObservers = createEnvironmentObservers({
+    windowObj: window,
+    documentObj: typeof document === "undefined" ? undefined : document,
+    onResize: () => renderLoop.handleResize(),
+    onFocus: onWindowFocus,
+    onPageShow,
+    onOffline: onBrowserOffline,
+    onOnline: onBrowserOnline,
+    onVisibilityChange: onDocumentVisibilityChange,
+  });
 
   return () => {
-    window.removeEventListener("resize", onResize);
-    window.removeEventListener("focus", onWindowFocus);
-    window.removeEventListener("pageshow", onPageShow);
-    window.removeEventListener("offline", onBrowserOffline);
-    window.removeEventListener("online", onBrowserOnline);
-    if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
-      document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
-    }
+    environmentObservers.dispose();
     if (perfProbe.enabled) {
       canvas.removeEventListener("webglcontextlost", onWebGlContextLost);
       canvas.removeEventListener("webglcontextrestored", onWebGlContextRestored);
@@ -532,7 +277,7 @@ export async function startApp() {
     cursorLabels.destroy();
     renderLoop.dispose();
     transport.dispose();
-    clearInteractionTimer();
+    uiRuntime.dispose();
     setCellOutboxSync.dispose();
     app.destroy(true);
   };
