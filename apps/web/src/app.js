@@ -83,7 +83,6 @@ export async function startApp({
   if (runtimeFlags.appDisabled) {
     return () => {};
   }
-
   const {
     canvas,
     identityEl,
@@ -305,7 +304,6 @@ export async function startApp({
     markOffline: transportRuntime.markOffline,
     dispose: transportRuntime.dispose,
   };
-
   const cursors = new Map();
   const selfIdentity = { uid: null };
   const getActiveVisibleRemoteCursorCount = () => {
@@ -336,7 +334,6 @@ export async function startApp({
 
     return count;
   };
-
   const renderLoop = createRenderLoop({
     app,
     graphics,
