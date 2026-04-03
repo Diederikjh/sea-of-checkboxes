@@ -29,7 +29,11 @@ import {
   type SocketPairFactory,
   type WebSocketUpgradeResponseFactory,
 } from "./socketPair";
-import { elapsedMs, logStructuredEvent } from "./observability";
+import {
+  buildLogStructuredEventOptions,
+  elapsedMs,
+  logStructuredEvent,
+} from "./observability";
 import { resolveWorkerRuntimeControls } from "./runtimeControls";
 
 const CURSOR_HUB_NAME = "global";
@@ -189,7 +193,7 @@ export class ConnectionShardDO {
       this.#sendError(client, "bad_message", "Invalid message payload");
       this.#logEvent("bad_message", {
         uid,
-        ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+        ...this.#clientLogFields(client),
       });
       return;
     }
@@ -202,7 +206,7 @@ export class ConnectionShardDO {
         message,
         logEvent: (event, fields) => {
           this.#logEvent(event, {
-            ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+            ...this.#clientLogFields(client),
             ...fields,
           });
         },
@@ -240,7 +244,7 @@ export class ConnectionShardDO {
       });
       this.#logEvent("internal_error", {
         uid,
-        ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+        ...this.#clientLogFields(client),
         ...this.#cursorRuntime.traceState.traceFields(traceContext),
         ...this.#errorFields(error),
       });
@@ -287,7 +291,7 @@ export class ConnectionShardDO {
     });
     this.#logEvent("server_error_sent", {
       uid: client.uid,
-      ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+      ...this.#clientLogFields(client),
       code,
       msg,
       ...this.#cursorRuntime.traceState.traceFields(activeTrace),
@@ -366,8 +370,47 @@ export class ConnectionShardDO {
     logStructuredEvent("connection_shard_do", event, {
       shard: this.#currentShardName(),
       ...fields,
-    }, {
-      mode: this.#env.WORKER_LOG_MODE,
+    }, buildLogStructuredEventOptions(this.#env, this.#nowMs()));
+  }
+
+  #clientLogFields(client: ConnectedClient): Record<string, unknown> {
+    this.#maybeLogExpiredDebugOverride(client);
+    const fields: Record<string, unknown> = this.#buildClientLogFields(client, true);
+    return fields;
+  }
+
+  #buildClientLogFields(client: ConnectedClient, includeActiveOverride: boolean): Record<string, unknown> {
+    const fields: Record<string, unknown> = {
+      ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+    };
+    if (
+      includeActiveOverride
+      && client.clientDebugLogLevel
+      && typeof client.clientDebugLogExpiresAtMs === "number"
+      && client.clientDebugLogExpiresAtMs > this.#nowMs()
+    ) {
+      fields.client_debug_log_level = client.clientDebugLogLevel;
+      fields.client_debug_log_expires_at_ms = client.clientDebugLogExpiresAtMs;
+    }
+    return fields;
+  }
+
+  #maybeLogExpiredDebugOverride(client: ConnectedClient): void {
+    if (
+      !client.clientDebugLogLevel
+      || typeof client.clientDebugLogExpiresAtMs !== "number"
+      || client.clientDebugLogExpiresAtMs > this.#nowMs()
+      || client.clientDebugLogExpiryLogged
+    ) {
+      return;
+    }
+
+    client.clientDebugLogExpiryLogged = true;
+    this.#logEvent("log_override_expired", {
+      uid: client.uid,
+      ...this.#buildClientLogFields(client, false),
+      expired_level: client.clientDebugLogLevel,
+      expired_at_ms: client.clientDebugLogExpiresAtMs,
     });
   }
 

@@ -1,9 +1,11 @@
 import type {
   CellLastEditRecord,
   DurableObjectStateLike,
+  Env,
   R2BucketLike,
 } from "./doCommon";
 import {
+  buildLogStructuredEventOptions,
   elapsedMs,
   logStructuredEvent,
 } from "./observability";
@@ -96,12 +98,33 @@ function isValidLastEditRecord(value: unknown): value is CellLastEditRecord {
 export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersistence {
   #state: DurableObjectStateLike;
   #doId: string;
-  #logMode: string | undefined;
+  #logEnv: Pick<
+    Env,
+    | "WORKER_LOG_MODE"
+    | "WORKER_LOG_SAMPLE_RATE"
+    | "WORKER_LOG_FORCE_REDUCED_SESSION_IDS"
+    | "WORKER_LOG_FORCE_VERBOSE_SESSION_IDS"
+    | "WORKER_LOG_FORCE_SESSION_PREFIXES"
+    | "WORKER_LOG_ALLOW_CLIENT_VERBOSE"
+  >;
 
-  constructor(state: DurableObjectStateLike, options: { logMode?: string } = {}) {
+  constructor(
+    state: DurableObjectStateLike,
+    options: {
+      logEnv?: Pick<
+        Env,
+        | "WORKER_LOG_MODE"
+        | "WORKER_LOG_SAMPLE_RATE"
+        | "WORKER_LOG_FORCE_REDUCED_SESSION_IDS"
+        | "WORKER_LOG_FORCE_VERBOSE_SESSION_IDS"
+        | "WORKER_LOG_FORCE_SESSION_PREFIXES"
+        | "WORKER_LOG_ALLOW_CLIENT_VERBOSE"
+      >;
+    } = {}
+  ) {
     this.#state = state;
     this.#doId = state.id.toString();
-    this.#logMode = options.logMode;
+    this.#logEnv = options.logEnv ?? {};
   }
 
   async load(tileKey: string): Promise<TileOwnerPersistedState> {
@@ -124,9 +147,7 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
           found: Boolean(snapshot),
           subscriber_count: subscribers.length,
           duration_ms: elapsedMs(startMs),
-        }, {
-          mode: this.#logMode,
-        });
+        }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
       }
     } catch (error) {
       logStructuredEvent("tile_owner_persistence", "snapshot_read", {
@@ -137,9 +158,7 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
         error: true,
         error_message: error instanceof Error ? error.message : "unknown_error",
         duration_ms: elapsedMs(startMs),
-      }, {
-        mode: this.#logMode,
-      });
+      }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
       throw error;
     }
 
@@ -162,9 +181,7 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
         tile: tileKey,
         source: "do_storage",
         duration_ms: elapsedMs(startMs),
-      }, {
-        mode: this.#logMode,
-      });
+      }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
     } catch (error) {
       logStructuredEvent("tile_owner_persistence", "snapshot_write", {
         do_id: this.#doId,
@@ -173,9 +190,7 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
         error: true,
         error_message: error instanceof Error ? error.message : "unknown_error",
         duration_ms: elapsedMs(startMs),
-      }, {
-        mode: this.#logMode,
-      });
+      }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
       throw error;
     }
   }
@@ -190,23 +205,39 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
   #bucket: R2BucketLike;
   #dualWriteLegacy: boolean;
   #doId: string;
-  #logMode: string | undefined;
+  #logEnv: Pick<
+    Env,
+    | "WORKER_LOG_MODE"
+    | "WORKER_LOG_SAMPLE_RATE"
+    | "WORKER_LOG_FORCE_REDUCED_SESSION_IDS"
+    | "WORKER_LOG_FORCE_VERBOSE_SESSION_IDS"
+    | "WORKER_LOG_FORCE_SESSION_PREFIXES"
+    | "WORKER_LOG_ALLOW_CLIENT_VERBOSE"
+  >;
 
   constructor(
     state: DurableObjectStateLike,
     bucket: R2BucketLike,
     options: {
       dualWriteLegacy?: boolean;
-      logMode?: string;
+      logEnv?: Pick<
+        Env,
+        | "WORKER_LOG_MODE"
+        | "WORKER_LOG_SAMPLE_RATE"
+        | "WORKER_LOG_FORCE_REDUCED_SESSION_IDS"
+        | "WORKER_LOG_FORCE_VERBOSE_SESSION_IDS"
+        | "WORKER_LOG_FORCE_SESSION_PREFIXES"
+        | "WORKER_LOG_ALLOW_CLIENT_VERBOSE"
+      >;
     } = {}
   ) {
     this.#legacy = new DurableObjectStorageTileOwnerPersistence(state, {
-      ...(options.logMode ? { logMode: options.logMode } : {}),
+      ...(options.logEnv ? { logEnv: options.logEnv } : {}),
     });
     this.#bucket = bucket;
     this.#dualWriteLegacy = options.dualWriteLegacy ?? true;
     this.#doId = state.id.toString();
-    this.#logMode = options.logMode;
+    this.#logEnv = options.logEnv ?? {};
   }
 
   async load(tileKey: string): Promise<TileOwnerPersistedState> {
@@ -262,9 +293,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
       r2_error_message: r2Error instanceof Error ? r2Error.message : undefined,
       legacy_error_message: legacyError instanceof Error ? legacyError.message : undefined,
       mode: "normal",
-    }, {
-      mode: this.#logMode,
-    });
+    }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
   }
 
   async saveSubscribers(tileKey: string, subscribers: string[]): Promise<void> {
@@ -286,9 +315,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
             found: false,
             key,
             duration_ms: elapsedMs(startMs),
-          }, {
-            mode: this.#logMode,
-          });
+          }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
         }
         return null;
       }
@@ -305,9 +332,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
           key,
           bytes: payloadText.length,
           duration_ms: elapsedMs(startMs),
-        }, {
-          mode: this.#logMode,
-        });
+        }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
       }
       return snapshot;
     } catch (error) {
@@ -320,9 +345,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
         error: true,
         error_message: error instanceof Error ? error.message : "unknown_error",
         duration_ms: elapsedMs(startMs),
-      }, {
-        mode: this.#logMode,
-      });
+      }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
       return null;
     }
   }
@@ -349,9 +372,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
           bytes: payload.length,
           attempt,
           duration_ms: elapsedMs(startMs),
-        }, {
-          mode: this.#logMode,
-        });
+        }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
         return;
       } catch (error) {
         const finalAttempt = attempt >= SNAPSHOT_R2_WRITE_MAX_ATTEMPTS;
@@ -367,9 +388,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
           final_attempt: finalAttempt,
           error_message: error instanceof Error ? error.message : "unknown_error",
           duration_ms: elapsedMs(startMs),
-        }, {
-          mode: this.#logMode,
-        });
+        }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
 
         if (finalAttempt) {
           throw error;

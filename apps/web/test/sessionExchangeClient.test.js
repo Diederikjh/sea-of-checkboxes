@@ -59,6 +59,50 @@ describe("auth session exchange client", () => {
     }
   });
 
+  it("sends client session and debug logging headers when provided", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          uid: "u_saved123",
+          name: "BriskOtter001",
+          token: "tok_next",
+          migration: "none",
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        }
+      )
+    );
+
+    const client = createAuthSessionExchangeClient({
+      apiBaseUrl: "https://api.example",
+      fetchFn,
+      clientSessionId: "web_session_1",
+      debugLoggingState: {
+        level: "reduced",
+        expiresAtMs: 123456789,
+      },
+    });
+
+    await client.exchange({
+      provider: "firebase",
+      idToken: "firebase-token",
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    const [input, init] = fetchFn.mock.calls[0];
+    expect(String(input)).toBe("https://api.example/auth/session");
+    expect(init.headers).toMatchObject({
+      "content-type": "application/json",
+      "x-client-session-id": "web_session_1",
+      "x-debug-logs": "reduced",
+      "x-debug-logs-expires-at-ms": "123456789",
+    });
+  });
+
   it("includes worker detail in exchange error messages", async () => {
     const client = createAuthSessionExchangeClient({
       apiBaseUrl: "https://api.example",

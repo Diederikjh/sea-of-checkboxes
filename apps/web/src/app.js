@@ -54,6 +54,7 @@ import { createUiRuntime } from "./uiRuntime";
 import { createWireTransport } from "./wireTransport";
 import { CURSOR_TTL_MS } from "./cursorRenderConfig";
 import { resolveFrontendRuntimeFlags } from "./runtimeFlags";
+import { resolveDebugLoggingState as readDebugLoggingState } from "./debugLogging";
 import {
   cursorWorldPosition,
   isScreenPointInViewport,
@@ -168,7 +169,11 @@ export async function startApp({
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
   const firebaseConfig = resolveFirebaseConfigFromEnv(env);
   const authSessionExchangeClient = firebaseConfig
-    ? createAuthSessionExchangeClient({ apiBaseUrl })
+    ? createAuthSessionExchangeClient({
+        apiBaseUrl,
+        clientSessionId,
+        debugLoggingStateResolver: readDebugLoggingState,
+      })
     : null;
   const authIdentityProvider = firebaseConfig
     ? createFirebaseAuthIdentityProvider({ config: firebaseConfig })
@@ -254,6 +259,7 @@ export async function startApp({
     env,
     identityProvider: readStoredIdentity,
     clientSessionId,
+    debugLoggingStateResolver: readDebugLoggingState,
   });
   let transport = null;
   const setCellOutboxSync = createSetCellOutboxSync({

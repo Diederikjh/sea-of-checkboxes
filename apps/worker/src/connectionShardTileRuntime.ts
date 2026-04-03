@@ -212,12 +212,30 @@ export class ConnectionShardTileRuntime {
     if (!snapshot) {
       this.#logEvent("snapshot_send_failed", {
         uid: client.uid,
+        ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+        ...(client.clientDebugLogLevel
+          && typeof client.clientDebugLogExpiresAtMs === "number"
+          && client.clientDebugLogExpiresAtMs > this.#nowMs()
+          ? {
+              client_debug_log_level: client.clientDebugLogLevel,
+              client_debug_log_expires_at_ms: client.clientDebugLogExpiresAtMs,
+            }
+          : {}),
         tile: tileKey,
       });
       return;
     }
     this.#logEvent("snapshot_send", {
       uid: client.uid,
+      ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+      ...(client.clientDebugLogLevel
+        && typeof client.clientDebugLogExpiresAtMs === "number"
+        && client.clientDebugLogExpiresAtMs > this.#nowMs()
+        ? {
+            client_debug_log_level: client.clientDebugLogLevel,
+            client_debug_log_expires_at_ms: client.clientDebugLogExpiresAtMs,
+          }
+        : {}),
       tile: tileKey,
       ver: snapshot.ver,
     });

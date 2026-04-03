@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   logStructuredEvent,
+  resolveStructuredLogPolicy,
   shouldLogStructuredEvent,
 } from "../src/observability";
 
@@ -112,5 +113,125 @@ describe("worker observability filtering", () => {
     } finally {
       consoleSpy.mockRestore();
     }
+  });
+
+  it("samples routine session logs deterministically in sampled mode", () => {
+    expect(
+      shouldLogStructuredEvent(
+        "connection_shard_do",
+        "ws_connect",
+        {
+          shard: "shard-1",
+          client_session_id: "sampled-session",
+        },
+        {
+          mode: "sampled",
+          sampleRate: "1",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe(true);
+
+    expect(
+      shouldLogStructuredEvent(
+        "connection_shard_do",
+        "ws_connect",
+        {
+          shard: "shard-1",
+          client_session_id: "unsampled-session",
+        },
+        {
+          mode: "sampled",
+          sampleRate: "0",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe(false);
+  });
+
+  it("honors forced reduced and forced verbose session policies", () => {
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "ws_connect",
+        {
+          shard: "shard-1",
+          client_session_id: "session-a",
+        },
+        {
+          mode: "sampled",
+          sampleRate: "0",
+          forceReducedSessionIds: "session-a",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("forced_reduced");
+
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "ws_connect",
+        {
+          shard: "shard-1",
+          client_session_id: "session-b",
+          client_debug_log_level: "verbose",
+          client_debug_log_expires_at_ms: 2_000,
+        },
+        {
+          mode: "sampled",
+          sampleRate: "0",
+          allowClientVerbose: "1",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("forced_verbose");
+  });
+
+  it("keeps backend no-session logs on reduced behavior in sampled mode", () => {
+    expect(
+      resolveStructuredLogPolicy(
+        "tile_owner_persistence",
+        "snapshot_write",
+        {
+          source: "r2",
+          error: true,
+        },
+        {
+          mode: "sampled",
+          sampleRate: "0",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("always_error");
+
+    expect(
+      resolveStructuredLogPolicy(
+        "worker",
+        "healthcheck",
+        {},
+        {
+          mode: "sampled",
+          sampleRate: "0",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("backend_reduced_no_session");
+  });
+
+  it("logs override expiry events regardless of sampling", () => {
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "log_override_expired",
+        {
+          client_session_id: "session-expired",
+        },
+        {
+          mode: "sampled",
+          sampleRate: "0",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("override_expired");
   });
 });

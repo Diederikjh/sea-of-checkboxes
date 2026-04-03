@@ -1,3 +1,9 @@
+import {
+  DEBUG_LOG_LEVELS,
+  resolveDebugCategoryOverrides,
+  resolveDebugLoggingState,
+} from "./debugLogging";
+
 const LOG_CATEGORIES = Object.freeze({
   PROTOCOL: "protocol",
   UI: "ui",
@@ -18,6 +24,10 @@ function readEnabledCategories() {
   const search =
     typeof window !== "undefined" && window.location ? window.location.search : "";
   const params = new URLSearchParams(search);
+  const debugLoggingState = resolveDebugLoggingState();
+  const { debugEnabled } = resolveDebugCategoryOverrides();
+  const enableAllCategories =
+    debugEnabled || debugLoggingState.level !== DEBUG_LOG_LEVELS.OFF;
 
   const fromLogsParam = new Set(
     (params.get("logs") ?? "")
@@ -30,19 +40,22 @@ function readEnabledCategories() {
     env,
     params,
     fromLogsParam,
-    LOG_CATEGORIES.PROTOCOL
+    LOG_CATEGORIES.PROTOCOL,
+    enableAllCategories
   );
   const uiEnabled = isCategoryEnabledByConfig(
     env,
     params,
     fromLogsParam,
-    LOG_CATEGORIES.UI
+    LOG_CATEGORIES.UI,
+    enableAllCategories
   );
   const otherEnabled = isCategoryEnabledByConfig(
     env,
     params,
     fromLogsParam,
-    LOG_CATEGORIES.OTHER
+    LOG_CATEGORIES.OTHER,
+    enableAllCategories
   );
 
   return {
@@ -52,7 +65,10 @@ function readEnabledCategories() {
   };
 }
 
-function isCategoryEnabledByConfig(env, params, fromLogsParam, category) {
+function isCategoryEnabledByConfig(env, params, fromLogsParam, category, enableAllCategories) {
+  if (enableAllCategories) {
+    return true;
+  }
   const envKey = `VITE_LOG_${category.toUpperCase()}`;
   const paramKey = `log_${category}`;
   const envValue = env[envKey];

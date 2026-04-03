@@ -11,6 +11,7 @@ import type {
 } from "@sea/protocol";
 
 import {
+  type ClientDebugLogLevel,
   isValidTileKey,
   type TileSetCellRequest,
   type TileSetCellResponse,
@@ -21,6 +22,9 @@ export interface ConnectedClient {
   uid: string;
   name: string;
   clientSessionId?: string;
+  clientDebugLogLevel?: ClientDebugLogLevel;
+  clientDebugLogExpiresAtMs?: number;
+  clientDebugLogExpiryLogged?: boolean;
   socket: SocketLike;
   connectedAtMs?: number;
   subscribed: Set<string>;
@@ -351,6 +355,16 @@ export async function handleSetCellMessage(
     uid: client.uid,
     name: client.name,
     atMs: context.nowMs(),
+    ...(client.clientSessionId ? { clientSessionId: client.clientSessionId } : {}),
+    ...(client.clientDebugLogLevel
+      && typeof client.clientDebugLogExpiresAtMs === "number"
+      && client.clientDebugLogExpiresAtMs > context.nowMs()
+      ? { clientDebugLogLevel: client.clientDebugLogLevel }
+      : {}),
+    ...(typeof client.clientDebugLogExpiresAtMs === "number"
+      && client.clientDebugLogExpiresAtMs > context.nowMs()
+      ? { clientDebugLogExpiresAtMs: client.clientDebugLogExpiresAtMs }
+      : {}),
   });
 
   if (!result?.accepted) {

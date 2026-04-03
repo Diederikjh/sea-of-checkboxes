@@ -5,6 +5,7 @@ import {
 
 import {
   isWebSocketUpgrade,
+  type ClientDebugLogLevel,
   type ConnectionIdentity,
 } from "./doCommon";
 import {
@@ -114,9 +115,41 @@ export class ConnectionShardSessionHost {
       return null;
     }
 
+    const clientSessionId = this.#resolveClientSessionId(url);
+
     return {
-      identity: { uid, name, token },
+      identity: {
+        uid,
+        name,
+        token,
+        ...(clientSessionId ? { clientSessionId } : {}),
+        ...this.#resolveClientDebugLog(url),
+      },
       shardName,
+    };
+  }
+
+  #resolveClientSessionId(url: URL): string | undefined {
+    const clientSessionId = url.searchParams.get("clientSessionId")?.trim() ?? "";
+    return clientSessionId.length > 0 ? clientSessionId : undefined;
+  }
+
+  #resolveClientDebugLog(
+    url: URL
+  ): { clientDebugLogLevel?: ClientDebugLogLevel; clientDebugLogExpiresAtMs?: number } {
+    const levelRaw = url.searchParams.get("debugLogs")?.trim().toLowerCase() ?? "";
+    const level =
+      levelRaw === "reduced" || levelRaw === "verbose"
+        ? (levelRaw as ClientDebugLogLevel)
+        : undefined;
+    const rawExpiresAtMs = url.searchParams.get("debugLogsExpiresAtMs")?.trim() ?? "";
+    const expiresAtMs = Number.parseInt(rawExpiresAtMs, 10);
+    if (!level || !Number.isFinite(expiresAtMs) || expiresAtMs <= 0) {
+      return {};
+    }
+    return {
+      clientDebugLogLevel: level,
+      clientDebugLogExpiresAtMs: expiresAtMs,
     };
   }
 
@@ -169,6 +202,10 @@ export class ConnectionShardSessionHost {
       uid: identity.uid,
       name: identity.name,
       ...(identity.clientSessionId ? { clientSessionId: identity.clientSessionId } : {}),
+      ...(identity.clientDebugLogLevel ? { clientDebugLogLevel: identity.clientDebugLogLevel } : {}),
+      ...(typeof identity.clientDebugLogExpiresAtMs === "number"
+        ? { clientDebugLogExpiresAtMs: identity.clientDebugLogExpiresAtMs }
+        : {}),
       socket: serverSocket,
       connectedAtMs: this.#nowMs(),
       subscribed: new Set(),
@@ -183,7 +220,7 @@ export class ConnectionShardSessionHost {
     this.#clients.set(identity.uid, client);
     this.#logEvent("ws_connect", {
       uid: identity.uid,
-      ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+      ...this.#clientLogFields(client),
       clients_connected: this.#clients.size,
     });
     const spawn = await this.#resolveHelloSpawn();
@@ -212,7 +249,7 @@ export class ConnectionShardSessionHost {
       closed = true;
       this.#logEvent("ws_close", {
         uid: client.uid,
-        ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+        ...this.#clientLogFields(client),
         clients_connected: Math.max(0, this.#clients.size - 1),
         ...fields,
       });
@@ -258,6 +295,7 @@ export class ConnectionShardSessionHost {
       if (suppressionReason) {
         this.#logEvent("setcell_suppressed", {
           uid: client.uid,
+          ...this.#clientLogFields(client),
           reason: suppressionReason,
           ...this.#suppressionLogFields(),
         });
@@ -345,5 +383,45 @@ export class ConnectionShardSessionHost {
       void task().catch(() => {});
     }, 0);
     this.#maybeUnrefTimer(timer);
+  }
+
+  #clientLogFields(client: ConnectedClient): Record<string, unknown> {
+    this.#maybeLogExpiredDebugOverride(client);
+    return this.#buildClientLogFields(client, true);
+  }
+
+  #buildClientLogFields(client: ConnectedClient, includeActiveOverride: boolean): Record<string, unknown> {
+    const fields: Record<string, unknown> = {
+      ...(client.clientSessionId ? { client_session_id: client.clientSessionId } : {}),
+    };
+    if (
+      includeActiveOverride
+      && client.clientDebugLogLevel
+      && typeof client.clientDebugLogExpiresAtMs === "number"
+      && client.clientDebugLogExpiresAtMs > this.#nowMs()
+    ) {
+      fields.client_debug_log_level = client.clientDebugLogLevel;
+      fields.client_debug_log_expires_at_ms = client.clientDebugLogExpiresAtMs;
+    }
+    return fields;
+  }
+
+  #maybeLogExpiredDebugOverride(client: ConnectedClient): void {
+    if (
+      !client.clientDebugLogLevel
+      || typeof client.clientDebugLogExpiresAtMs !== "number"
+      || client.clientDebugLogExpiresAtMs > this.#nowMs()
+      || client.clientDebugLogExpiryLogged
+    ) {
+      return;
+    }
+
+    client.clientDebugLogExpiryLogged = true;
+    this.#logEvent("log_override_expired", {
+      uid: client.uid,
+      ...this.#buildClientLogFields(client, false),
+      expired_level: client.clientDebugLogLevel,
+      expired_at_ms: client.clientDebugLogExpiresAtMs,
+    });
   }
 }

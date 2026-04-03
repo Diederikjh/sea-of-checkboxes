@@ -18,10 +18,14 @@ Today the worker already has a coarse global mode switch in [`../apps/worker/src
 
 - `verbose`
 - `reduced`
+- `sampled`
 
 Current deployed default in [`../apps/worker/wrangler.jsonc`](../apps/worker/wrangler.jsonc):
 
-- `WORKER_LOG_MODE = "reduced"`
+- `WORKER_LOG_MODE = "sampled"`
+- `WORKER_LOG_SAMPLE_RATE = "0.01"`
+- `WORKER_LOG_FORCE_SESSION_PREFIXES = "swarm_"`
+- `WORKER_LOG_ALLOW_CLIENT_VERBOSE = "false"`
 
 That existing `reduced` mode already does the most important thing we want:
 
@@ -37,6 +41,38 @@ The frontend logger in [`../apps/web/src/logger.js`](../apps/web/src/logger.js) 
 The app already creates a stable browser-session correlation id in [`../apps/web/src/clientSessionId.js`](../apps/web/src/clientSessionId.js), and the worker already receives it on websocket connect through [`../apps/worker/src/workerFetch.ts`](../apps/worker/src/workerFetch.ts).
 
 The swarm scripts already generate stable `clientSessionId` values like `swarm_<runId>_<botId>` in [`../scripts/swarm/lib/config.mjs`](../scripts/swarm/lib/config.mjs), and production debugging guidance already relies on querying worker logs by that field in [`scalability-testing/README.md`](scalability-testing/README.md).
+
+## Implementation Status
+
+This plan is now partly implemented.
+
+Implemented:
+
+- worker `sampled` mode and deterministic per-session sampling
+- `WORKER_LOG_SAMPLE_RATE`
+- `WORKER_LOG_FORCE_REDUCED_SESSION_IDS`
+- `WORKER_LOG_FORCE_VERBOSE_SESSION_IDS`
+- `WORKER_LOG_FORCE_SESSION_PREFIXES`
+- `WORKER_LOG_ALLOW_CLIENT_VERBOSE`
+- emitted `log_policy` on structured worker logs
+- server-side `log_override_expired` event
+- client-requested `?debug_logs=reduced|verbose|off` persistence with a `15 minute` cap
+- websocket propagation of client debug logging state
+- `/auth/session` propagation of `clientSessionId` and client debug logging headers
+- broader `client_session_id` propagation for single-client worker paths
+- default `swarm_` prefix forcing to reduced logging
+
+Implemented but intentionally disabled by config:
+
+- client-requested backend `verbose`
+  - code path exists
+  - current default worker config keeps `WORKER_LOG_ALLOW_CLIENT_VERBOSE = "false"`
+
+Still outstanding / not yet validated operationally:
+
+- broader production validation of actual sampled session rate under live traffic
+- local and production runbook validation that swarm sessions show reduced-level server logs by default
+- any future admin or remote-control layer beyond deploy-time flags
 
 ## Goals
 
@@ -387,6 +423,10 @@ Recommended worker-emitted log metadata:
 - expand `client_session_id` propagation for single-client worker paths
 - keep events without `clientSessionId` on current `reduced` behavior
 
+Status:
+
+- implemented
+
 Success criteria:
 
 - worker log volume drops materially under normal traffic
@@ -401,6 +441,10 @@ Success criteria:
 - honor it on the worker as per-session `forced reduced`
 - emit a server-side expiry log when that override expires
 
+Status:
+
+- implemented
+
 Success criteria:
 
 - a single browser can reproduce a bug and reliably restore current baseline worker logging for that session
@@ -411,6 +455,11 @@ Success criteria:
 - guard it behind `WORKER_LOG_ALLOW_CLIENT_VERBOSE`
 - document the intended temporary-use workflow
 
+Status:
+
+- implemented in code path
+- disabled by default in worker config
+
 Success criteria:
 
 - deep incident traces are possible without flipping the whole worker to verbose
@@ -419,6 +468,11 @@ Success criteria:
 
 - force `swarm_` sessions to `reduced`
 - update swarm docs accordingly
+
+Status:
+
+- forcing `swarm_` sessions to reduced is implemented in worker config
+- doc and runbook validation still worth checking in practice
 
 Success criteria:
 

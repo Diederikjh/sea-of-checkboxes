@@ -1,4 +1,7 @@
 import { normalizeStoredIdentity } from "./identityStore";
+import {
+  buildDebugLoggingQueryParams,
+} from "./debugLogging";
 
 function toBool(value) {
   if (typeof value !== "string") {
@@ -9,7 +12,7 @@ function toBool(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function withIdentityQueryParams(wsUrl, identity, clientSessionId = "") {
+function withIdentityQueryParams(wsUrl, identity, clientSessionId = "", debugLoggingState = null) {
   const normalized = normalizeStoredIdentity(identity);
   try {
     const parsed = new URL(wsUrl);
@@ -18,6 +21,10 @@ function withIdentityQueryParams(wsUrl, identity, clientSessionId = "") {
     }
     if (typeof clientSessionId === "string" && clientSessionId.trim().length > 0) {
       parsed.searchParams.set("clientSessionId", clientSessionId.trim());
+    }
+    const debugParams = buildDebugLoggingQueryParams(debugLoggingState);
+    for (const [key, value] of Object.entries(debugParams)) {
+      parsed.searchParams.set(key, value);
     }
     return parsed.toString();
   } catch {
@@ -35,24 +42,40 @@ export function resolveWebSocketUrl(
   locationLike = typeof window !== "undefined" ? window.location : undefined,
   env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {},
   identity = null,
-  clientSessionId = ""
+  clientSessionId = "",
+  debugLoggingState = null
 ) {
   const envUrl = typeof env.VITE_WS_URL === "string" ? env.VITE_WS_URL.trim() : "";
   if (envUrl.length > 0) {
-    return withIdentityQueryParams(envUrl, identity, clientSessionId);
+    return withIdentityQueryParams(envUrl, identity, clientSessionId, debugLoggingState);
   }
 
   if (!locationLike || typeof locationLike.host !== "string") {
-    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity, clientSessionId);
+    return withIdentityQueryParams(
+      "ws://127.0.0.1:8787/ws",
+      identity,
+      clientSessionId,
+      debugLoggingState
+    );
   }
 
   const host = locationLike.host.toLowerCase();
   if (host === "localhost:5173" || host === "127.0.0.1:5173") {
-    return withIdentityQueryParams("ws://127.0.0.1:8787/ws", identity, clientSessionId);
+    return withIdentityQueryParams(
+      "ws://127.0.0.1:8787/ws",
+      identity,
+      clientSessionId,
+      debugLoggingState
+    );
   }
 
   const protocol = locationLike.protocol === "https:" ? "wss:" : "ws:";
-  return withIdentityQueryParams(`${protocol}//${locationLike.host}/ws`, identity, clientSessionId);
+  return withIdentityQueryParams(
+    `${protocol}//${locationLike.host}/ws`,
+    identity,
+    clientSessionId,
+    debugLoggingState
+  );
 }
 
 export function resolveApiBaseUrl(

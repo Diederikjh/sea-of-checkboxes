@@ -56,6 +56,23 @@ describe("transport config", () => {
     expect(resolved).toBe("wss://example.com/ws?clientSessionId=web_session_1");
   });
 
+  it("appends debug logging params to websocket url", () => {
+    const resolved = resolveWebSocketUrl(
+      { protocol: "https:", host: "example.com" },
+      {},
+      null,
+      "web_session_1",
+      {
+        level: "reduced",
+        expiresAtMs: 123456789,
+      }
+    );
+    const parsed = new URL(resolved);
+    expect(parsed.searchParams.get("clientSessionId")).toBe("web_session_1");
+    expect(parsed.searchParams.get("debugLogs")).toBe("reduced");
+    expect(parsed.searchParams.get("debugLogsExpiresAtMs")).toBe("123456789");
+  });
+
   it("appends persisted identity to websocket url", () => {
     const resolved = resolveWebSocketUrl(
       { protocol: "https:", host: "example.com" },

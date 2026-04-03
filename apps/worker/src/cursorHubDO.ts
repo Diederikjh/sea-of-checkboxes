@@ -14,6 +14,7 @@ import {
 } from "./cursorRelay";
 import { createCursorTraceId } from "./connectionShardCursorTrace";
 import {
+  buildLogStructuredEventOptions,
   elapsedMs,
   logStructuredEvent,
 } from "./observability";
@@ -502,9 +503,7 @@ export class CursorHubDO {
     logStructuredEvent("cursor_hub_do", event, {
       do_id: this.#doId,
       ...fields,
-    }, {
-      mode: this.#env.WORKER_LOG_MODE,
-    });
+    }, buildLogStructuredEventOptions(this.#env, Date.now()));
   }
 
   #readTraceContext(request: Request): CursorTraceContext | null {

@@ -9,6 +9,8 @@ export function createWireTransport({
   wsFactory,
   identityProvider,
   clientSessionId = "",
+  debugLoggingState = null,
+  debugLoggingStateResolver = null,
 } = {}) {
   if (isMockTransportEnabled(env)) {
     logger.other("transport", { mode: "mock" });
@@ -16,8 +18,25 @@ export function createWireTransport({
   }
 
   const resolveIdentity = typeof identityProvider === "function" ? identityProvider : () => null;
-  const resolveUrl = () => resolveWebSocketUrl(locationLike, env, resolveIdentity(), clientSessionId);
+  const resolveDebugLoggingState =
+    typeof debugLoggingStateResolver === "function"
+      ? debugLoggingStateResolver
+      : () => debugLoggingState;
+  const resolveUrl = () =>
+    resolveWebSocketUrl(
+      locationLike,
+      env,
+      resolveIdentity(),
+      clientSessionId,
+      resolveDebugLoggingState()
+    );
   const wsUrl = resolveUrl();
-  logger.other("transport", { mode: "ws", wsUrl, clientSessionId });
+  const initialDebugState = resolveDebugLoggingState();
+  logger.other("transport", {
+    mode: "ws",
+    wsUrl,
+    clientSessionId,
+    debugLogs: initialDebugState?.level ?? "off",
+  });
   return createWebSocketTransport(wsUrl, { wsFactory, resolveUrl });
 }

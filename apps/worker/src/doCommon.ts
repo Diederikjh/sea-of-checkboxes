@@ -63,14 +63,23 @@ export interface Env {
   SHARE_LINKS_ENABLED?: string;
   WS_DISABLED?: string;
   WORKER_LOG_MODE?: string;
+  WORKER_LOG_SAMPLE_RATE?: string;
+  WORKER_LOG_FORCE_REDUCED_SESSION_IDS?: string;
+  WORKER_LOG_FORCE_VERBOSE_SESSION_IDS?: string;
+  WORKER_LOG_FORCE_SESSION_PREFIXES?: string;
+  WORKER_LOG_ALLOW_CLIENT_VERBOSE?: string;
   EXTERNAL_IDENTITY_VERIFIER?: ExternalIdentityVerifier;
 }
+
+export type ClientDebugLogLevel = "reduced" | "verbose";
 
 export interface ConnectionIdentity {
   uid: string;
   name: string;
   token: string;
   clientSessionId?: string;
+  clientDebugLogLevel?: ClientDebugLogLevel;
+  clientDebugLogExpiresAtMs?: number;
 }
 
 export interface TileWatchRequest {
@@ -88,6 +97,9 @@ export interface TileSetCellRequest {
   uid?: string;
   name?: string;
   atMs?: number;
+  clientSessionId?: string;
+  clientDebugLogLevel?: ClientDebugLogLevel;
+  clientDebugLogExpiresAtMs?: number;
 }
 
 export interface TileSetCellResponse {

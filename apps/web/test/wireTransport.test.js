@@ -120,4 +120,25 @@ describe("wire transport selection", () => {
     };
     expect(options.resolveUrl()).toBe("wss://example.com/ws?token=tok_abc&clientSessionId=web_session_2");
   });
+
+  it("passes debug logging parameters through websocket url resolution", () => {
+    createWireTransport({
+      env: {},
+      locationLike: {
+        protocol: "https:",
+        host: "example.com",
+      },
+      clientSessionId: "web_session_3",
+      debugLoggingState: {
+        level: "reduced",
+        expiresAtMs: 123456789,
+      },
+    });
+
+    const wsUrl = mocks.createWebSocketTransport.mock.calls[0]?.[0];
+    const parsed = new URL(wsUrl);
+    expect(parsed.searchParams.get("clientSessionId")).toBe("web_session_3");
+    expect(parsed.searchParams.get("debugLogs")).toBe("reduced");
+    expect(parsed.searchParams.get("debugLogsExpiresAtMs")).toBe("123456789");
+  });
 });

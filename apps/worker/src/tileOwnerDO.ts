@@ -22,6 +22,7 @@ import {
   type TileOwnerPersistence,
 } from "./tileOwnerPersistence";
 import {
+  buildLogStructuredEventOptions,
   elapsedMs,
   logStructuredEvent,
 } from "./observability";
@@ -79,10 +80,10 @@ export class TileOwnerDO {
       options.persistence ??
       (env.TILE_SNAPSHOTS
         ? new LazyMigratingR2TileOwnerPersistence(state, env.TILE_SNAPSHOTS, {
-            ...(env.WORKER_LOG_MODE ? { logMode: env.WORKER_LOG_MODE } : {}),
+            logEnv: env,
           })
         : new DurableObjectStorageTileOwnerPersistence(state, {
-            ...(env.WORKER_LOG_MODE ? { logMode: env.WORKER_LOG_MODE } : {}),
+            logEnv: env,
           }));
   }
 
@@ -190,6 +191,14 @@ export class TileOwnerDO {
           i: payload.i,
           v: payload.v,
           op: payload.op,
+          ...(payload.clientSessionId ? { client_session_id: payload.clientSessionId } : {}),
+          ...(payload.clientDebugLogLevel
+            && typeof payload.clientDebugLogExpiresAtMs === "number"
+            ? {
+                client_debug_log_level: payload.clientDebugLogLevel,
+                client_debug_log_expires_at_ms: payload.clientDebugLogExpiresAtMs,
+              }
+            : {}),
           prev_v: beforeValue,
           accepted: false,
           changed: false,
@@ -241,6 +250,14 @@ export class TileOwnerDO {
         i: payload.i,
         v: payload.v,
         op: payload.op,
+        ...(payload.clientSessionId ? { client_session_id: payload.clientSessionId } : {}),
+        ...(payload.clientDebugLogLevel
+          && typeof payload.clientDebugLogExpiresAtMs === "number"
+          ? {
+              client_debug_log_level: payload.clientDebugLogLevel,
+              client_debug_log_expires_at_ms: payload.clientDebugLogExpiresAtMs,
+            }
+          : {}),
         prev_v: beforeValue,
         next_v: afterValue,
         accepted: body.accepted,
@@ -509,8 +526,6 @@ export class TileOwnerDO {
       do_id: this.#doId,
       tile: this.#tileKey ?? undefined,
       ...fields,
-    }, {
-      mode: this.#env.WORKER_LOG_MODE,
-    });
+    }, buildLogStructuredEventOptions(this.#env, Date.now()));
   }
 }

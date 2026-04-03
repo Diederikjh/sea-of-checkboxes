@@ -5,10 +5,34 @@ export type ObservabilityScope =
   | "tile_owner_do"
   | "tile_owner_persistence";
 
-export type WorkerLogMode = "verbose" | "reduced";
+export type WorkerLogMode = "verbose" | "reduced" | "sampled";
+export type WorkerLogPolicy =
+  | "always_error"
+  | "verbose_global"
+  | "reduced_global"
+  | "sampled_in"
+  | "forced_reduced"
+  | "forced_verbose"
+  | "backend_reduced_no_session"
+  | "override_expired";
+
+interface WorkerLogControlEnv {
+  WORKER_LOG_MODE?: string;
+  WORKER_LOG_SAMPLE_RATE?: string;
+  WORKER_LOG_FORCE_REDUCED_SESSION_IDS?: string;
+  WORKER_LOG_FORCE_VERBOSE_SESSION_IDS?: string;
+  WORKER_LOG_FORCE_SESSION_PREFIXES?: string;
+  WORKER_LOG_ALLOW_CLIENT_VERBOSE?: string;
+}
 
 interface LogStructuredEventOptions {
   mode?: string | null | undefined;
+  sampleRate?: string | null | undefined;
+  forceReducedSessionIds?: string | null | undefined;
+  forceVerboseSessionIds?: string | null | undefined;
+  forceSessionPrefixes?: string | null | undefined;
+  allowClientVerbose?: string | null | undefined;
+  nowMs?: number | undefined;
 }
 
 const REDUCED_MODE_CONNECTION_SHARD_EVENTS = new Set([
@@ -39,7 +63,101 @@ const REDUCED_MODE_CURSOR_HUB_EVENTS = new Set([
 ]);
 
 function normalizeWorkerLogMode(mode: string | null | undefined): WorkerLogMode {
-  return mode === "reduced" ? "reduced" : "verbose";
+  if (mode === "reduced" || mode === "sampled") {
+    return mode;
+  }
+  return "verbose";
+}
+
+function toBool(value: string | null | undefined): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function parseCsvList(value: string | null | undefined): string[] {
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseSampleRate(value: string | null | undefined): number {
+  if (typeof value !== "string") {
+    return 0;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function resolveClientSessionId(fields: Record<string, unknown>): string | null {
+  const sessionId = typeof fields.client_session_id === "string" ? fields.client_session_id.trim() : "";
+  return sessionId.length > 0 ? sessionId : null;
+}
+
+function resolveClientDebugLogLevel(fields: Record<string, unknown>): "reduced" | "verbose" | null {
+  const level =
+    typeof fields.client_debug_log_level === "string"
+      ? fields.client_debug_log_level.trim().toLowerCase()
+      : "";
+  if (level === "reduced" || level === "verbose") {
+    return level;
+  }
+  return null;
+}
+
+function resolveClientDebugLogExpiresAtMs(fields: Record<string, unknown>): number | null {
+  const raw = fields.client_debug_log_expires_at_ms;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
+function sampleSessionId(sessionId: string, sampleRate: number): boolean {
+  if (sampleRate >= 1) {
+    return true;
+  }
+  if (sampleRate <= 0) {
+    return false;
+  }
+
+  let hash = 2166136261;
+  for (let index = 0; index < sessionId.length; index += 1) {
+    hash ^= sessionId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const normalized = (hash >>> 0) / 0xffffffff;
+  return normalized < sampleRate;
+}
+
+function shouldAlwaysLogEvent(event: string, fields: Record<string, unknown>): boolean {
+  if (event === "log_override_expired") {
+    return true;
+  }
+
+  if (fields.error === true) {
+    return true;
+  }
+
+  return (
+    event === "internal_error"
+    || event === "server_error_sent"
+    || event === "cursor_pull_alarm_failed"
+    || event === "tile_batch_order_anomaly"
+    || event === "tile_pull_gap_resync"
+    || event === "setcell_not_subscribed"
+    || event === "snapshot_write_deferred"
+  );
 }
 
 function isTileOwnerSuccessEvent(event: string, fields: Record<string, unknown>): boolean {
@@ -56,30 +174,12 @@ function isPersistenceSuccessEvent(event: string, fields: Record<string, unknown
   return (event === "snapshot_read" || event === "snapshot_write") && fields.error !== true;
 }
 
-export function shouldLogStructuredEvent(
+function shouldLogInReducedMode(
   scope: ObservabilityScope,
   event: string,
-  fields: Record<string, unknown> = {},
-  options: LogStructuredEventOptions = {}
+  fields: Record<string, unknown> = {}
 ): boolean {
-  const mode = normalizeWorkerLogMode(options.mode);
-  if (mode === "verbose") {
-    return true;
-  }
-
-  if (fields.error === true) {
-    return true;
-  }
-
-  if (
-    event === "internal_error"
-    || event === "server_error_sent"
-    || event === "cursor_pull_alarm_failed"
-    || event === "tile_batch_order_anomaly"
-    || event === "tile_pull_gap_resync"
-    || event === "setcell_not_subscribed"
-    || event === "snapshot_write_deferred"
-  ) {
+  if (shouldAlwaysLogEvent(event, fields)) {
     return true;
   }
 
@@ -100,13 +200,103 @@ export function shouldLogStructuredEvent(
   }
 }
 
+export function buildLogStructuredEventOptions(
+  env: WorkerLogControlEnv,
+  nowMs?: number
+): LogStructuredEventOptions {
+  return {
+    mode: env.WORKER_LOG_MODE,
+    sampleRate: env.WORKER_LOG_SAMPLE_RATE,
+    forceReducedSessionIds: env.WORKER_LOG_FORCE_REDUCED_SESSION_IDS,
+    forceVerboseSessionIds: env.WORKER_LOG_FORCE_VERBOSE_SESSION_IDS,
+    forceSessionPrefixes: env.WORKER_LOG_FORCE_SESSION_PREFIXES,
+    allowClientVerbose: env.WORKER_LOG_ALLOW_CLIENT_VERBOSE,
+    ...(typeof nowMs === "number" ? { nowMs } : {}),
+  };
+}
+
+export function resolveStructuredLogPolicy(
+  scope: ObservabilityScope,
+  event: string,
+  fields: Record<string, unknown> = {},
+  options: LogStructuredEventOptions = {}
+): WorkerLogPolicy | null {
+  if (event === "log_override_expired") {
+    return "override_expired";
+  }
+
+  if (shouldAlwaysLogEvent(event, fields)) {
+    return "always_error";
+  }
+
+  const mode = normalizeWorkerLogMode(options.mode);
+  if (mode === "verbose") {
+    return "verbose_global";
+  }
+
+  if (!shouldLogInReducedMode(scope, event, fields)) {
+    return null;
+  }
+
+  if (mode === "reduced") {
+    return "reduced_global";
+  }
+
+  const sessionId = resolveClientSessionId(fields);
+  if (!sessionId) {
+    return "backend_reduced_no_session";
+  }
+
+  const forceVerboseSessions = new Set(parseCsvList(options.forceVerboseSessionIds));
+  if (forceVerboseSessions.has(sessionId)) {
+    return "forced_verbose";
+  }
+
+  const nowMs = typeof options.nowMs === "number" ? options.nowMs : Date.now();
+  const clientDebugLevel = resolveClientDebugLogLevel(fields);
+  const clientDebugExpiresAtMs = resolveClientDebugLogExpiresAtMs(fields);
+  const clientDebugActive =
+    clientDebugLevel !== null
+    && clientDebugExpiresAtMs !== null
+    && clientDebugExpiresAtMs > nowMs;
+  if (clientDebugActive && clientDebugLevel === "verbose" && toBool(options.allowClientVerbose)) {
+    return "forced_verbose";
+  }
+
+  const forceReducedSessions = new Set(parseCsvList(options.forceReducedSessionIds));
+  if (forceReducedSessions.has(sessionId)) {
+    return "forced_reduced";
+  }
+
+  const forceSessionPrefixes = parseCsvList(options.forceSessionPrefixes);
+  if (forceSessionPrefixes.some((prefix) => sessionId.startsWith(prefix))) {
+    return "forced_reduced";
+  }
+
+  if (clientDebugActive && clientDebugLevel === "reduced") {
+    return "forced_reduced";
+  }
+
+  return sampleSessionId(sessionId, parseSampleRate(options.sampleRate)) ? "sampled_in" : null;
+}
+
+export function shouldLogStructuredEvent(
+  scope: ObservabilityScope,
+  event: string,
+  fields: Record<string, unknown> = {},
+  options: LogStructuredEventOptions = {}
+): boolean {
+  return resolveStructuredLogPolicy(scope, event, fields, options) !== null;
+}
+
 export function logStructuredEvent(
   scope: ObservabilityScope,
   event: string,
   fields: Record<string, unknown> = {},
   options: LogStructuredEventOptions = {}
 ): void {
-  if (!shouldLogStructuredEvent(scope, event, fields, options)) {
+  const logPolicy = resolveStructuredLogPolicy(scope, event, fields, options);
+  if (!logPolicy) {
     return;
   }
 
@@ -114,6 +304,7 @@ export function logStructuredEvent(
     ts: new Date().toISOString(),
     scope,
     event,
+    ...(typeof fields.log_policy === "string" ? {} : { log_policy: logPolicy }),
     ...fields,
   };
 

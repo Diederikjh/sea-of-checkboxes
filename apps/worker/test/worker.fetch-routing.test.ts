@@ -492,6 +492,31 @@ describe("top-level worker fetch routing", () => {
     expect(forwardedUrl.searchParams.get("clientSessionId")).toBe("web_session_1");
   });
 
+  it("forwards debug logging metadata on websocket requests", async () => {
+    const { env, connectionShard } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest(
+        "/ws?clientSessionId=web_session_1&debugLogs=reduced&debugLogsExpiresAtMs=123456789",
+        {
+          headers: {
+            upgrade: "websocket",
+          },
+        }
+      ),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    const shardName = connectionShard.requestedNames[0];
+    if (!shardName) {
+      throw new Error("Expected shard name");
+    }
+
+    const forwardedUrl = forwardedWebSocketUrlForShard(connectionShard, shardName);
+    expect(forwardedUrl.searchParams.get("debugLogs")).toBe("reduced");
+    expect(forwardedUrl.searchParams.get("debugLogsExpiresAtMs")).toBe("123456789");
+  });
+
   it("rejects websocket bootstrap without anonymous minting when anon auth is disabled", async () => {
     const { env, connectionShard } = createEnv();
     env.ANON_AUTH_ENABLED = "0";

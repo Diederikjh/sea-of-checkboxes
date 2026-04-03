@@ -6,6 +6,7 @@ import {
 } from "@sea/domain";
 
 import {
+  type ClientDebugLogLevel,
   isWebSocketUpgrade,
   isValidTileKey,
   jsonResponse,
@@ -50,6 +51,11 @@ const SHARE_LINK_TTL_SECONDS = 90 * 24 * 60 * 60;
 const SHARE_LINK_MAX_ZOOM = 64;
 const WS_DISABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 const CLIENT_SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const CLIENT_DEBUG_LOG_TTL_MS = 15 * 60 * 1_000;
+const CLIENT_DEBUG_LOG_LEVELS = new Set<ClientDebugLogLevel>(["reduced", "verbose"]);
+const CLIENT_DEBUG_LOG_HEADER = "x-debug-logs";
+const CLIENT_DEBUG_LOG_EXPIRES_AT_MS_HEADER = "x-debug-logs-expires-at-ms";
+const CLIENT_SESSION_ID_HEADER = "x-client-session-id";
 
 interface ShareLinkRecord {
   x: number;
@@ -75,12 +81,64 @@ function buildShardUrl(identity: ConnectionIdentity, shardName: string): URL {
   if (typeof identity.clientSessionId === "string" && identity.clientSessionId.length > 0) {
     shardUrl.searchParams.set("clientSessionId", identity.clientSessionId);
   }
+  if (typeof identity.clientDebugLogLevel === "string") {
+    shardUrl.searchParams.set("debugLogs", identity.clientDebugLogLevel);
+  }
+  if (typeof identity.clientDebugLogExpiresAtMs === "number") {
+    shardUrl.searchParams.set("debugLogsExpiresAtMs", String(identity.clientDebugLogExpiresAtMs));
+  }
   return shardUrl;
 }
 
 function resolveClientSessionId(url: URL): string | undefined {
   const raw = url.searchParams.get("clientSessionId")?.trim() ?? "";
   return CLIENT_SESSION_ID_PATTERN.test(raw) ? raw : undefined;
+}
+
+function resolveClientSessionIdFromHeaders(request: Request): string | undefined {
+  const raw = request.headers.get(CLIENT_SESSION_ID_HEADER)?.trim() ?? "";
+  return CLIENT_SESSION_ID_PATTERN.test(raw) ? raw : undefined;
+}
+
+function parseClientDebugLogLevel(raw: string | null | undefined): ClientDebugLogLevel | undefined {
+  const level = raw?.trim().toLowerCase() ?? "";
+  return CLIENT_DEBUG_LOG_LEVELS.has(level as ClientDebugLogLevel)
+    ? (level as ClientDebugLogLevel)
+    : undefined;
+}
+
+function resolveClientDebugLogFromUrl(
+  url: URL,
+  nowMs: number = Date.now()
+): { level: ClientDebugLogLevel; expiresAtMs: number } | undefined {
+  const level = parseClientDebugLogLevel(url.searchParams.get("debugLogs"));
+  const rawExpiresAtMs = url.searchParams.get("debugLogsExpiresAtMs")?.trim() ?? "";
+  const expiresAtMs = Number.parseInt(rawExpiresAtMs, 10);
+  if (!level || !Number.isFinite(expiresAtMs) || expiresAtMs <= 0) {
+    return undefined;
+  }
+
+  return {
+    level,
+    expiresAtMs: Math.min(expiresAtMs, nowMs + CLIENT_DEBUG_LOG_TTL_MS),
+  };
+}
+
+function resolveClientDebugLogFromHeaders(
+  request: Request,
+  nowMs: number = Date.now()
+): { level: ClientDebugLogLevel; expiresAtMs: number } | undefined {
+  const level = parseClientDebugLogLevel(request.headers.get(CLIENT_DEBUG_LOG_HEADER));
+  const rawExpiresAtMs = request.headers.get(CLIENT_DEBUG_LOG_EXPIRES_AT_MS_HEADER)?.trim() ?? "";
+  const expiresAtMs = Number.parseInt(rawExpiresAtMs, 10);
+  if (!level || !Number.isFinite(expiresAtMs) || expiresAtMs <= 0) {
+    return undefined;
+  }
+
+  return {
+    level,
+    expiresAtMs: Math.min(expiresAtMs, nowMs + CLIENT_DEBUG_LOG_TTL_MS),
+  };
 }
 
 function serviceUnavailableResponse(reason: string): Response {
@@ -143,6 +201,7 @@ async function resolveIdentity(
 ): Promise<ConnectionIdentity | null> {
   const requestedToken = url.searchParams.get("token")?.trim() ?? "";
   const clientSessionId = resolveClientSessionId(url);
+  const clientDebugLog = resolveClientDebugLogFromUrl(url);
   const signingSecret = runtime.identitySigningSecret;
   const authMode = resolveAuthMode(env);
 
@@ -161,6 +220,10 @@ async function resolveIdentity(
         name: verifiedIdentity.name,
         token,
         ...(clientSessionId ? { clientSessionId } : {}),
+        ...(clientDebugLog ? {
+          clientDebugLogLevel: clientDebugLog.level,
+          clientDebugLogExpiresAtMs: clientDebugLog.expiresAtMs,
+        } : {}),
       };
     }
   }
@@ -180,6 +243,10 @@ async function resolveIdentity(
     name,
     token: await createIdentityToken(uid, name, signingSecret),
     ...(clientSessionId ? { clientSessionId } : {}),
+    ...(clientDebugLog ? {
+      clientDebugLogLevel: clientDebugLog.level,
+      clientDebugLogExpiresAtMs: clientDebugLog.expiresAtMs,
+    } : {}),
   };
 }
 
@@ -476,6 +543,8 @@ async function handleAuthSessionRequest(
   env: Env,
   runtime: ReturnType<typeof resolveWorkerRuntimeControls>
 ): Promise<Response> {
+  const clientSessionId = resolveClientSessionIdFromHeaders(request);
+  const clientDebugLog = resolveClientDebugLogFromHeaders(request);
   if (resolveAuthMode(env) === "legacy") {
     return withAuthSessionCors(new Response("Not found", { status: 404 }));
   }
@@ -522,6 +591,11 @@ async function handleAuthSessionRequest(
     console.error("auth_session_verifier_not_configured", {
       hasExternalVerifier: Boolean(env.EXTERNAL_IDENTITY_VERIFIER),
       hasFirebaseProjectId: typeof env.FIREBASE_PROJECT_ID === "string" && env.FIREBASE_PROJECT_ID.trim().length > 0,
+      ...(clientSessionId ? { client_session_id: clientSessionId } : {}),
+      ...(clientDebugLog ? {
+        client_debug_log_level: clientDebugLog.level,
+        client_debug_log_expires_at_ms: clientDebugLog.expiresAtMs,
+      } : {}),
     });
     return withAuthSessionCors(
       jsonResponse(
@@ -564,6 +638,11 @@ async function handleAuthSessionRequest(
     const errorDetail = error instanceof Error ? error.message : String(error);
     console.error("auth_session_unhandled_error", {
       error: errorDetail,
+      ...(clientSessionId ? { client_session_id: clientSessionId } : {}),
+      ...(clientDebugLog ? {
+        client_debug_log_level: clientDebugLog.level,
+        client_debug_log_expires_at_ms: clientDebugLog.expiresAtMs,
+      } : {}),
     });
     return withAuthSessionCors(
       jsonResponse(

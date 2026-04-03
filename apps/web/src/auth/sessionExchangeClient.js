@@ -1,5 +1,9 @@
 import { normalizeAppSession, normalizeExternalAssertion } from "./contracts";
 
+import {
+  buildDebugLoggingHeaders,
+} from "../debugLogging";
+
 function defaultFetch(input, init) {
   return globalThis.fetch(input, init);
 }
@@ -7,6 +11,9 @@ function defaultFetch(input, init) {
 export function createAuthSessionExchangeClient({
   apiBaseUrl,
   fetchFn = typeof fetch === "function" ? defaultFetch : null,
+  clientSessionId = "",
+  debugLoggingState = null,
+  debugLoggingStateResolver = null,
 } = {}) {
   if (typeof apiBaseUrl !== "string" || apiBaseUrl.trim().length === 0) {
     throw new Error("Missing apiBaseUrl for auth session exchange");
@@ -16,6 +23,10 @@ export function createAuthSessionExchangeClient({
   }
 
   const endpoint = `${apiBaseUrl.replace(/\/+$/, "")}/auth/session`;
+  const resolveDebugLoggingState =
+    typeof debugLoggingStateResolver === "function"
+      ? debugLoggingStateResolver
+      : () => debugLoggingState;
 
   return {
     async exchange(assertion, legacyToken = "") {
@@ -35,6 +46,10 @@ export function createAuthSessionExchangeClient({
         method: "POST",
         headers: {
           "content-type": "application/json",
+          ...(typeof clientSessionId === "string" && clientSessionId.trim().length > 0
+            ? { "x-client-session-id": clientSessionId.trim() }
+            : {}),
+          ...buildDebugLoggingHeaders(resolveDebugLoggingState()),
         },
         body: JSON.stringify(body),
       });
