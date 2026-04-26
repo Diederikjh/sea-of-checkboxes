@@ -9,6 +9,8 @@
     "logs:server:capture": "node scripts/capture-worker-logs.mjs",
     "logs:server:query": "node scripts/query-worker-logs.mjs",
     "logs:client:capture": "node scripts/capture-client-console.mjs",
+    "r2:backup": "node scripts/r2-json-backup.mjs backup",
+    "r2:restore": "node scripts/r2-json-backup.mjs restore",
     "swarm:bot": "node scripts/swarm/swarm-bot.mjs",
     "swarm:run": "node scripts/swarm/run-swarm.mjs",
     "swarm:flags": "node scripts/swarm/run-flag-matrix.mjs",
