@@ -5,7 +5,7 @@ export type ObservabilityScope =
   | "tile_owner_do"
   | "tile_owner_persistence";
 
-export type WorkerLogMode = "verbose" | "reduced" | "sampled";
+export type WorkerLogMode = "verbose" | "reduced" | "sampled" | "errors";
 export type WorkerLogPolicy =
   | "always_error"
   | "verbose_global"
@@ -63,7 +63,7 @@ const REDUCED_MODE_CURSOR_HUB_EVENTS = new Set([
 ]);
 
 function normalizeWorkerLogMode(mode: string | null | undefined): WorkerLogMode {
-  if (mode === "reduced" || mode === "sampled") {
+  if (mode === "reduced" || mode === "sampled" || mode === "errors") {
     return mode;
   }
   return "verbose";
@@ -234,6 +234,31 @@ export function resolveStructuredLogPolicy(
     return "verbose_global";
   }
 
+  const sessionId = resolveClientSessionId(fields);
+  const nowMs = typeof options.nowMs === "number" ? options.nowMs : Date.now();
+  const clientDebugLevel = resolveClientDebugLogLevel(fields);
+  const clientDebugExpiresAtMs = resolveClientDebugLogExpiresAtMs(fields);
+  const clientDebugActive =
+    clientDebugLevel !== null
+    && clientDebugExpiresAtMs !== null
+    && clientDebugExpiresAtMs > nowMs;
+
+  if (sessionId) {
+    const forceVerboseSessions = new Set(parseCsvList(options.forceVerboseSessionIds));
+    if (forceVerboseSessions.has(sessionId)) {
+      return "forced_verbose";
+    }
+
+    const forceSessionPrefixes = parseCsvList(options.forceSessionPrefixes);
+    if (forceSessionPrefixes.some((prefix) => sessionId.startsWith(prefix))) {
+      return "forced_verbose";
+    }
+
+    if (clientDebugActive && clientDebugLevel === "verbose" && toBool(options.allowClientVerbose)) {
+      return "forced_verbose";
+    }
+  }
+
   if (!shouldLogInReducedMode(scope, event, fields)) {
     return null;
   }
@@ -242,25 +267,8 @@ export function resolveStructuredLogPolicy(
     return "reduced_global";
   }
 
-  const sessionId = resolveClientSessionId(fields);
   if (!sessionId) {
-    return "backend_reduced_no_session";
-  }
-
-  const forceVerboseSessions = new Set(parseCsvList(options.forceVerboseSessionIds));
-  if (forceVerboseSessions.has(sessionId)) {
-    return "forced_verbose";
-  }
-
-  const nowMs = typeof options.nowMs === "number" ? options.nowMs : Date.now();
-  const clientDebugLevel = resolveClientDebugLogLevel(fields);
-  const clientDebugExpiresAtMs = resolveClientDebugLogExpiresAtMs(fields);
-  const clientDebugActive =
-    clientDebugLevel !== null
-    && clientDebugExpiresAtMs !== null
-    && clientDebugExpiresAtMs > nowMs;
-  if (clientDebugActive && clientDebugLevel === "verbose" && toBool(options.allowClientVerbose)) {
-    return "forced_verbose";
+    return mode === "sampled" ? "backend_reduced_no_session" : null;
   }
 
   const forceReducedSessions = new Set(parseCsvList(options.forceReducedSessionIds));
@@ -268,13 +276,12 @@ export function resolveStructuredLogPolicy(
     return "forced_reduced";
   }
 
-  const forceSessionPrefixes = parseCsvList(options.forceSessionPrefixes);
-  if (forceSessionPrefixes.some((prefix) => sessionId.startsWith(prefix))) {
+  if (clientDebugActive && clientDebugLevel === "reduced") {
     return "forced_reduced";
   }
 
-  if (clientDebugActive && clientDebugLevel === "reduced") {
-    return "forced_reduced";
+  if (mode === "errors") {
+    return null;
   }
 
   return sampleSessionId(sessionId, parseSampleRate(options.sampleRate)) ? "sampled_in" : null;

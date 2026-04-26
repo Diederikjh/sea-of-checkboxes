@@ -218,6 +218,102 @@ describe("worker observability filtering", () => {
     ).toBe("backend_reduced_no_session");
   });
 
+  it("supports errors mode for quota-sensitive production logging", () => {
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "ws_connect",
+        {
+          shard: "shard-1",
+          client_session_id: "session-a",
+        },
+        {
+          mode: "errors",
+          sampleRate: "1",
+          forceSessionPrefixes: "swarm_",
+          nowMs: 1_000,
+        }
+      )
+    ).toBeNull();
+
+    expect(
+      resolveStructuredLogPolicy(
+        "worker",
+        "healthcheck",
+        {},
+        {
+          mode: "errors",
+          nowMs: 1_000,
+        }
+      )
+    ).toBeNull();
+
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "cursor_pull_alarm_failed",
+        {
+          shard: "shard-1",
+          error: true,
+        },
+        {
+          mode: "errors",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("always_error");
+  });
+
+  it("keeps explicit per-session debug overrides available in errors mode", () => {
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "ws_connect",
+        {
+          shard: "shard-1",
+          client_session_id: "session-a",
+        },
+        {
+          mode: "errors",
+          forceReducedSessionIds: "session-a",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("forced_reduced");
+
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "cursor_local_publish",
+        {
+          shard: "shard-1",
+          client_session_id: "session-b",
+        },
+        {
+          mode: "errors",
+          forceVerboseSessionIds: "session-b",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("forced_verbose");
+
+    expect(
+      resolveStructuredLogPolicy(
+        "connection_shard_do",
+        "cursor_local_publish",
+        {
+          shard: "shard-1",
+          client_session_id: "swarm_run_bot_001",
+        },
+        {
+          mode: "errors",
+          forceSessionPrefixes: "swarm_",
+          nowMs: 1_000,
+        }
+      )
+    ).toBe("forced_verbose");
+  });
+
   it("logs override expiry events regardless of sampling", () => {
     expect(
       resolveStructuredLogPolicy(

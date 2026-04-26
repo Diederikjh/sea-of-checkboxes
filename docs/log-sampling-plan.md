@@ -19,10 +19,11 @@ Today the worker already has a coarse global mode switch in [`../apps/worker/src
 - `verbose`
 - `reduced`
 - `sampled`
+- `errors`
 
 Current deployed default in [`../apps/worker/wrangler.jsonc`](../apps/worker/wrangler.jsonc):
 
-- `WORKER_LOG_MODE = "sampled"`
+- `WORKER_LOG_MODE = "errors"`
 - `WORKER_LOG_SAMPLE_RATE = "0.01"`
 - `WORKER_LOG_FORCE_SESSION_PREFIXES = "swarm_"`
 - `WORKER_LOG_ALLOW_CLIENT_VERBOSE = "false"`
@@ -49,6 +50,7 @@ This plan is now partly implemented.
 Implemented:
 
 - worker `sampled` mode and deterministic per-session sampling
+- worker `errors` mode for quota-sensitive production logging
 - `WORKER_LOG_SAMPLE_RATE`
 - `WORKER_LOG_FORCE_REDUCED_SESSION_IDS`
 - `WORKER_LOG_FORCE_VERBOSE_SESSION_IDS`
@@ -60,7 +62,7 @@ Implemented:
 - websocket propagation of client debug logging state
 - `/auth/session` propagation of `clientSessionId` and client debug logging headers
 - broader `client_session_id` propagation for single-client worker paths
-- default `swarm_` prefix forcing to reduced logging
+- forced-prefix verbose support for sessions such as `swarm_`
 
 Implemented but intentionally disabled by config:
 
@@ -71,7 +73,7 @@ Implemented but intentionally disabled by config:
 Still outstanding / not yet validated operationally:
 
 - broader production validation of actual sampled session rate under live traffic
-- local and production runbook validation that swarm sessions show reduced-level server logs by default
+- local and production runbook validation for explicitly forced swarm-session server logs
 - any future admin or remote-control layer beyond deploy-time flags
 
 ## Goals
@@ -110,7 +112,7 @@ Reasons:
 
 ## Proposed Worker Modes
 
-Add one new effective mode while keeping the two existing concepts:
+Use the existing worker mode switch with four effective modes:
 
 - `verbose`
   - current behavior
@@ -121,22 +123,25 @@ Add one new effective mode while keeping the two existing concepts:
   - emit errors, anomalies, and the reduced allowlist
 
 - `sampled`
-  - new default candidate for production
   - emit all errors and anomalies
   - emit normal `reduced` logs only for sampled-in sessions
+
+- `errors`
+  - current production default
+  - emit only always-preserved errors and anomalies unless a session is explicitly forced to `reduced` or `verbose`
 
 Recommended production direction:
 
 - local dev can still use `verbose`
-- production should move from global `reduced` to global `sampled`
+- production should use `errors` by default, with per-session overrides for incident debugging
 
 ## Proposed Worker Controls
 
 ### Base env vars
 
 - `WORKER_LOG_MODE`
-  - allowed values: `verbose`, `reduced`, `sampled`
-  - recommended production default after rollout: `sampled`
+  - allowed values: `verbose`, `reduced`, `sampled`, `errors`
+  - recommended production default: `errors`
 
 - `WORKER_LOG_SAMPLE_RATE`
   - decimal between `0` and `1`
@@ -157,7 +162,7 @@ Recommended production direction:
 - `WORKER_LOG_FORCE_SESSION_PREFIXES`
   - comma-separated prefixes
   - recommended initial value includes `swarm_`
-  - keeps test harness sessions logged without hand-curating every bot id
+  - emits full verbose logs for matching sessions without hand-curating every bot id
 
 - `WORKER_LOG_ALLOW_CLIENT_VERBOSE`
   - default: `0`
@@ -182,15 +187,16 @@ Recommended behavior:
 4. If the effective global mode is `sampled`:
    - if the session is explicitly forced to `verbose`, log everything for that session
    - else if the session is explicitly forced to `reduced`, apply the current reduced filter and log the surviving events
-   - else if the session matches a forced prefix such as `swarm_`, apply the current reduced filter and log the surviving events
+   - else if the session matches a forced prefix such as `swarm_`, log everything for that session
    - else if the session hashes into the sample, apply the current reduced filter and log the surviving events
    - else suppress routine non-error session-scoped logs
+5. If the effective global mode is `errors`, suppress routine non-error logs unless the session is explicitly forced to `reduced` or `verbose`; forced prefixes are treated as verbose.
 
 Important details:
 
 - the hash must be stable across requests and worker instances
 - the hash must not depend on event name or timestamp
-- if an event has no usable `clientSessionId`, keep current non-session behavior rather than pretending it belongs to a sampled-out session
+- if an event has no usable `clientSessionId`, `sampled` keeps current non-session behavior and `errors` suppresses routine non-error logs
 
 That last point matters because some worker events do not naturally belong to one browser session.
 
@@ -329,19 +335,19 @@ That build flag is optional. The more important backend guard is still `WORKER_L
 
 ## Swarm Script Defaults
 
-Swarm runs should default to logging-enabled behavior.
+Swarm runs default to verbose worker logging through the existing prefix override.
 
 This is important because the whole point of the swarm harness is to produce debuggable runs, and the current production-debug workflow already pivots on bot `clientSessionId` values.
 
-Recommended requirement:
+Recommended configuration:
 
-- any `clientSessionId` beginning with `swarm_` should automatically be treated as `forced reduced`
+- keep `WORKER_LOG_FORCE_SESSION_PREFIXES = "swarm_"` when server-side swarm traces are needed
 
-Why this should be the default:
+Why this remains useful:
 
 - the swarm scripts already generate stable ids with that prefix
 - production swarm runs are rare and intentional
-- a sampled-out swarm run would make the harness materially less useful
+- an unforced normal browser session stays quiet under the production `errors` default
 - the extra log volume from swarm bots is bounded and attributable
 
 Optional future refinement:
@@ -351,7 +357,7 @@ Optional future refinement:
 
 Documentation follow-up for the swarm docs:
 
-- explicitly state that swarm sessions default to worker `reduced` logging even when production is in `sampled` mode
+- explicitly state that `swarm_` sessions default to worker `verbose` logging
 
 ## Implementation Shape
 
@@ -418,10 +424,11 @@ Recommended worker-emitted log metadata:
 ### Phase 1: Worker-only sampling foundation
 
 - add `sampled` mode
+- add `errors` mode for routine-log suppression
 - add stable hashing by `clientSessionId`
 - keep errors/anomalies always logged
 - expand `client_session_id` propagation for single-client worker paths
-- keep events without `clientSessionId` on current `reduced` behavior
+- keep events without `clientSessionId` on current `reduced` behavior in `sampled` mode
 
 Status:
 
@@ -464,19 +471,19 @@ Success criteria:
 
 - deep incident traces are possible without flipping the whole worker to verbose
 
-### Phase 4: Swarm default inclusion
+### Phase 4: Swarm verbose inclusion
 
-- force `swarm_` sessions to `reduced`
+- force `swarm_` sessions to `verbose`
 - update swarm docs accordingly
 
 Status:
 
-- forcing `swarm_` sessions to reduced is implemented in worker config
+- forced-prefix verbose support is implemented, and the default worker config sets `WORKER_LOG_FORCE_SESSION_PREFIXES` to `swarm_`
 - doc and runbook validation still worth checking in practice
 
 Success criteria:
 
-- swarm output remains actionable even after production moves to sampled logging
+- swarm output remains actionable without changing application code
 
 ## Test Plan
 
@@ -490,8 +497,9 @@ Add unit coverage for:
 - forced reduced session bypasses sampling
 - forced verbose session bypasses both sampling and reduced filtering
 - single-client worker paths include `client_session_id` when context is available
-- events without `client_session_id` continue following current reduced behavior
-- `swarm_` prefix sessions default to reduced logging
+- events without `client_session_id` continue following current reduced behavior in `sampled` mode
+- `errors` mode suppresses routine no-session logs
+- `swarm_` prefix sessions default to verbose logging
 - expired client-requested reduced overrides fall back cleanly and emit a server-side expiry event
 - emitted logs include the expected `log_policy`
 
@@ -510,7 +518,7 @@ Add coverage for:
 Add or update coverage for:
 
 - default swarm `clientSessionId` values continue using the `swarm_` prefix
-- docs and run-config output make the implied logging behavior clear
+- docs and run-config output make the prefix logging behavior clear
 
 ## Decisions From Review
 
@@ -524,11 +532,11 @@ Add or update coverage for:
 
 The first implementation should be the smallest version that solves the operational problem:
 
-- production worker mode becomes `sampled`
+- production worker mode becomes `errors`
 - deterministic sampling key is `clientSessionId`
 - all errors and anomalies remain unsampled
 - `?debug_logs=reduced` restores one session to the current worker `reduced` level for at most `15 minutes`
-- `swarm_` sessions default to `reduced`
+- `swarm_` sessions default to `verbose`
 - emitted worker logs carry `log_policy`
 
 That gets the main cost and signal benefits without committing the whole system to per-session verbose logging on day one.
