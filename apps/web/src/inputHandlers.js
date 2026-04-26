@@ -99,6 +99,7 @@ export function setupInputHandlers({
   onTileCellsChanged = () => {},
   getActiveVisibleRemoteCursorCount = () => 0,
   getSetCellGuard = () => null,
+  onSetCellCommitted = () => {},
 }) {
   let dragging = false;
   let dragStart = null;
@@ -388,6 +389,9 @@ export function setupInputHandlers({
         v: pendingSetCell.nextValue,
         op: pendingSetCell.op,
       });
+      onSetCellCommitted({
+        nextValue: pendingSetCell.nextValue,
+      });
       pendingSetCell = null;
       dragStart = null;
       return;
@@ -451,6 +455,9 @@ export function setupInputHandlers({
       nextValue,
     });
     transport.send(payload);
+    onSetCellCommitted({
+      nextValue,
+    });
 
     dragStart = null;
   };

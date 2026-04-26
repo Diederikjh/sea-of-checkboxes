@@ -37,6 +37,7 @@ jobs:
       VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
       VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
       VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+      VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID }}
 
     steps:
       - name: Checkout
@@ -78,6 +79,10 @@ jobs:
           fi
           if [ -z "${VITE_FIREBASE_APP_ID}" ]; then
             echo "Missing repo variable: VITE_FIREBASE_APP_ID"
+            exit 1
+          fi
+          if [ -z "${VITE_FIREBASE_MEASUREMENT_ID}" ]; then
+            echo "Missing repo variable: VITE_FIREBASE_MEASUREMENT_ID"
             exit 1
           fi
           case "${VITE_APP_DISABLED}" in

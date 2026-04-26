@@ -117,6 +117,7 @@ VITE_FIREBASE_API_KEY=<firebase-api-key>
 VITE_FIREBASE_AUTH_DOMAIN=<project-id>.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=<project-id>
 VITE_FIREBASE_APP_ID=<firebase-app-id>
+VITE_FIREBASE_MEASUREMENT_ID=<firebase-measurement-id>
 VITE_APP_DISABLED=0
 VITE_SHARE_LINKS_ENABLED=1
 VITE_ANON_AUTH_ENABLED=1
@@ -222,6 +223,17 @@ Required GitHub repository variables:
 - `VITE_FIREBASE_AUTH_DOMAIN`
 - `VITE_FIREBASE_PROJECT_ID`
 - `VITE_FIREBASE_APP_ID`
+- `VITE_FIREBASE_MEASUREMENT_ID`
+
+When adding or changing any frontend `VITE_*` build variable, update every place that
+builds the web app:
+- local env files such as `apps/web/.env.local`
+- Cloudflare Pages dashboard variables, if using dashboard builds
+- GitHub repository variables and `.github/workflows/deploy-pages.yml`, if using Actions deploys
+
+GitHub Actions does not automatically inherit variables from Cloudflare Pages. If a
+new `VITE_*` value is only added in Cloudflare, the Actions-built deploy will still
+build without it.
 
 Optional GitHub repository variables:
 - `CLOUDFLARE_PAGES_PROJECT` (defaults to `sea-of-checkboxes-web`)

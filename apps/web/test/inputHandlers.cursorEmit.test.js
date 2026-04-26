@@ -37,6 +37,7 @@ function createHarness({
   getActiveVisibleRemoteCursorCount = () => 0,
   getSetCellGuard = () => null,
   tileData = null,
+  onSetCellCommitted = vi.fn(),
 } = {}) {
   const canvasHarness = createCanvasHarness();
   const transport = { send: vi.fn() };
@@ -64,9 +65,10 @@ function createHarness({
     apiBaseUrl: "http://worker.local",
     getActiveVisibleRemoteCursorCount,
     getSetCellGuard,
+    onSetCellCommitted,
   });
 
-  return { ...canvasHarness, transport, setStatus, tileStore, heatStore };
+  return { ...canvasHarness, transport, setStatus, tileStore, heatStore, onSetCellCommitted };
 }
 
 describe("inputHandlers adaptive cursor emit policy", () => {
@@ -193,5 +195,23 @@ describe("inputHandlers adaptive cursor emit policy", () => {
     expect(secondCall[2]).toBe(0);
     expect(harness.transport.send).not.toHaveBeenCalled();
     expect(harness.setStatus).toHaveBeenCalledWith("Waiting for tile subscriptions to resync...");
+  });
+
+  it("reports committed setCell interactions", () => {
+    vi.spyOn(Date, "now").mockReturnValue(3_000);
+    const harness = createHarness({
+      tileData: { bits: new Uint8Array(512) },
+    });
+
+    harness.emit("pointerdown", { clientX: 320, clientY: 240 });
+    harness.emit("pointerup", { clientX: 320, clientY: 240 });
+
+    expect(harness.transport.send).toHaveBeenCalledWith(expect.objectContaining({
+      t: "setCell",
+      v: 1,
+    }));
+    expect(harness.onSetCellCommitted).toHaveBeenCalledWith({
+      nextValue: 1,
+    });
   });
 });

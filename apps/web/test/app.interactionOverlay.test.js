@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   markTransportReconnected: vi.fn(),
   rebuildCounter: 0,
   resolveFirebaseConfigFromEnv: vi.fn(() => null),
+  resolveFirebaseAnalyticsConfigFromEnv: vi.fn(() => null),
   createFirebaseAuthIdentityProvider: vi.fn(),
   createAuthSessionExchangeClient: vi.fn(),
   readShareIdFromLocation: vi.fn(() => null),
@@ -158,8 +159,12 @@ vi.mock("../src/transportConfig", () => ({
 }));
 
 vi.mock("../src/auth/firebaseAuthProvider", () => ({
-  resolveFirebaseConfigFromEnv: mocks.resolveFirebaseConfigFromEnv,
   createFirebaseAuthIdentityProvider: mocks.createFirebaseAuthIdentityProvider,
+}));
+
+vi.mock("../src/firebaseConfig", () => ({
+  resolveFirebaseConfigFromEnv: mocks.resolveFirebaseConfigFromEnv,
+  resolveFirebaseAnalyticsConfigFromEnv: mocks.resolveFirebaseAnalyticsConfigFromEnv,
 }));
 
 vi.mock("../src/auth/sessionExchangeClient", () => ({
@@ -246,6 +251,8 @@ describe("app interaction overlays", () => {
     mocks.forceSubscriptionRebuild.mockReset();
     mocks.resolveFirebaseConfigFromEnv.mockReset();
     mocks.resolveFirebaseConfigFromEnv.mockReturnValue(null);
+    mocks.resolveFirebaseAnalyticsConfigFromEnv.mockReset();
+    mocks.resolveFirebaseAnalyticsConfigFromEnv.mockReturnValue(null);
     mocks.createFirebaseAuthIdentityProvider.mockReset();
     mocks.createAuthSessionExchangeClient.mockReset();
     mocks.readShareIdFromLocation.mockReset();

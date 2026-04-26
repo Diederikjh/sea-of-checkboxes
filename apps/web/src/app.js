@@ -20,9 +20,15 @@ import {
 } from "./auth/sessionSwitcher";
 import {
   createFirebaseAuthIdentityProvider,
-  resolveFirebaseConfigFromEnv,
 } from "./auth/firebaseAuthProvider";
 import { createAuthSessionExchangeClient } from "./auth/sessionExchangeClient";
+import {
+  createFirebaseAnalyticsReporter,
+} from "./firebaseAnalytics";
+import {
+  resolveFirebaseConfigFromEnv,
+  resolveFirebaseAnalyticsConfigFromEnv,
+} from "./firebaseConfig";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
 import {
@@ -168,6 +174,23 @@ export async function startApp({
 
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
   const firebaseConfig = resolveFirebaseConfigFromEnv(env);
+  const firebaseAnalyticsConfig = resolveFirebaseAnalyticsConfigFromEnv(env);
+  const analyticsReporter = firebaseAnalyticsConfig
+    ? createFirebaseAnalyticsReporter({ config: firebaseAnalyticsConfig })
+    : null;
+  const trackAnalyticsEvent = (name, params = {}) => {
+    if (!analyticsReporter) {
+      return;
+    }
+    void analyticsReporter.logEvent(name, params);
+  };
+  trackAnalyticsEvent("beta_session_start", {
+    share_link: shareId ? 1 : 0,
+    shared_camera_loaded: sharedCamera ? 1 : 0,
+    auth_enabled: firebaseConfig ? 1 : 0,
+    anon_auth_enabled: anonAuthEnabled ? 1 : 0,
+    share_links_enabled: shareLinksEnabled ? 1 : 0,
+  });
   const authSessionExchangeClient = firebaseConfig
     ? createAuthSessionExchangeClient({
         apiBaseUrl,
@@ -435,6 +458,11 @@ export async function startApp({
     onTileCellsChanged: renderLoop.markTileCellsDirty,
     getActiveVisibleRemoteCursorCount,
     getSetCellGuard: subscriptionRebuildTracker.getSetCellGuard,
+    onSetCellCommitted: ({ nextValue }) => {
+      trackAnalyticsEvent("set_cell", {
+        value: nextValue,
+      });
+    },
   });
 
   const isDocumentVisible = () =>
@@ -516,7 +544,7 @@ export async function startApp({
     authTransitionInFlight = true;
     setAuthControlsDisabled(true);
     try {
-      await signInWithGoogleSessionTransition({
+      const result = await signInWithGoogleSessionTransition({
         identityProvider: authIdentityProvider,
         sessionExchangeClient: authSessionExchangeClient,
         readStoredIdentity,
@@ -525,6 +553,7 @@ export async function startApp({
         logOther,
         errorLogger: console,
       });
+      trackAnalyticsEvent(result.ok ? "google_sign_in" : "google_sign_in_failed");
     } finally {
       authTransitionInFlight = false;
       setAuthControlsDisabled(false);
@@ -542,7 +571,7 @@ export async function startApp({
     authTransitionInFlight = true;
     setAuthControlsDisabled(true);
     try {
-      await signOutToAnonymousSessionTransition({
+      const result = await signOutToAnonymousSessionTransition({
         identityProvider: authIdentityProvider,
         sessionExchangeClient: authSessionExchangeClient,
         readStoredAnonymousIdentity,
@@ -552,6 +581,7 @@ export async function startApp({
         logOther,
         errorLogger: console,
       });
+      trackAnalyticsEvent(result.ok ? "google_sign_out" : "google_sign_out_failed");
     } finally {
       authTransitionInFlight = false;
       setAuthControlsDisabled(false);
@@ -580,6 +610,9 @@ export async function startApp({
       } else {
         setStatus(`Share link ready: ${link.url}`);
       }
+      trackAnalyticsEvent("share_create", {
+        copied: link.copied ? 1 : 0,
+      });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       logOther("share create_failed", {

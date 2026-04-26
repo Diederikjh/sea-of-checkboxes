@@ -1,25 +1,5 @@
 import { normalizeAuthPrincipal } from "./contracts";
-
-function normalizeFirebaseConfig(config) {
-  if (!config || typeof config !== "object") {
-    return null;
-  }
-
-  const apiKey = typeof config.apiKey === "string" ? config.apiKey.trim() : "";
-  const authDomain = typeof config.authDomain === "string" ? config.authDomain.trim() : "";
-  const projectId = typeof config.projectId === "string" ? config.projectId.trim() : "";
-  const appId = typeof config.appId === "string" ? config.appId.trim() : "";
-  if (apiKey.length === 0 || authDomain.length === 0 || projectId.length === 0 || appId.length === 0) {
-    return null;
-  }
-
-  return {
-    apiKey,
-    authDomain,
-    projectId,
-    appId,
-  };
-}
+import { normalizeFirebaseConfig } from "../firebaseConfig";
 
 function toPrincipal(user) {
   const principal = normalizeAuthPrincipal({
@@ -65,17 +45,6 @@ async function loadFirebaseSdk() {
     deleteUser: auth.deleteUser,
     signOut: auth.signOut,
   };
-}
-
-export function resolveFirebaseConfigFromEnv(
-  env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {}
-) {
-  return normalizeFirebaseConfig({
-    apiKey: env.VITE_FIREBASE_API_KEY,
-    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
-    projectId: env.VITE_FIREBASE_PROJECT_ID,
-    appId: env.VITE_FIREBASE_APP_ID,
-  });
 }
 
 export function createFirebaseAuthIdentityProvider({
