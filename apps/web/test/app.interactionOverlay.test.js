@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   rebuildCounter: 0,
   resolveFirebaseConfigFromEnv: vi.fn(() => null),
   resolveFirebaseAnalyticsConfigFromEnv: vi.fn(() => null),
+  resolveFirebaseAnalyticsCookieDomain: vi.fn(() => ""),
   createFirebaseAuthIdentityProvider: vi.fn(),
   createAuthSessionExchangeClient: vi.fn(),
   readShareIdFromLocation: vi.fn(() => null),
@@ -165,6 +166,7 @@ vi.mock("../src/auth/firebaseAuthProvider", () => ({
 vi.mock("../src/firebaseConfig", () => ({
   resolveFirebaseConfigFromEnv: mocks.resolveFirebaseConfigFromEnv,
   resolveFirebaseAnalyticsConfigFromEnv: mocks.resolveFirebaseAnalyticsConfigFromEnv,
+  resolveFirebaseAnalyticsCookieDomain: mocks.resolveFirebaseAnalyticsCookieDomain,
 }));
 
 vi.mock("../src/auth/sessionExchangeClient", () => ({

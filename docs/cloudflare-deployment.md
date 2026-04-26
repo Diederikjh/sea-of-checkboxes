@@ -123,6 +123,11 @@ VITE_SHARE_LINKS_ENABLED=1
 VITE_ANON_AUTH_ENABLED=1
 ```
 
+Firebase Analytics is configured in the web app with `cookie_domain: "none"` so
+Google Analytics uses host-only cookies for the current runtime hostname. This
+avoids invalid cookie-domain warnings on Cloudflare Pages' shared `pages.dev`
+domain and does not need to change if the app moves to another hostname.
+
 ## 8. Deploy Frontend to Cloudflare Pages
 
 ### Option A: Pages dashboard

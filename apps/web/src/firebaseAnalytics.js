@@ -11,6 +11,7 @@ async function loadFirebaseAnalyticsSdk() {
     getApps: appSdk.getApps,
     initializeApp: appSdk.initializeApp,
     getAnalytics: analyticsSdk.getAnalytics,
+    initializeAnalytics: analyticsSdk.initializeAnalytics,
     isSupported: analyticsSdk.isSupported,
     logEvent: analyticsSdk.logEvent,
   };
@@ -18,6 +19,7 @@ async function loadFirebaseAnalyticsSdk() {
 
 export function createFirebaseAnalyticsReporter({
   config,
+  cookieDomain = "",
   sdkLoader = loadFirebaseAnalyticsSdk,
   warningLogger = console,
 } = {}) {
@@ -38,8 +40,16 @@ export function createFirebaseAnalyticsReporter({
         }
 
         const app = sdk.getApps().length > 0 ? sdk.getApp() : sdk.initializeApp(normalizedConfig);
+        const normalizedCookieDomain =
+          typeof cookieDomain === "string" ? cookieDomain.trim().toLowerCase() : "";
         return {
-          analytics: sdk.getAnalytics(app),
+          analytics: normalizedCookieDomain.length > 0 && typeof sdk.initializeAnalytics === "function"
+            ? sdk.initializeAnalytics(app, {
+                config: {
+                  cookie_domain: normalizedCookieDomain,
+                },
+              })
+            : sdk.getAnalytics(app),
           logEvent: sdk.logEvent,
         };
       })().catch((error) => {

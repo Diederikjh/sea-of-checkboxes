@@ -28,6 +28,7 @@ import {
 import {
   resolveFirebaseConfigFromEnv,
   resolveFirebaseAnalyticsConfigFromEnv,
+  resolveFirebaseAnalyticsCookieDomain,
 } from "./firebaseConfig";
 import { HeatStore } from "./heatmap";
 import { setupInputHandlers } from "./inputHandlers";
@@ -175,8 +176,12 @@ export async function startApp({
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
   const firebaseConfig = resolveFirebaseConfigFromEnv(env);
   const firebaseAnalyticsConfig = resolveFirebaseAnalyticsConfigFromEnv(env);
+  const firebaseAnalyticsCookieDomain = resolveFirebaseAnalyticsCookieDomain();
   const analyticsReporter = firebaseAnalyticsConfig
-    ? createFirebaseAnalyticsReporter({ config: firebaseAnalyticsConfig })
+    ? createFirebaseAnalyticsReporter({
+        config: firebaseAnalyticsConfig,
+        cookieDomain: firebaseAnalyticsCookieDomain,
+      })
     : null;
   const trackAnalyticsEvent = (name, params = {}) => {
     if (!analyticsReporter) {

@@ -2,6 +2,8 @@ function firebaseEnv(env = typeof import.meta !== "undefined" && import.meta.env
   return env;
 }
 
+const FIREBASE_ANALYTICS_HOST_COOKIE_DOMAIN = "none";
+
 export function normalizeFirebaseConfig(config, {
   requireMeasurementId = false,
 } = {}) {
@@ -59,4 +61,10 @@ export function resolveFirebaseAnalyticsConfigFromEnv(env = firebaseEnv()) {
     },
     { requireMeasurementId: true }
   );
+}
+
+export function resolveFirebaseAnalyticsCookieDomain({
+  locationLike = typeof window !== "undefined" ? window.location : undefined,
+} = {}) {
+  return locationLike ? FIREBASE_ANALYTICS_HOST_COOKIE_DOMAIN : "";
 }

@@ -5,6 +5,7 @@ import {
 } from "../src/firebaseAnalytics";
 import {
   resolveFirebaseAnalyticsConfigFromEnv,
+  resolveFirebaseAnalyticsCookieDomain,
   resolveFirebaseConfigFromEnv,
 } from "../src/firebaseConfig";
 
@@ -50,6 +51,20 @@ describe("firebase analytics", () => {
     })).toEqual(analyticsConfig());
   });
 
+  it("uses host-only analytics cookies when running in a browser", () => {
+    expect(resolveFirebaseAnalyticsCookieDomain({
+      locationLike: { hostname: "sea-of-checkboxes-web.pages.dev" },
+    })).toBe("none");
+
+    expect(resolveFirebaseAnalyticsCookieDomain({
+      locationLike: { hostname: "localhost" },
+    })).toBe("none");
+
+    expect(resolveFirebaseAnalyticsCookieDomain({
+      locationLike: { hostname: "future.example.com" },
+    })).toBe("none");
+  });
+
   it("initializes analytics once and logs events", async () => {
     const app = {};
     const getAnalytics = vi.fn(() => "analytics-instance");
@@ -75,6 +90,38 @@ describe("firebase analytics", () => {
     expect(getAnalytics).toHaveBeenCalledWith(app);
     expect(logEvent).toHaveBeenCalledWith("analytics-instance", "beta_session_start", { share_link: 0 });
     expect(logEvent).toHaveBeenCalledWith("analytics-instance", "set_cell", { value: 1 });
+  });
+
+  it("passes an explicit cookie domain mode to Firebase Analytics when configured", async () => {
+    const app = {};
+    const getAnalytics = vi.fn();
+    const initializeAnalytics = vi.fn(() => "analytics-instance");
+    const logEvent = vi.fn();
+    const initializeApp = vi.fn(() => app);
+    const reporter = createFirebaseAnalyticsReporter({
+      config: analyticsConfig(),
+      cookieDomain: "none",
+      sdkLoader: async () => ({
+        getApp: vi.fn(),
+        getApps: vi.fn(() => []),
+        initializeApp,
+        initializeAnalytics,
+        getAnalytics,
+        isSupported: vi.fn().mockResolvedValue(true),
+        logEvent,
+      }),
+    });
+
+    await reporter.logEvent("beta_session_start", { share_link: 0 });
+
+    expect(initializeApp).toHaveBeenCalledWith(analyticsConfig());
+    expect(initializeAnalytics).toHaveBeenCalledWith(app, {
+      config: {
+        cookie_domain: "none",
+      },
+    });
+    expect(getAnalytics).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("analytics-instance", "beta_session_start", { share_link: 0 });
   });
 
   it("does not log when analytics is unsupported in the current browser", async () => {
