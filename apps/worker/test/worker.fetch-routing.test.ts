@@ -211,6 +211,27 @@ describe("top-level worker fetch routing", () => {
     expect(tileOwner.requestedNames.length).toBe(0);
   });
 
+  it("responds to auth session preflight requests with client metadata headers", async () => {
+    const { env, connectionShard, tileOwner } = createEnv();
+    const response = await handleWorkerFetch(
+      workerRequest("/auth/session", {
+        method: "OPTIONS",
+      }),
+      env
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(response.headers.get("access-control-allow-methods")).toContain("OPTIONS");
+    expect(response.headers.get("access-control-allow-headers")).toContain("content-type");
+    expect(response.headers.get("access-control-allow-headers")).toContain("x-client-session-id");
+    expect(response.headers.get("access-control-allow-headers")).toContain("x-debug-logs");
+    expect(response.headers.get("access-control-allow-headers")).toContain("x-debug-logs-expires-at-ms");
+    expect(connectionShard.requestedNames.length).toBe(0);
+    expect(tileOwner.requestedNames.length).toBe(0);
+  });
+
   it("creates share links using GUID ids and stores camera state with ttl", async () => {
     const { env, shareLinks } = createEnv();
     const response = await handleWorkerFetch(

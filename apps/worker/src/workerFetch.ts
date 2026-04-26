@@ -35,7 +35,7 @@ const CELL_LAST_EDIT_CORS_HEADERS: Record<string, string> = {
 const AUTH_SESSION_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
+  "access-control-allow-headers": "content-type, x-client-session-id, x-debug-logs, x-debug-logs-expires-at-ms",
   "access-control-max-age": "86400",
 };
 const SHARE_LINK_CORS_HEADERS: Record<string, string> = {
