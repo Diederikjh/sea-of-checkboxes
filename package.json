@@ -14,7 +14,8 @@
     "swarm:bot": "node scripts/swarm/swarm-bot.mjs",
     "swarm:run": "node scripts/swarm/run-swarm.mjs",
     "swarm:flags": "node scripts/swarm/run-flag-matrix.mjs",
-    "test": "pnpm -r test",
+    "test": "pnpm -r test && pnpm test:scripts",
+    "test:scripts": "vitest run scripts/*.test.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
   },
