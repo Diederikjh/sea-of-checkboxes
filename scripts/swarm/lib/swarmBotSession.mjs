@@ -210,6 +210,10 @@ export class SwarmBotSession {
       type: message.t,
       ...(typeof message.cid === "string" ? { cid: message.cid } : {}),
       ...(typeof message.tile === "string" ? { tile: message.tile } : {}),
+      ...(typeof message.fromVer === "number" ? { fromVer: message.fromVer } : {}),
+      ...(typeof message.toVer === "number" ? { toVer: message.toVer } : {}),
+      ...(Array.isArray(message.ops) ? { opCount: message.ops.length } : {}),
+      ...(typeof message.ver === "number" ? { ver: message.ver } : {}),
       ...(typeof message.code === "string" ? { code: message.code } : {}),
     });
 
