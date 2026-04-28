@@ -392,6 +392,15 @@ export function parseWorkerLogQueryArgs(
       options.postFilters.push(parseFilterSpec(arg.slice("--filter=".length)));
       continue;
     }
+    if (arg === "--query-filter") {
+      options.filters.push(parseFilterSpec(resolveArgValue(args, index, arg)));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--query-filter=")) {
+      options.filters.push(parseFilterSpec(arg.slice("--query-filter=".length)));
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -775,6 +784,7 @@ Options:
   --path <path>           Filter on request path
   --outcome <name>        Filter on $workers.outcome
   --filter <spec>         Extra filter: key:operation:value or key:operation:type:value
+  --query-filter <spec>   Extra Cloudflare-side filter: key:operation:value or key:operation:type:value
   --dry-run               Print the request body without calling Cloudflare
   -h, --help              Show this help
 

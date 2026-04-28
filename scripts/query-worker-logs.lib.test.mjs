@@ -22,6 +22,8 @@ describe("query-worker-logs lib", () => {
         "25",
         "--trace-id",
         "ctrace_123",
+        "--query-filter",
+        "$metadata.level:eq:error",
         "--filter",
         "source.duration_ms:gte:number:10",
       ],
@@ -42,7 +44,14 @@ describe("query-worker-logs lib", () => {
       limit: 25,
       format: "summary",
     });
-    expect(options.filters).toEqual([]);
+    expect(options.filters).toEqual([
+      {
+        key: "$metadata.level",
+        operation: "eq",
+        type: "string",
+        value: "error",
+      },
+    ]);
     expect(options.postFilters).toEqual([
       {
         key: "source.trace_id",
