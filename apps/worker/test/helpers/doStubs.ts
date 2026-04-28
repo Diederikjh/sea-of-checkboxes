@@ -195,6 +195,10 @@ export class TileOwnerDurableObjectStub implements DurableObjectStubLike {
     this.#errorByPath.set(pathname, error);
   }
 
+  resetCoordinationState(): void {
+    this.#watchersByTile.clear();
+  }
+
   async fetch(input: Request | string, init?: RequestInit): Promise<Response> {
     const { request, body, url } = await recordRequest(this.requests, input, init);
 

@@ -98,7 +98,6 @@ export class TileOwnerDO {
       }
 
       await this.#ensureLoaded(payload.tile);
-      let subscribersChanged = false;
       if (payload.action === "sub") {
         const alreadySubscribed = this.#subscriberShards.has(payload.shard);
         if (!alreadySubscribed && this.#subscriberShards.size >= TILE_DENY_WATCHER_THRESHOLD) {
@@ -120,13 +119,9 @@ export class TileOwnerDO {
         }
         if (!alreadySubscribed) {
           this.#subscriberShards.add(payload.shard);
-          subscribersChanged = true;
         }
       } else {
-        subscribersChanged = this.#subscriberShards.delete(payload.shard);
-      }
-      if (subscribersChanged) {
-        await this.#persistSubscribers();
+        this.#subscriberShards.delete(payload.shard);
       }
       this.#logEvent(payload.action, {
         tile: payload.tile,
@@ -324,10 +319,6 @@ export class TileOwnerDO {
       this.#tileOwner.loadSnapshot(bits, persisted.snapshot.ver, persisted.snapshot.edits ?? []);
     }
 
-    for (const shard of persisted.subscribers) {
-      this.#subscriberShards.add(shard);
-    }
-
     this.#loaded = true;
   }
 
@@ -338,10 +329,6 @@ export class TileOwnerDO {
       ver: snapshot.ver,
       edits: this.#tileOwner.getPersistedLastEdits(),
     });
-  }
-
-  async #persistSubscribers(): Promise<void> {
-    await this.#persistence.saveSubscribers(this.#activeTileKey(), Array.from(this.#subscriberShards));
   }
 
   async #recordSnapshotOperation(): Promise<void> {

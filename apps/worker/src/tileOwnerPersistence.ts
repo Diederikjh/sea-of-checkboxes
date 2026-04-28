@@ -18,17 +18,14 @@ export interface TileSnapshotRecord {
 
 export interface TileOwnerPersistedState {
   snapshot?: TileSnapshotRecord;
-  subscribers: string[];
 }
 
 export interface TileOwnerPersistence {
   load(tileKey: string): Promise<TileOwnerPersistedState>;
   saveSnapshot(tileKey: string, snapshot: TileSnapshotRecord): Promise<void>;
-  saveSubscribers(tileKey: string, subscribers: string[]): Promise<void>;
 }
 
 const SNAPSHOT_KEY = "snapshot";
-const SUBSCRIBERS_KEY = "subscribers";
 const SNAPSHOT_OBJECT_VERSION = "v1";
 const SNAPSHOT_READ_SUCCESS_SAMPLE_RATE = 0.02;
 const SNAPSHOT_R2_WRITE_MAX_ATTEMPTS = 3;
@@ -130,14 +127,9 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
   async load(tileKey: string): Promise<TileOwnerPersistedState> {
     const startMs = Date.now();
     let snapshot: TileSnapshotRecord | undefined;
-    let subscribers: string[] = [];
 
     try {
       snapshot = await this.#state.storage.get<TileSnapshotRecord>(SNAPSHOT_KEY);
-      const rawSubscribers = await this.#state.storage.get<string[]>(SUBSCRIBERS_KEY);
-      subscribers = Array.isArray(rawSubscribers)
-        ? rawSubscribers.filter((value) => typeof value === "string" && value.length > 0)
-        : [];
 
       if (shouldSampleSnapshotRead()) {
         logStructuredEvent("tile_owner_persistence", "snapshot_read", {
@@ -145,7 +137,6 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
           tile: tileKey,
           source: "do_storage",
           found: Boolean(snapshot),
-          subscriber_count: subscribers.length,
           duration_ms: elapsedMs(startMs),
         }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
       }
@@ -165,11 +156,10 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
     if (snapshot) {
       return {
         snapshot,
-        subscribers,
       };
     }
 
-    return { subscribers };
+    return {};
   }
 
   async saveSnapshot(tileKey: string, snapshot: TileSnapshotRecord): Promise<void> {
@@ -195,9 +185,6 @@ export class DurableObjectStorageTileOwnerPersistence implements TileOwnerPersis
     }
   }
 
-  async saveSubscribers(_tileKey: string, subscribers: string[]): Promise<void> {
-    await this.#state.storage.put(SUBSCRIBERS_KEY, subscribers);
-  }
 }
 
 export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence {
@@ -246,7 +233,6 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
     if (fromR2) {
       return {
         snapshot: fromR2,
-        subscribers: legacy.subscribers,
       };
     }
 
@@ -259,7 +245,7 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
       return legacy;
     }
 
-    return { subscribers: legacy.subscribers };
+    return {};
   }
 
   async saveSnapshot(tileKey: string, snapshot: TileSnapshotRecord): Promise<void> {
@@ -294,10 +280,6 @@ export class LazyMigratingR2TileOwnerPersistence implements TileOwnerPersistence
       legacy_error_message: legacyError instanceof Error ? legacyError.message : undefined,
       mode: "normal",
     }, buildLogStructuredEventOptions(this.#logEnv, Date.now()));
-  }
-
-  async saveSubscribers(tileKey: string, subscribers: string[]): Promise<void> {
-    await this.#legacy.saveSubscribers(tileKey, subscribers);
   }
 
   async #loadSnapshotFromR2(tileKey: string): Promise<TileSnapshotRecord | null> {

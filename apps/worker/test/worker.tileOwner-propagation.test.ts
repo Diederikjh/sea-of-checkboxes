@@ -120,8 +120,27 @@ class SnapshotWriteFailingStorage {
   }
 }
 
+class SubscriberWriteFailingStorage {
+  #data: Map<string, unknown>;
+
+  constructor() {
+    this.#data = new Map();
+  }
+
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.#data.get(key) as T | undefined;
+  }
+
+  async put<T>(key: string, value: T): Promise<void> {
+    if (key === "subscribers") {
+      throw new Error("subscriber_storage_should_not_be_used");
+    }
+    this.#data.set(key, value);
+  }
+}
+
 describe("TileOwnerDO propagation across restart", () => {
-  it("keeps shard watchers across re-instantiation without shard push fanout", async () => {
+  it("does not persist shard watchers across re-instantiation", async () => {
     const harness = createTileOwnerHarness();
     const first = harness.createInstance();
 
@@ -161,6 +180,7 @@ describe("TileOwnerDO propagation across restart", () => {
     expect(shardB.requests.length).toBe(0);
 
     // Recreate the DO instance with the same storage to simulate lifecycle recycle.
+    // Tile data persists, but live watcher membership is intentionally ephemeral.
     const second = harness.createInstance();
     const secondSetCellResponse = await second.fetch(
       postJson("/setCell", {
@@ -174,7 +194,7 @@ describe("TileOwnerDO propagation across restart", () => {
     await expect(secondSetCellResponse.json()).resolves.toMatchObject({
       accepted: true,
       changed: true,
-      watcherCount: 2,
+      watcherCount: 0,
     });
     expect(shardA.requests.length).toBe(0);
     expect(shardB.requests.length).toBe(0);
@@ -379,7 +399,7 @@ describe("TileOwnerDO propagation across restart", () => {
     });
   });
 
-  it("persists unsubscribe state across re-instantiation", async () => {
+  it("forgets subscriber state across re-instantiation even after unsubscribe", async () => {
     const harness = createTileOwnerHarness();
     const first = harness.createInstance();
 
@@ -418,7 +438,7 @@ describe("TileOwnerDO propagation across restart", () => {
     await expect(setCellResponse.json()).resolves.toMatchObject({
       accepted: true,
       changed: true,
-      watcherCount: 1,
+      watcherCount: 0,
     });
 
     const shardA = harness.shardNamespace.getByName("shard-a");
@@ -426,6 +446,75 @@ describe("TileOwnerDO propagation across restart", () => {
     await waitFor(() => {
       expect(shardA.requests.length).toBe(0);
       expect(shardB.requests.length).toBe(0);
+    });
+  });
+
+  it("ignores legacy persisted subscriber records", async () => {
+    const storage = new MemoryStorage();
+    const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const env = {
+      CONNECTION_SHARD: shardNamespace,
+      TILE_OWNER: shardNamespace,
+    };
+    const state = {
+      id: { toString: () => "tile:0:0" },
+      storage,
+    };
+
+    await storage.put("subscribers", ["shard-a", "shard-b"]);
+
+    const owner = new TileOwnerDO(state, env);
+    const response = await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 4,
+        v: 1,
+        op: "op_ignore_legacy_subscribers",
+      })
+    );
+
+    expect(response.ok).toBe(true);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      watcherCount: 0,
+    });
+  });
+
+  it("does not touch Durable Object storage for watch subscriber coordination", async () => {
+    const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
+    const env = {
+      CONNECTION_SHARD: shardNamespace,
+      TILE_OWNER: shardNamespace,
+    };
+    const state = {
+      id: { toString: () => "tile:0:0" },
+      storage: new SubscriberWriteFailingStorage(),
+    };
+    const owner = new TileOwnerDO(state, env);
+
+    const watchResponse = await owner.fetch(
+      postJson("/watch", {
+        tile: "0:0",
+        shard: "shard-a",
+        action: "sub",
+      })
+    );
+
+    expect(watchResponse.status).toBe(204);
+    const setCellResponse = await owner.fetch(
+      postJson("/setCell", {
+        tile: "0:0",
+        i: 4,
+        v: 1,
+        op: "op_watch_no_storage",
+      })
+    );
+    expect(setCellResponse.ok).toBe(true);
+    await expect(setCellResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      changed: true,
+      watcherCount: 1,
     });
   });
 
@@ -625,33 +714,27 @@ describe("TileOwnerDO propagation across restart", () => {
 
   it("supports injectable persistence adapters for testability", async () => {
     const snapshots = new Map<string, { bits: string; ver: number }>();
-    const subscribersByTile = new Map<string, string[]>();
+    let saveSnapshotCount = 0;
     const persistence: TileOwnerPersistence = {
       async load(tileKey) {
         const snapshot = snapshots.get(tileKey);
         if (snapshot) {
           return {
             snapshot,
-            subscribers: [...(subscribersByTile.get(tileKey) ?? [])],
           };
         }
 
-        return {
-          subscribers: [...(subscribersByTile.get(tileKey) ?? [])],
-        };
+        return {};
       },
       async saveSnapshot(tileKey, snapshot) {
+        saveSnapshotCount += 1;
         snapshots.set(tileKey, snapshot);
-      },
-      async saveSubscribers(tileKey, subscribers) {
-        subscribersByTile.set(tileKey, [...subscribers]);
       },
     };
 
     const seededBits = new Uint8Array(TILE_CELL_COUNT);
     seededBits[10] = 1;
     snapshots.set("0:0", { bits: encodeRle64(seededBits), ver: 3 });
-    subscribersByTile.set("0:0", ["shard-a"]);
 
     const shardNamespace = new StubNamespace((name) => new RecordingDurableObjectStub(name));
     const env = {
@@ -689,6 +772,7 @@ describe("TileOwnerDO propagation across restart", () => {
     );
 
     const persisted = snapshots.get("0:0");
+    expect(saveSnapshotCount).toBe(1);
     expect(persisted).toBeDefined();
     expect(persisted?.ver).toBe(4);
     const persistedBits = decodeRle64(persisted!.bits);
@@ -712,8 +796,6 @@ describe("TileOwnerDO propagation across restart", () => {
     const seededBits = new Uint8Array(TILE_CELL_COUNT);
     seededBits[9] = 1;
     await storage.put("snapshot", { bits: encodeRle64(seededBits), ver: 7 });
-    await storage.put("subscribers", ["shard-a"]);
-
     const first = new TileOwnerDO(state, env);
     const firstSnapshotResponse = await first.fetch(getJson("/snapshot?tile=0:0"));
     expect(firstSnapshotResponse.ok).toBe(true);
@@ -862,11 +944,10 @@ describe("TileOwnerDO propagation across restart", () => {
     const persistence: TileOwnerPersistence = {
       async load() {
         if (!savedSnapshot) {
-          return { subscribers: [] };
+          return {};
         }
         return {
           snapshot: savedSnapshot,
-          subscribers: [],
         };
       },
       async saveSnapshot(_tileKey, snapshot) {
@@ -875,9 +956,6 @@ describe("TileOwnerDO propagation across restart", () => {
           throw new Error("simulated_save_snapshot_failure");
         }
         savedSnapshot = snapshot;
-      },
-      async saveSubscribers() {
-        // no-op
       },
     };
 

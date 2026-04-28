@@ -516,6 +516,82 @@ describe("ConnectionShardDO websocket handling", () => {
     }, { attempts: 120, delayMs: 10 });
   });
 
+  it("continues swarm-style tile convergence after tile owner coordination state is evicted", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", cid: "c_sub_1", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    });
+
+    const tileStub = harness.tileOwners.getByName("0:0");
+    tileStub.resetCoordinationState();
+    tileStub.injectOp("0:0", 88, 1);
+
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(
+        messages.some(
+          (message) =>
+            message.t === "cellUpBatch"
+            && message.tile === "0:0"
+            && message.fromVer === 1
+            && message.toVer === 1
+            && message.ops.some((op) => op[0] === 88 && op[1] === 1)
+        )
+      ).toBe(true);
+    }, { attempts: 120, delayMs: 10 });
+  });
+
+  it("accepts swarm-style setCell after tile owner coordination state is evicted", async () => {
+    const harness = createHarness();
+    const socket = await connectClient(harness.shard, harness.socketPairFactory, {
+      uid: "u_a",
+      name: "Alice",
+      shard: "shard-a",
+    });
+
+    socket.emitMessage(encodeClientMessageBinary({ t: "sub", cid: "c_sub_1", tiles: ["0:0"] }));
+    await waitFor(() => {
+      const messages = decodeMessages(socket);
+      expect(messages.some((message) => message.t === "tileSnap" && message.tile === "0:0")).toBe(true);
+    });
+
+    const tileStub = harness.tileOwners.getByName("0:0");
+    tileStub.resetCoordinationState();
+    socket.emitMessage(encodeClientMessageBinary({
+      t: "setCell",
+      tile: "0:0",
+      i: 99,
+      v: 1,
+      op: "op_after_coordination_reset",
+    }));
+
+    await waitFor(() => {
+      expect(tileStub.setCellRequests.some((request) => request.op === "op_after_coordination_reset")).toBe(true);
+      const messages = decodeMessages(socket);
+      expect(
+        messages.some(
+          (message) =>
+            message.t === "cellUpBatch"
+            && message.tile === "0:0"
+            && message.ops.some((op) => op[0] === 99 && op[1] === 1)
+        )
+      ).toBe(true);
+    }, { attempts: 120, delayMs: 10 });
+
+    const errors = decodeMessages(socket).filter(
+      (message): message is Extract<ServerMessage, { t: "err" }> => message.t === "err"
+    );
+    expect(errors.some((message) => message.code === "not_subscribed")).toBe(false);
+  });
+
   it("resyncs snapshot when pulled tile deltas have a version gap", async () => {
     const harness = createHarness();
     const socket = await connectClient(harness.shard, harness.socketPairFactory, {
