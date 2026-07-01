@@ -1,9 +1,12 @@
 import {
-  MIN_CELL_PX,
   UID_PATTERN,
-  clampCameraCenter,
   isCellIndexValid,
+  isFiniteNumber,
 } from "@sea/domain";
+import {
+  normalizeShareLinkCameraPayload,
+  normalizeShareLinkId,
+} from "@sea/protocol";
 
 import {
   type ClientDebugLogLevel,
@@ -44,11 +47,8 @@ const SHARE_LINK_CORS_HEADERS: Record<string, string> = {
   "access-control-allow-headers": "content-type, authorization",
   "access-control-max-age": "86400",
 };
-const SHARE_LINK_UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHARE_LINK_KEY_PREFIX = "share:";
 const SHARE_LINK_TTL_SECONDS = 90 * 24 * 60 * 60;
-const SHARE_LINK_MAX_ZOOM = 64;
 const WS_DISABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 const CLIENT_SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const CLIENT_DEBUG_LOG_TTL_MS = 15 * 60 * 1_000;
@@ -64,12 +64,6 @@ interface ShareLinkRecord {
   createdAtMs: number;
   lastAccessAtMs: number;
   creatorUid: string | null;
-}
-
-interface ShareLinkCreatePayload {
-  x?: unknown;
-  y?: unknown;
-  zoom?: unknown;
 }
 
 function buildShardUrl(identity: ConnectionIdentity, shardName: string): URL {
@@ -314,34 +308,12 @@ function shareLinkKey(id: string): string {
   return `${SHARE_LINK_KEY_PREFIX}${id.toLowerCase()}`;
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
 function isWebSocketTemporarilyDisabled(env: Env): boolean {
   if (typeof env.WS_DISABLED !== "string") {
     return false;
   }
 
   return WS_DISABLED_VALUES.has(env.WS_DISABLED.trim().toLowerCase());
-}
-
-function parseShareLinkCreatePayload(value: unknown): { x: number; y: number; zoom: number } | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const payload = value as ShareLinkCreatePayload;
-  if (!isFiniteNumber(payload.x) || !isFiniteNumber(payload.y) || !isFiniteNumber(payload.zoom)) {
-    return null;
-  }
-
-  const clampedCenter = clampCameraCenter(payload.x, payload.y);
-  return {
-    x: clampedCenter.x,
-    y: clampedCenter.y,
-    zoom: Math.max(MIN_CELL_PX, Math.min(SHARE_LINK_MAX_ZOOM, payload.zoom)),
-  };
 }
 
 function parseShareLinkRecord(raw: string | null): ShareLinkRecord | null {
@@ -351,10 +323,9 @@ function parseShareLinkRecord(raw: string | null): ShareLinkRecord | null {
 
   try {
     const value = JSON.parse(raw) as Partial<ShareLinkRecord>;
+    const camera = normalizeShareLinkCameraPayload(value);
     if (
-      !isFiniteNumber(value.x) ||
-      !isFiniteNumber(value.y) ||
-      !isFiniteNumber(value.zoom) ||
+      !camera ||
       !isFiniteNumber(value.createdAtMs) ||
       !isFiniteNumber(value.lastAccessAtMs)
     ) {
@@ -363,11 +334,10 @@ function parseShareLinkRecord(raw: string | null): ShareLinkRecord | null {
     const creatorUidRaw = (value as { creatorUid?: unknown }).creatorUid;
     const creatorUid =
       typeof creatorUidRaw === "string" && UID_PATTERN.test(creatorUidRaw) ? creatorUidRaw : null;
-    const clampedCenter = clampCameraCenter(value.x, value.y);
     return {
-      x: clampedCenter.x,
-      y: clampedCenter.y,
-      zoom: Math.max(MIN_CELL_PX, Math.min(SHARE_LINK_MAX_ZOOM, value.zoom)),
+      x: camera.x,
+      y: camera.y,
+      zoom: camera.zoom,
       createdAtMs: value.createdAtMs,
       lastAccessAtMs: value.lastAccessAtMs,
       creatorUid,
@@ -423,7 +393,7 @@ function extractShareLinkId(pathname: string): string | null {
     return null;
   }
 
-  return SHARE_LINK_UUID_PATTERN.test(decodedId) ? decodedId.toLowerCase() : null;
+  return normalizeShareLinkId(decodedId);
 }
 
 async function handleCreateShareLinkRequest(
@@ -449,7 +419,7 @@ async function handleCreateShareLinkRequest(
   }
 
   const body = await readJson<unknown>(request);
-  const camera = parseShareLinkCreatePayload(body);
+  const camera = normalizeShareLinkCameraPayload(body);
   if (!camera) {
     return withShareLinkCors(
       jsonResponse(

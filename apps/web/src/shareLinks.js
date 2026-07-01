@@ -1,40 +1,19 @@
 import {
-  MIN_CELL_PX,
-  clampCameraCenter,
-} from "@sea/domain";
-
-const SHARE_PARAM = "share";
-const SHARE_MAX_ZOOM = 64;
-const SHARE_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isFiniteNumber(value) {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function normalizeShareId(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim().toLowerCase();
-  return SHARE_ID_PATTERN.test(trimmed) ? trimmed : null;
-}
+  SHARE_LINK_URL_PARAM,
+  normalizeShareLinkCameraPayload,
+  normalizeShareLinkId,
+} from "@sea/protocol";
 
 function normalizeSharedCameraPayload(payload) {
-  if (!payload || typeof payload !== "object") {
+  const camera = normalizeShareLinkCameraPayload(payload);
+  if (!camera || !payload || typeof payload !== "object") {
     return null;
   }
 
-  const { x, y, zoom } = payload;
-  if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isFiniteNumber(zoom)) {
-    return null;
-  }
-
-  const clampedCenter = clampCameraCenter(x, y);
   return {
-    x: clampedCenter.x,
-    y: clampedCenter.y,
-    cellPixelSize: Math.max(MIN_CELL_PX, Math.min(SHARE_MAX_ZOOM, zoom)),
+    x: camera.x,
+    y: camera.y,
+    cellPixelSize: camera.zoom,
     creatorUid:
       typeof payload.creatorUid === "string" && payload.creatorUid.trim().length > 0
         ? payload.creatorUid.trim()
@@ -54,11 +33,11 @@ export function readShareIdFromLocation(locationLike = globalThis.window?.locati
     return null;
   }
 
-  return normalizeShareId(url.searchParams.get(SHARE_PARAM));
+  return normalizeShareLinkId(url.searchParams.get(SHARE_LINK_URL_PARAM));
 }
 
 export function buildShareUrl(shareId, locationLike = globalThis.window?.location) {
-  const normalized = normalizeShareId(shareId);
+  const normalized = normalizeShareLinkId(shareId);
   if (!normalized || !locationLike || typeof locationLike.href !== "string") {
     return null;
   }
@@ -72,7 +51,7 @@ export function buildShareUrl(shareId, locationLike = globalThis.window?.locatio
 
   url.search = "";
   url.hash = "";
-  url.searchParams.set(SHARE_PARAM, normalized);
+  url.searchParams.set(SHARE_LINK_URL_PARAM, normalized);
   return url.toString();
 }
 
@@ -81,7 +60,7 @@ export async function resolveSharedCamera({
   shareId,
   fetchFn = globalThis.fetch,
 }) {
-  const normalizedId = normalizeShareId(shareId);
+  const normalizedId = normalizeShareLinkId(shareId);
   if (!normalizedId) {
     return null;
   }
@@ -134,7 +113,7 @@ export async function createShareLink({
   }
 
   const data = await response.json();
-  const shareId = normalizeShareId(data?.id);
+  const shareId = normalizeShareLinkId(data?.id);
   if (!shareId) {
     throw new Error("share_link_invalid_id");
   }
