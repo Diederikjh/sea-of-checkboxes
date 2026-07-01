@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "echo 'typecheck skipped for vanilla JS frontend'",
-    "lint": "echo 'lint not configured for sea-of-checkboxes'"
+    "lint": "eslint src test"
   },
   "dependencies": {
     "@sea/domain": "workspace:*",
@@ -18,6 +18,9 @@
     "pixi.js": "^7.4.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
     "vite": "^6.2.0"
   }
 }

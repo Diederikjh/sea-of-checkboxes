@@ -1,4 +1,4 @@
-import { TILE_CELL_COUNT, TILE_ENCODING } from "@sea/domain";
+import { TILE_ENCODING } from "@sea/domain";
 import {
   createEmptyTileState,
   decodeClientMessageBinary,

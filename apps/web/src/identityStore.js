@@ -116,7 +116,7 @@ function readJsonValue(storage, key) {
     return null;
   }
 
-  let raw = null;
+  let raw;
   try {
     raw = storage.getItem(key);
   } catch {

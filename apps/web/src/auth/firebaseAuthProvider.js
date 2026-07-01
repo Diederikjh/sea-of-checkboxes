@@ -186,7 +186,7 @@ export function createFirebaseAuthIdentityProvider({
 
           const signedInUser = signInResult?.user ?? auth.currentUser;
           if (!signedInUser) {
-            throw new Error("Missing firebase user after google sign-in");
+            throw new Error("Missing firebase user after google sign-in", { cause: error });
           }
 
           // Clean up the temporary anonymous user after successful account switch.

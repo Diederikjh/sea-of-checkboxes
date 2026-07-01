@@ -54,7 +54,7 @@ export function createAuthSessionExchangeClient({
         body: JSON.stringify(body),
       });
 
-      let payload = null;
+      let payload;
       try {
         payload = await response.json();
       } catch {
